@@ -370,3 +370,138 @@ test_stack_canary_guard :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect(t, canary_ok, "Canary should be intact")
 }
+
+// ============================================================================
+// Test 12: Nested Structured Concurrency (Race containing Sync)
+// ============================================================================
+
+@(test)
+test_nested_race_with_sync_branch :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Nested_State :: struct {
+        sync_a_done: bool,
+        sync_b_done: bool,
+        timer_done:  bool,
+        winner_idx:  int,
+    }
+
+    state := Nested_State{winner_idx = -1}
+
+    // Example 3 from ARCHITECTURE.md: Race between a quick trigger and a parallel sync block
+    spawn(&sched, proc(f: ^Fiber, s: ^Nested_State) {
+        w := race(f,
+            // Branch 0: Finishes after 2 frames
+            branch(proc(f: ^Fiber, s: ^Nested_State) {
+                wait_frames(f, 2)
+                s.timer_done = true
+            }, s, "Timer Branch"),
+
+            // Branch 1: Sync of two sub-tasks (each takes 5 frames)
+            branch(proc(f: ^Fiber, s: ^Nested_State) {
+                sync(f,
+                    branch(proc(f: ^Fiber, s: ^Nested_State) {
+                        wait_frames(f, 5)
+                        s.sync_a_done = true
+                    }, s, "Sub-task A"),
+                    branch(proc(f: ^Fiber, s: ^Nested_State) {
+                        wait_frames(f, 5)
+                        s.sync_b_done = true
+                    }, s, "Sub-task B"),
+                )
+            }, s, "Sync Branch"),
+        )
+        s.winner_idx = w
+    }, &state)
+
+    scheduler_step(&sched, 0.016) // Frame 1
+    testing.expect_value(t, state.winner_idx, -1)
+
+    scheduler_step(&sched, 0.016) // Frame 2
+    scheduler_step(&sched, 0.016) // Frame 3: Timer finishes (winner = 0)
+    testing.expect_value(t, state.timer_done, true)
+    testing.expect_value(t, state.winner_idx, 0)
+    testing.expect_value(t, state.sync_a_done, false)
+    testing.expect_value(t, state.sync_b_done, false)
+
+    // Run additional frames to ensure sub-tasks were recursively aborted and never run
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.016)
+    }
+    testing.expect_value(t, state.sync_a_done, false)
+    testing.expect_value(t, state.sync_b_done, false)
+}
+
+// ============================================================================
+// Test 13: Time Scaling & Scheduler Pause
+// ============================================================================
+
+@(test)
+test_time_scaling_and_pause :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    counter := 0
+    spawn(&sched, proc(f: ^Fiber, c: ^int) {
+        c^ = 1
+        wait(f, 1.0)
+        c^ = 2
+    }, &counter)
+
+    // Pause scheduler
+    sched.is_paused = true
+    scheduler_step(&sched, 0.5)
+    testing.expect_value(t, counter, 0) // Should not even start when paused
+
+    // Unpause
+    sched.is_paused = false
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, counter, 1)
+
+    // Double speed (time_scale = 2.0)
+    sched.time_scale = 2.0
+    scheduler_step(&sched, 0.5) // Advances 0.5 * 2.0 = 1.0 second! Total = 1.016s >= 1.016s -> wakes
+    testing.expect_value(t, counter, 2)
+}
+
+// ============================================================================
+// Test 14: Multiple Concurrent Independent Coroutines
+// ============================================================================
+
+@(test)
+test_many_concurrent_fibers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TOTAL_FIBERS :: 100
+    counters: [TOTAL_FIBERS]int
+
+    for i in 0 ..< TOTAL_FIBERS {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            c^ += 1
+            yield_frame(f)
+            c^ += 2
+            yield_frame(f)
+            c^ += 3
+        }, &counters[i])
+    }
+
+    scheduler_step(&sched, 0.016) // Frame 1
+    for i in 0 ..< TOTAL_FIBERS {
+        testing.expect_value(t, counters[i], 1)
+    }
+
+    scheduler_step(&sched, 0.016) // Frame 2
+    for i in 0 ..< TOTAL_FIBERS {
+        testing.expect_value(t, counters[i], 3)
+    }
+
+    scheduler_step(&sched, 0.016) // Frame 3
+    for i in 0 ..< TOTAL_FIBERS {
+        testing.expect_value(t, counters[i], 6)
+    }
+}
