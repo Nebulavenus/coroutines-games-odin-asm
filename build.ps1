@@ -21,8 +21,8 @@ function Invoke-OdinTest
 {
     param($Source)
 
-    Write-Host "Testing $Source..." -ForegroundColor Cyan
-    odin test $Source -all-packages
+    Write-Host "Testing coroutine package..." -ForegroundColor Cyan
+    odin test src/coroutine -all-packages
 }
 
 $RaddbgPath = $env:RADDBG_PATH

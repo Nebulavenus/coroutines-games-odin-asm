@@ -102,3 +102,4 @@ The project folder contains .\build.ps1 script to run Odin commands like build, 
 Read ARCHITECTURE.md to understand what project goal is and its design decision.
 For this project we need TDD approach, to cover it with unit tests and progress with an implementation.
 Document changes in CHANGELOG.md if it exists.
+Use new odin feature its in ASM.md.
