@@ -179,12 +179,13 @@ test_structured_sync :: proc(t: ^testing.T) {
         a_done: bool,
         b_done: bool,
         all_done: bool,
+        sync_ok: bool,
     }
 
     state := Sync_State{}
 
     spawn(&sched, proc(f: ^Fiber, s: ^Sync_State) {
-        sync(f,
+        s.sync_ok = sync(f,
             branch(proc(f: ^Fiber, s: ^Sync_State) {
                 wait_frames(f, 2)
                 s.a_done = true
@@ -214,6 +215,7 @@ test_structured_sync :: proc(t: ^testing.T) {
     testing.expect_value(t, state.a_done, true)
     testing.expect_value(t, state.b_done, true)
     testing.expect_value(t, state.all_done, true)
+    testing.expect_value(t, state.sync_ok, true)
 }
 
 // ============================================================================

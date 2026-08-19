@@ -177,8 +177,8 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
     }
 }
 
-sync :: proc(f: ^Fiber, branches: ..Branch_Desc) {
-    if f == nil || f.sched == nil || len(branches) == 0 do return
+sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
+    if f == nil || f.sched == nil || len(branches) == 0 do return true
 
     f.active_coord = Join_Coordinator{
         kind            = .Sync,
@@ -210,6 +210,8 @@ sync :: proc(f: ^Fiber, branches: ..Branch_Desc) {
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     context = f.stored_context
+
+    return !f.active_coord.has_failed
 }
 
 race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {

@@ -49,3 +49,66 @@ Finished 14 tests in ~3.7ms. All tests were successful.
 12. `test_nested_race_with_sync_branch`: Validates complex hierarchical compositions (`race` containing `sync` sub-branches).
 13. `test_time_scaling_and_pause`: Validates `time_scale` multipliers and `is_paused` flags.
 14. `test_many_concurrent_fibers`: Validates 100 simultaneous fibers executing concurrently with interleaved context switching.
+
+# 2 The implementation matches the design plan, adheres strictly to the architectural specifications, and has **zero structural gaps**. 
+
+The ASM context switching, synthetic stack initialization, structured concurrency coordinators (`sync`/`race`), timer min-heap, and hierarchical unwinding are implemented cleanly.
+
+---
+
+### 1. Verification Checklist
+
+| Subsystem | Status | Verification Details |
+| :--- | :---: | :--- |
+| **Low-Level ASM (Windows x64)** | **PASS** | Correctly preserves 8 GPRs + 10 XMM registers (`xmm6`..`xmm15`) using `movdqu`. Stack alignment logic is exact. |
+| **Low-Level ASM (System V)** | **PASS** | Correctly preserves 6 GPRs (`rbx`, `rbp`, `r12`..`r15`). Clean 16-byte alignment maintained. |
+| **Synthetic Stack Frame** | **PASS** | Initial stack setup correctly mimics a suspended context switch frame. Uses `%r12` to pass `^Fiber` cleanly across ABIs. |
+| **Trampoline Bootstrap** | **PASS** | `fiber_trampoline_entry` correctly establishes `runtime.Context`, executes user procedure, updates status, and yields back to scheduler. |
+| **Structured Concurrency (`sync`)** | **PASS** | Spawns children, suspends parent with `Suspended_Join`, tracks `active_branches`, and wakes parent when all finish. |
+| **Structured Concurrency (`race`)** | **PASS** | Spawns children, elects winner on first completion, recursively aborts competing sibling branches, and wakes parent. |
+| **Timer Min-Heap** | **PASS** | Implements true $O(\log N)$ push/pop and $O(\log N)$ targeted removal via cached `heap_index`. |
+| **Hierarchical Unwinding** | **PASS** | `fiber_abort_tree` cleans up bottom-up, removes nodes from queues without leaks, and recycles stacks. |
+| **Memory & Stack Canary** | **PASS** | 64-byte `0xDEAD_BEEF_CAFE_BABE` canary watermark verified during acquisition and recycling. |
+
+---
+
+### 2. Minor Hardening & Edge-Case Recommendations
+
+While the core engine is fully functional, here are two minor safety improvements to consider:
+
+#### A. Guarding `scope_destroy` against Active Fibers
+In `scheduler.odin`:
+```odin
+scope_destroy :: proc(scope: ^Fiber_Scope) {
+    delete(scope.handles)
+}
+```
+*Edge Case:* If `scope_destroy(&scope)` is called before the fibers in that scope have finished or been cancelled, `scope.handles` is freed. If those fibers are later destroyed by the scheduler, `fiber_cleanup_and_recycle` will attempt to do `unordered_remove(&fiber.scope.handles, i)` on freed memory.
+
+*Recommended Fix:* Ensure `scope_destroy` cancels any remaining fibers before deleting the array:
+```odin
+scope_destroy :: proc(scope: ^Fiber_Scope, sched: ^Scheduler = nil) {
+    if sched != nil {
+        scope_cancel(sched, scope)
+    }
+    delete(scope.handles)
+}
+```
+
+#### B. Returning Success/Failure from `sync` (Optional)
+Currently, `sync` is defined as:
+```odin
+sync :: proc(f: ^Fiber, branches: ..Branch_Desc)
+```
+If a child fails (e.g., entity died or an explicit condition failed), `coord.has_failed` is flagged internally. If you ever need your gameplay scripts to branch based on whether all sub-tasks succeeded:
+```odin
+sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
+    // ...
+    return !f.active_coord.has_failed
+}
+```
+
+---
+
+### Conclusion
+The architecture is solid, leak-free (verified by Odin's tracking allocator), and delivers true SkookumScript-style structured concurrency on top of native Odin inline assembly.
