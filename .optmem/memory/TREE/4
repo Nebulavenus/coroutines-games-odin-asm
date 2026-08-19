@@ -1,1 +1,2 @@
 Implemented and verified stackful coroutine engine in Odin using ASM context switching and structured concurrency (sync/race), validated by 14 passing unit tests and zero-leak demo                                                                                                           
+Documented reports in REPORTS.md, created 2D Raylib boss fight game, and fixed edge-case bugs in camera shake bounds and floating text pointer lifecycle                                                                                                                                       

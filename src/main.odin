@@ -32,8 +32,6 @@ Floating_Text :: struct {
     color:    rl.Color,
     alpha:    f32,
     scale:    f32,
-    lifetime: f32,
-    alive:    bool,
 }
 
 Particle :: struct {
@@ -76,7 +74,7 @@ Game :: struct {
     player:         Player,
     boss:           Boss,
     projectiles:    [dynamic]Projectile,
-    floating_texts: [dynamic]Floating_Text,
+    floating_texts: [dynamic]^Floating_Text,
     particles:      [dynamic]Particle,
     camera_offset:  rl.Vector2,
     game_time:      f32,
@@ -155,11 +153,10 @@ trigger_camera_shake :: proc(intensity: f32) {
     }, int_copy)
 }
 
-floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft_index_ptr: ^int) {
-    idx := ft_index_ptr^
-    if idx >= len(g_game.floating_texts) do return
+floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {
+    if ft == nil do return
 
-    start_y := g_game.floating_texts[idx].pos.y
+    start_y := ft.pos.y
     target_y := start_y - 45.0
 
     // Tween upward position and fade out
@@ -168,36 +165,31 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft_index_ptr: ^int) {
     for elapsed < dur {
         coroutine.yield_frame(f)
         elapsed += f.sched.delta_time
-        if idx >= len(g_game.floating_texts) || !g_game.floating_texts[idx].alive do break
-        t := elapsed / dur
-        g_game.floating_texts[idx].pos.y = math.lerp(start_y, target_y, t)
-        g_game.floating_texts[idx].alpha = 1.0 - t
+        t := clamp(elapsed / dur, 0.0, 1.0)
+        ft.pos.y = math.lerp(start_y, target_y, t)
+        ft.alpha = 1.0 - t
     }
 
-    if idx < len(g_game.floating_texts) {
-        g_game.floating_texts[idx].alive = false
+    // Remove pointer from list and free
+    for i in 0 ..< len(g_game.floating_texts) {
+        if g_game.floating_texts[i] == ft {
+            unordered_remove(&g_game.floating_texts, i)
+            break
+        }
     }
+    free(ft)
 }
 
 spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color) {
-    ft := Floating_Text{
-        text     = text,
-        pos      = pos,
-        color    = color,
-        alpha    = 1.0,
-        scale    = 20,
-        lifetime = 0.8,
-        alive    = true,
-    }
+    ft := new(Floating_Text)
+    ft.text = text
+    ft.pos = pos
+    ft.color = color
+    ft.alpha = 1.0
+    ft.scale = 20
     append(&g_game.floating_texts, ft)
-    idx := len(g_game.floating_texts) - 1
 
-    idx_ptr := new(int)
-    idx_ptr^ = idx
-    coroutine.spawn(&g_game.sched, proc(f: ^coroutine.Fiber, p: ^int) {
-        defer free(p)
-        floating_text_coroutine(f, p)
-    }, idx_ptr)
+    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft)
 }
 
 player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
@@ -414,8 +406,8 @@ game_init :: proc(g: ^Game) {
         pos           = {f32(SCREEN_WIDTH) / 2.0, f32(SCREEN_HEIGHT) - 100.0},
         speed         = 320.0,
         radius        = 18.0,
-        hp            = 100.0,
-        max_hp        = 100.0,
+        hp            = 400.0,
+        max_hp        = 400.0,
         can_dash      = true,
         is_dashing    = false,
         dash_cooldown = 0.0,
@@ -434,7 +426,7 @@ game_init :: proc(g: ^Game) {
     }
 
     g.projectiles = make([dynamic]Projectile)
-    g.floating_texts = make([dynamic]Floating_Text)
+    g.floating_texts = make([dynamic]^Floating_Text)
     g.particles = make([dynamic]Particle)
     g.camera_offset = {0, 0}
     g.game_time = 0.0
@@ -452,6 +444,9 @@ game_destroy :: proc(g: ^Game) {
     coroutine.scope_destroy(&g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
     delete(g.projectiles)
+    for ft in g.floating_texts {
+        free(ft)
+    }
     delete(g.floating_texts)
     delete(g.particles)
 }
@@ -565,13 +560,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         p.alpha -= dt * 2.0
         if p.alpha <= 0.0 {
             unordered_remove(&g.particles, i)
-        }
-    }
-
-    // --- Cleanup Dead Floating Texts ---
-    for i := len(g.floating_texts) - 1; i >= 0; i -= 1 {
-        if !g.floating_texts[i].alive {
-            unordered_remove(&g.floating_texts, i)
         }
     }
 }
