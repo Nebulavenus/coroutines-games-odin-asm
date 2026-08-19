@@ -23,3 +23,8 @@ All notable changes to this project will be documented in this file.
     - `scope_cancel` / `fiber_cancel`: Hierarchical subtree cancellation with zero dangling child tasks.
     - `tween`: Smooth interpolation with customizable easing functions (`ease_linear`, `ease_in_quad`, `ease_out_quad`, `ease_in_out_quad`, `ease_in_out_cubic`).
   - Complete TDD test suite (`coroutine_test.odin`) covering context switching, stack persistence across yields, time/frame/condition waits, `sync`, `race`, scope cancellation, destructors, canary validation, and tweens.
+- **Interactive Raylib Game (`src/main.odin`)**:
+  - Full graphical boss encounter rendered via `vendor:raylib`.
+  - Boss AI running 3 multi-phase timelines using `race`, `sync`, and `tween`.
+  - Player dash ability, camera shake, and floating damage numbers powered by dedicated coroutines.
+  - Live HUD displaying active fiber count, queue sizes, boss HP, and dash status with tracking allocator (zero memory leaks).
