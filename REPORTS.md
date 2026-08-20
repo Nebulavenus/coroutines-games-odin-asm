@@ -10,30 +10,35 @@ This document records the comprehensive verification matrix, architectural analy
 | :--- | :--- | :--- |
 | **Low-Level ASM Context Switch** | [`src/coroutine/asm_amd64.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/asm_amd64.odin) — Call/ret pattern with callee-saved GPRs + XMM6..15 register preservation and stack alignment | **PASS** |
 | **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#volatile`) to prevent LLVM SSA optimization/caching across context switches | **PASS** |
+| **Per-Fiber Isolated Temporary Allocator** | [`src/coroutine/types.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/types.odin) & [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin) — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation (`test_fiber_temp_allocator_isolation`) | **PASS** |
 | **Stack Synthesis & Trampoline** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin#L173) — Initial frame layout with `%r12` fiber passing and trampoline re-acquisition | **PASS** |
 | **Stack Overflow Protection** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin#L68) — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation (`test_stack_canary_guard`) | **PASS** |
-| **Stack Preservation Across Yields** | Local variables survive multiple frame yields (`test_stack_local_variables_across_yields`, `test_local_variable_isolation_many_fibers`) | **PASS** |
-| **Timer Min-Heap ($O(\log N)$)** | [`src/coroutine/scheduler.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/scheduler.odin#L41) — 1,000 random timers monotonic wake sort & random cancellations (`test_timer_heap_1000_random_sort`, `test_timer_heap_random_cancellations`) | **PASS** |
-| **Frame & Condition Waits** | [`src/coroutine/scheduler.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/scheduler.odin#L199) — `wait_frames`, `yield_frame`, `wait_until`, `wait_cond` (`test_wait_frames`, `test_wait_until_condition`, `test_condition_immediate_satisfaction`) | **PASS** |
+| **Stack Watermarking & High-Water Usage** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin) — `0xAA` watermarked stacks and `fiber_calc_stack_usage` runtime profiler (`test_stack_watermark_usage_calculation`) | **PASS** |
 | **Structured Concurrency: `sync`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L180) — Parallel join of $N$ branches, returns success/failure boolean (`test_structured_sync`, `test_sync_failure_propagation`) | **PASS** |
 | **Structured Concurrency: `race`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L214) — First-to-finish race, tie-breaking, and recursive descendant subtree abortion (`test_structured_race`, `test_race_all_simultaneous_finish`, `test_race_loser_with_children_aborts_all_descendants`) | **PASS** |
+| **Higher-Level Helper: `with_timeout`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Auto-cancelling task execution within time limits (`test_with_timeout_completion`, `test_with_timeout_expired`) | **PASS** |
+| **Event Synchronization: `Signal`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Zero-polling broadcast signal waking all registered coroutine waiters (`test_signal_broadcast`) | **PASS** |
+| **Cooperative Resource Lock: `Fiber_Mutex`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Fiber mutual exclusion queue without OS thread blocking (`test_fiber_mutex_contention`) | **PASS** |
+| **Timer Min-Heap ($O(\log N)$)** | [`src/coroutine/scheduler.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/scheduler.odin#L41) — 1,000 random timers monotonic wake sort & random cancellations (`test_timer_heap_1000_random_sort`, `test_timer_heap_random_cancellations`) | **PASS** |
+| **Frame & Condition Waits** | [`src/coroutine/scheduler.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/scheduler.odin#L199) — `wait_frames`, `yield_frame`, `wait_until`, `wait_cond` (`test_wait_frames`, `test_wait_until_condition`, `test_condition_immediate_satisfaction`) | **PASS** |
 | **Deep Concurrency Hierarchies** | 4-tier nested trees (`sync` $\rightarrow$ `race` $\rightarrow$ `sync` $\rightarrow$ tasks) (`test_deep_nested_hierarchy_sync_race_sync`) | **PASS** |
 | **Hierarchical Scope Cancellation** | [`src/coroutine/scheduler.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/scheduler.odin#L341) — `scope_cancel` and `scope_destroy` across heterogeneous states (`test_scope_cancellation`, `test_heterogeneous_scope_cancellation`) | **PASS** |
 | **Defer & Destructor Execution** | Custom cleanup callbacks run on early aborts / cancel (`test_cleanup_proc_and_defer`) | **PASS** |
 | **Value Interpolation & Easing** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L286) — `tween` with linear, quad, and cubic easing curves (`test_tween_interpolation`) | **PASS** |
 | **Pool Slab Expansion & Reclaim** | Multi-slab growth (120+ fibers across 15 slabs), stack recycling, and zero memory leaks (`test_pool_multi_slab_expansion_and_reclaim`, `test_fiber_lifecycle_generation_reuse`) | **PASS** |
 | **Boundary Safety & 10k Loops** | Zero/negative duration waits and 10,000-yield loops (`test_zero_and_negative_waits`, `test_10k_yield_loop`) | **PASS** |
+| **Live F1 / TAB Coroutine Tree Debugger** | [`src/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/main.odin) — Real-time visual overlay rendering the active fiber hierarchy tree, remaining timers, and stack byte telemetry | **PASS** |
 | **Full Boss Encounter Demo Game** | [`src/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/main.odin) — Raylib 2D game with multi-phase Boss AI timeline, racing triggers, combat `sync`, `tween` movement, and tracking allocator (0 memory leaks) | **PASS** |
 
 ---
 
 ## 2. Test Suite Execution Results
 
-All 27 unit tests are executed via `build.ps1 test`:
+All 33 unit tests are executed via `build.ps1 test`:
 
 ```
 Testing coroutine package...
-Finished 27 tests in ~30.8ms. All tests were successful.
+Finished 33 tests in ~43.6ms. All tests were successful.
 ```
 
 ### Complete Test Catalog:
@@ -64,24 +69,16 @@ Finished 27 tests in ~30.8ms. All tests were successful.
 25. `test_heterogeneous_scope_cancellation`: Single scope with fibers in `Sleeping_Time`, `Sleeping_Frames`, `Waiting_Condition`, `Suspended_Join`, and `Ready` pruned cleanly.
 26. `test_10k_yield_loop`: 10,000 consecutive yields verifying zero stack drift, register leak, or canary degradation.
 27. `test_zero_and_negative_waits`: Clamping of `0.0`, `-5.0`, and negative frames ensuring boundary safety.
+28. `test_fiber_temp_allocator_isolation`: Verifies `context.temp_allocator` persistence across yields with zero cross-coroutine interference.
+29. `test_with_timeout_completion`: Verifies task finishing before deadline returns `timed_out == false`.
+30. `test_with_timeout_expired`: Verifies expired deadline aborts long-running task and returns `timed_out == true`.
+31. `test_signal_broadcast`: Verifies zero-polling `Signal` broadcasts wake all waiting coroutines simultaneously.
+32. `test_fiber_mutex_contention`: Verifies FIFO mutual exclusion across coroutines without thread locking.
+33. `test_stack_watermark_usage_calculation`: Verifies real-time stack consumption calculation via `0xAA` watermarking.
 
 ---
 
-## 3. Key Hardening & Architectural Insights
-
-1. **ASM Clobbers & Volatile Compiler Constraints**:
-   - The AMD64 inline assembly context switcher (`asm_context_switch_windows` and `asm_context_switch_sysv`) now explicitly marks all caller-saved registers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11` on Windows; `%rax`, `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8`..`%r11` on SysV) as `#clobber` along with `#volatile`.
-   - Prevents compiler SSA optimizations from assuming local variables or struct fields (e.g. `fiber.status`) are unchanged across stack switches.
-
-2. **Guarded Scope Destruction**:
-   - `scope_destroy(&scope, sched)` automatically cancels remaining active fibers before freeing handle buffers to prevent dangling references in `fiber_cleanup_and_recycle`.
-
-3. **`sync` Boolean Status Return**:
-   - `sync(f, ...)` returns `all_succeeded: bool`, signaling whether all branches finished cleanly or if any branch failed.
-
----
-
-## 4. LLVM Optimization & Architecture Matrix Validation
+## 3. LLVM Optimization & Architecture Matrix Validation
 
 All 10 combinations of optimization levels, microarchitecture baselines, and release codegen flags were executed via `.\build.ps1 matrix`:
 
@@ -93,15 +90,15 @@ All 10 combinations of optimization levels, microarchitecture baselines, and rel
 
 | # | Configuration Name | Optimization & Architecture Flags | Build / Test Time | Status |
 | :-: | :--- | :--- | :-: | :---: |
-| **1** | **Debug** | `-o:none -debug` | 1.34s | **PASS (27/27 tests)** |
-| **2** | **Minimal** | `-o:minimal` | 0.90s | **PASS (27/27 tests)** |
-| **3** | **Size** | `-o:size -use-single-module` | 5.61s | **PASS (27/27 tests)** |
-| **4** | **Speed** | `-o:speed -use-single-module` | 6.30s | **PASS (27/27 tests)** |
-| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.42s | **PASS (27/27 tests)** |
-| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 5.05s | **PASS (27/27 tests)** |
-| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 5.09s | **PASS (27/27 tests)** |
-| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 5.78s | **PASS (27/27 tests)** |
-| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 5.48s | **PASS (27/27 tests)** |
-| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.59s | **PASS (`build/game_release.exe`)** |
+| **1** | **Debug** | `-o:none -debug` | 1.39s | **PASS (33/33 tests)** |
+| **2** | **Minimal** | `-o:minimal` | 1.01s | **PASS (33/33 tests)** |
+| **3** | **Size** | `-o:size -use-single-module` | 5.21s | **PASS (33/33 tests)** |
+| **4** | **Speed** | `-o:speed -use-single-module` | 6.10s | **PASS (33/33 tests)** |
+| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.60s | **PASS (33/33 tests)** |
+| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 5.50s | **PASS (33/33 tests)** |
+| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 5.45s | **PASS (33/33 tests)** |
+| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 5.42s | **PASS (33/33 tests)** |
+| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 5.61s | **PASS (33/33 tests)** |
+| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.68s | **PASS (`build/game_release.exe`)** |
 
 **Conclusion:** The coroutine engine and inline assembly context switcher are completely immune to LLVM optimization transformations, SIMD extensions, and target architecture variations.

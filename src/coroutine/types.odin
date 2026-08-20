@@ -1,6 +1,7 @@
 package coroutine
 
 import "base:runtime"
+import "core:mem"
 
 // ============================================================================
 // Constants
@@ -101,10 +102,27 @@ Fiber :: struct {
     user_data:        rawptr,
     cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
 
+    // --- Isolated Temporary Allocator ---
+    temp_arena:        mem.Arena,
+    temp_arena_buffer: [4 * 1024]byte, // 4KB private scratchpad per fiber
+
     // --- Diagnostics & Profiling ---
     debug_name:       string,
     start_time:       f64,
     stack_high_water: uint,
+}
+
+// ============================================================================
+// Synchronization Primitives
+// ============================================================================
+
+Signal :: struct {
+    waiters: [dynamic]^Fiber,
+}
+
+Fiber_Mutex :: struct {
+    locked:  bool,
+    waiters: [dynamic]^Fiber,
 }
 
 // ============================================================================

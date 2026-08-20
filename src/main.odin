@@ -76,10 +76,11 @@ Game :: struct {
     projectiles:    [dynamic]Projectile,
     floating_texts: [dynamic]^Floating_Text,
     particles:      [dynamic]Particle,
-    camera_offset:  rl.Vector2,
-    game_time:      f32,
-    game_over:      bool,
-    victory:        bool,
+    camera_offset:           rl.Vector2,
+    game_time:               f32,
+    show_coroutine_debugger: bool,
+    game_over:               bool,
+    victory:                 bool,
 }
 
 // Global Game Reference for Coroutines
@@ -457,6 +458,10 @@ game_update :: proc(g: ^Game, dt: f32) {
     // Step the Coroutine Engine
     coroutine.scheduler_step(&g.sched, dt)
 
+    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
+        g.show_coroutine_debugger = !g.show_coroutine_debugger
+    }
+
     if g.game_over || g.victory do return
 
     // --- Player Input & Movement ---
@@ -682,7 +687,81 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 260, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
     // Instructions
-    rl.DrawText("WASD/Arrows: Move | Left Click / J: Shoot | Space / RMB: Dash", 30, SCREEN_HEIGHT - 20, 14, rl.LIGHTGRAY)
+    rl.DrawText("WASD/Arrows: Move | Left Click: Shoot | Space/RMB: Dash | F1/TAB: Debugger Tree", 30, SCREEN_HEIGHT - 20, 14, rl.LIGHTGRAY)
+
+    // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
+    if g.show_coroutine_debugger {
+        panel_x: i32 = 25
+        panel_y: i32 = 140
+        panel_w: i32 = 620
+        panel_h: i32 = 520
+
+        rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 14, 22, 235})
+        rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
+
+        rl.DrawText("COROUTINE HIERARCHY DEBUGGER (F1 / TAB)", panel_x + 15, panel_y + 12, 16, rl.GOLD)
+        rl.DrawLine(panel_x + 10, panel_y + 35, panel_x + panel_w - 10, panel_y + 35, {60, 80, 120, 255})
+
+        tree_y := panel_y + 45
+
+        draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
+            if f == nil || cur_y^ > max_y do return
+
+            indent := i32(depth * 18)
+            name := f.debug_name != "" ? f.debug_name : "Fiber"
+
+            status_str := ""
+            status_col := rl.RAYWHITE
+            #partial switch f.status {
+            case .Running:
+                status_str = "Running"
+                status_col = rl.GREEN
+            case .Ready:
+                status_str = "Ready"
+                status_col = rl.YELLOW
+            case .Sleeping_Time:
+                left := max(0.0, f.wake_time - f.sched.current_time)
+                status_str = fmt.tprintf("Sleeping_Time (%.2fs left)", left)
+                status_col = rl.SKYBLUE
+            case .Sleeping_Frames:
+                left := f.wake_frame > f.sched.current_frame ? f.wake_frame - f.sched.current_frame : 0
+                status_str = fmt.tprintf("Sleeping_Frames (%d frames)", left)
+                status_col = rl.SKYBLUE
+            case .Waiting_Condition:
+                status_str = "Waiting_Condition"
+                status_col = rl.ORANGE
+            case .Suspended_Join:
+                kind := f.active_coord.kind == .Sync ? "Sync" : "Race"
+                status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
+                status_col = rl.PURPLE
+            case:
+                status_str = fmt.tprintf("%v", f.status)
+                status_col = rl.GRAY
+            }
+
+            used, total := coroutine.fiber_calc_stack_usage(f)
+            pct := f32(used) / f32(total) * 100.0
+
+            prefix := depth > 0 ? "├─ " : "▼ "
+            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct)
+            rl.DrawText(fmt.ctprintf("%s", row_text), 40 + indent, cur_y^, 12, status_col)
+            cur_y^ += 18
+
+            // Recursively draw children
+            child := f.first_child
+            for child != nil {
+                draw_fiber_node(child, depth + 1, cur_y, max_y)
+                child = child.next_sibling
+            }
+        }
+
+        // Draw from root fibers
+        for f in g.sched.fiber_pool.all_fibers {
+            if f.status != .Unused && f.parent == nil {
+                draw_fiber_node(f, 0, &tree_y, panel_y + panel_h - 25)
+            }
+        }
+    }
 
     if g.game_over {
         rl.DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, {0, 0, 0, 180})

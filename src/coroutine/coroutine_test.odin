@@ -1067,3 +1067,253 @@ test_zero_and_negative_waits :: proc(t: ^testing.T) {
 
     testing.expect_value(t, completed, 4)
 }
+
+// ============================================================================
+// Test 28: Per-Fiber Temp Allocator Isolation Across Yields
+// ============================================================================
+
+@(test)
+test_fiber_temp_allocator_isolation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    results: [2]int
+
+    // Fiber 0: Allocates dynamic array using context.temp_allocator
+    spawn(&sched, proc(f: ^Fiber, res: ^[2]int) {
+        temp_slice := make([]int, 10, context.temp_allocator)
+        for i in 0 ..< 10 do temp_slice[i] = i * 10
+
+        // Yield multiple times
+        yield_frame(f)
+        yield_frame(f)
+
+        // Verify values survived yields intact without corruption
+        sum := 0
+        for val in temp_slice do sum += val
+        res[0] = sum
+    }, &results)
+
+    // Fiber 1: Also allocates from its own context.temp_allocator
+    spawn(&sched, proc(f: ^Fiber, res: ^[2]int) {
+        temp_slice := make([]int, 5, context.temp_allocator)
+        for i in 0 ..< 5 do temp_slice[i] = 100
+
+        yield_frame(f)
+
+        sum := 0
+        for val in temp_slice do sum += val
+        res[1] = sum
+    }, &results)
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, results[0], 450)
+    testing.expect_value(t, results[1], 500)
+}
+
+// ============================================================================
+// Test 29: with_timeout - Successful Completion Before Deadline
+// ============================================================================
+
+@(test)
+test_with_timeout_completion :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        finished:  bool,
+        timed_out: bool,
+    }
+    state := State{}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        s.timed_out = with_timeout(f, 0.5, branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, 0.1)
+            s.finished = true
+        }, s, "Quick Task"))
+    }, &state)
+
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, state.finished, true)
+    testing.expect_value(t, state.timed_out, false)
+}
+
+// ============================================================================
+// Test 30: with_timeout - Expiration Aborts Hanging Task
+// ============================================================================
+
+@(test)
+test_with_timeout_expired :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        finished:  bool,
+        timed_out: bool,
+    }
+    state := State{}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        s.timed_out = with_timeout(f, 0.1, branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, 2.0) // Takes much longer than timeout
+            s.finished = true
+        }, s, "Slow Task"))
+    }, &state)
+
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, state.finished, false)
+    testing.expect_value(t, state.timed_out, true)
+}
+
+// ============================================================================
+// Test 31: Signal Event Broadcast Wakes All Waiters
+// ============================================================================
+
+@(test)
+test_signal_broadcast :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+    defer signal_destroy(&sig)
+
+    woken_count := 0
+
+    Signal_Payload :: struct {
+        count: ^int,
+        sig:   ^Signal,
+    }
+    payload := Signal_Payload{count = &woken_count, sig = &sig}
+
+    // Spawn 3 fibers waiting on the signal
+    for _ in 0 ..< 3 {
+        spawn(&sched, proc(f: ^Fiber, p: ^Signal_Payload) {
+            signal_wait(f, p.sig)
+            p.count^ += 1
+        }, &payload)
+    }
+
+    scheduler_step(&sched, 0.016) // Put all into signal.waiters
+    testing.expect_value(t, len(sig.waiters), 3)
+    testing.expect_value(t, woken_count, 0)
+
+    // Emit signal
+    signal_emit(&sched, &sig)
+    testing.expect_value(t, len(sig.waiters), 0)
+
+    scheduler_step(&sched, 0.016) // Execute ready fibers
+    testing.expect_value(t, woken_count, 3)
+}
+
+// ============================================================================
+// Test 32: Fiber Mutex Mutual Exclusion & Queueing
+// ============================================================================
+
+@(test)
+test_fiber_mutex_contention :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    execution_order: [dynamic]int
+    execution_order = make([dynamic]int)
+    defer delete(execution_order)
+
+    Payload :: struct {
+        id:        int,
+        mutex:     ^Fiber_Mutex,
+        log:       ^[dynamic]int,
+    }
+
+    p1 := Payload{id = 1, mutex = &m, log = &execution_order}
+    p2 := Payload{id = 2, mutex = &m, log = &execution_order}
+
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        fiber_mutex_lock(f, p.mutex)
+        append(p.log, p.id) // Critical section start
+        wait_frames(f, 3)
+        append(p.log, p.id + 10) // Critical section end
+        fiber_mutex_unlock(f.sched, p.mutex)
+    }, &p1)
+
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        fiber_mutex_lock(f, p.mutex)
+        append(p.log, p.id)
+        wait_frames(f, 1)
+        append(p.log, p.id + 10)
+        fiber_mutex_unlock(f.sched, p.mutex)
+    }, &p2)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, len(execution_order), 4)
+    // Fiber 1 must acquire, hold, and release BEFORE Fiber 2 enters critical section
+    testing.expect_value(t, execution_order[0], 1)
+    testing.expect_value(t, execution_order[1], 11)
+    testing.expect_value(t, execution_order[2], 2)
+    testing.expect_value(t, execution_order[3], 12)
+}
+
+// ============================================================================
+// Test 33: Stack Watermark & Usage Profiler Calculation
+// ============================================================================
+
+@(test)
+test_stack_watermark_usage_calculation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    used_recorded: uint = 0
+    total_recorded: uint = 0
+
+    Stack_Usage_Data :: struct {
+        used:  ^uint,
+        total: ^uint,
+    }
+    usage_data := Stack_Usage_Data{used = &used_recorded, total = &total_recorded}
+
+    spawn(&sched, proc(f: ^Fiber, out: ^Stack_Usage_Data) {
+        local_buffer: [512]u8
+        sum := 0
+        for i in 0 ..< 512 {
+            local_buffer[i] = u8((i + 1) % 255)
+        }
+        for i in 0 ..< 512 {
+            sum += int(local_buffer[i])
+        }
+        if sum == 0 {
+            out.used^ = 9999
+        }
+
+        used, total := fiber_calc_stack_usage(f)
+        out.used^ = used
+        out.total^ = total
+    }, &usage_data)
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, total_recorded, DEFAULT_STACK_SIZE)
+    testing.expect(t, used_recorded >= 240, fmt.tprintf("Expected >= 240 bytes used (initial frame + locals), got %v", used_recorded))
+    testing.expect(t, used_recorded < 32 * 1024, "Used bytes must be less than 32KB")
+}

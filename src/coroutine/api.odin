@@ -316,3 +316,112 @@ tween :: proc(
 
     output^ = target
 }
+
+// ============================================================================
+// with_timeout Helper
+// ============================================================================
+
+with_timeout :: proc(f: ^Fiber, seconds: f32, task: Branch_Desc) -> (timed_out: bool) {
+    if f == nil || f.sched == nil do return false
+
+    Timeout_Data :: struct {
+        seconds: f32,
+    }
+
+    tdata := Timeout_Data{seconds = seconds}
+
+    winner := race(f,
+        task,
+        branch(proc(f: ^Fiber, d: ^Timeout_Data) {
+            wait(f, d.seconds)
+        }, &tdata, "with_timeout_timer"),
+    )
+
+    return winner == 1
+}
+
+// ============================================================================
+// Signal (Event Broadcast)
+// ============================================================================
+
+signal_init :: proc(sig: ^Signal, allocator := context.allocator) {
+    sig.waiters = make([dynamic]^Fiber, allocator)
+}
+
+signal_destroy :: proc(sig: ^Signal) {
+    delete(sig.waiters)
+}
+
+signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
+    if f == nil || sig == nil || f.sched == nil do return
+
+    append(&sig.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+signal_emit :: proc(sched: ^Scheduler, sig: ^Signal) {
+    if sched == nil || sig == nil do return
+
+    for f in sig.waiters {
+        if f.status == .Suspended_Join {
+            f.status = .Ready
+            append(&sched.ready_queue, f)
+        }
+    }
+    clear(&sig.waiters)
+}
+
+// ============================================================================
+// Fiber Mutex (Cooperative Resource Lock)
+// ============================================================================
+
+mutex_init :: proc(m: ^Fiber_Mutex, allocator := context.allocator) {
+    m.locked = false
+    m.waiters = make([dynamic]^Fiber, allocator)
+}
+
+mutex_destroy :: proc(m: ^Fiber_Mutex) {
+    delete(m.waiters)
+}
+
+fiber_mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
+    if m == nil do return false
+    if !m.locked {
+        m.locked = true
+        return true
+    }
+    return false
+}
+
+fiber_mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
+    if f == nil || m == nil || f.sched == nil do return
+
+    if !m.locked {
+        m.locked = true
+        return
+    }
+
+    // Already locked: suspend this fiber until unlock
+    append(&m.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+fiber_mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
+    if sched == nil || m == nil do return
+
+    if len(m.waiters) > 0 {
+        next_fiber := pop_front(&m.waiters)
+        if next_fiber.status == .Suspended_Join {
+            next_fiber.status = .Ready
+            append(&sched.ready_queue, next_fiber)
+        }
+    } else {
+        m.locked = false
+    }
+}

@@ -38,6 +38,33 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     delete(pool.slabs)
 }
 
+STACK_WATERMARK :: 0xAA
+
+fiber_watermark_stack :: proc(fiber: ^Fiber) {
+    if fiber.stack_base == nil do return
+    bytes := ([^]u8)(fiber.stack_base)
+    start_offset := CANARY_SIZE
+    end_offset := int(fiber.stack_size)
+    if end_offset > start_offset {
+        mem.set(rawptr(uintptr(fiber.stack_base) + uintptr(start_offset)), STACK_WATERMARK, end_offset - start_offset)
+    }
+}
+
+fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
+    if fiber == nil || fiber.stack_base == nil do return 0, 0
+    total_bytes = fiber.stack_size
+    bytes := ([^]u8)(fiber.stack_base)
+    start_offset := CANARY_SIZE
+
+    for i in start_offset ..< int(fiber.stack_size) {
+        if bytes[i] != STACK_WATERMARK {
+            used_bytes = fiber.stack_size - uint(i)
+            return used_bytes, total_bytes
+        }
+    }
+    return 0, total_bytes
+}
+
 // Allocates a new slab of memory for stacks and fibers
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
@@ -55,6 +82,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         fiber.stack_size = pool.stack_size
         fiber.status = .Unused
         fiber.heap_index = -1
+        fiber_watermark_stack(fiber)
         fiber_init_canary(fiber)
 
         append(&pool.all_fibers, fiber)
@@ -116,7 +144,13 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.stack_high_water = 0
     fiber.scope = nil
 
-    // Verify and refresh canary
+    // Initialize isolated temporary arena for this fiber
+    mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
+    fiber.stored_context = context
+    fiber.stored_context.temp_allocator = mem.arena_allocator(&fiber.temp_arena)
+
+    // Watermark stack area and initialize canary
+    fiber_watermark_stack(fiber)
     fiber_init_canary(fiber)
 
     // Synthesize initial stack frame
@@ -132,6 +166,13 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     if !fiber_check_canary(fiber) {
         panic("Stack overflow detected in fiber! Canary corrupted.")
     }
+
+    // Record high-water stack usage before recycle
+    used, _ := fiber_calc_stack_usage(fiber)
+    fiber.stack_high_water = used
+
+    // Free isolated temporary arena
+    mem.arena_free_all(&fiber.temp_arena)
 
     fiber.status = .Unused
     fiber.handle = 0
