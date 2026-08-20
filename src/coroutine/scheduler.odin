@@ -420,10 +420,8 @@ scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
     }
 }
 
-scope_destroy :: proc(scope: ^Fiber_Scope, sched: ^Scheduler = nil) {
+scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
     if scope == nil do return
-    if sched != nil {
-        scope_cancel(sched, scope)
-    }
+    scope_cancel(sched, scope)
     delete(scope.handles)
 }

@@ -441,8 +441,8 @@ game_init :: proc(g: ^Game) {
 }
 
 game_destroy :: proc(g: ^Game) {
-    coroutine.scope_destroy(&g.player.scope)
-    coroutine.scope_destroy(&g.boss.scope)
+    coroutine.scope_destroy(&g.sched, &g.player.scope)
+    coroutine.scope_destroy(&g.sched, &g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
     delete(g.projectiles)
     for ft in g.floating_texts {

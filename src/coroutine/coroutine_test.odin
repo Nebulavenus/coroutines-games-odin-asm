@@ -279,7 +279,7 @@ test_scope_cancellation :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     scope: Fiber_Scope
-    defer scope_destroy(&scope, &sched)
+    defer scope_destroy(&sched, &scope)
 
     progress := 0
 
@@ -846,7 +846,7 @@ test_condition_immediate_satisfaction :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, p: ^int) {
         p^ = 1
         // Condition is already true! Should return immediately without suspending
-        wait_cond(f, proc() -> bool { return true })
+        wait_until(f, proc() -> bool { return true })
         p^ = 2
     }, &progress)
 
@@ -972,15 +972,15 @@ test_heterogeneous_scope_cancellation :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     scope: Fiber_Scope
-    defer scope_destroy(&scope, &sched)
+    defer scope_destroy(&sched, &scope)
 
     dummy_cond := false
 
     // 1. Fiber in Sleeping_Time
-    spawn_nil(&sched, proc(f: ^Fiber) { wait(f, 100.0) }, scope = &scope)
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 100.0) }, scope = &scope)
 
     // 2. Fiber in Sleeping_Frames
-    spawn_nil(&sched, proc(f: ^Fiber) { wait_frames(f, 500) }, scope = &scope)
+    spawn(&sched, proc(f: ^Fiber) { wait_frames(f, 500) }, scope = &scope)
 
     // 3. Fiber in Waiting_Condition
     spawn(&sched, proc(f: ^Fiber, cond_ptr: ^bool) {
@@ -988,10 +988,10 @@ test_heterogeneous_scope_cancellation :: proc(t: ^testing.T) {
     }, &dummy_cond, scope = &scope)
 
     // 4. Fiber in Suspended_Join (sync)
-    spawn_nil(&sched, proc(f: ^Fiber) {
+    spawn(&sched, proc(f: ^Fiber) {
         sync(f,
-            branch_nil(proc(f: ^Fiber) { wait_frames(f, 100) }),
-            branch_nil(proc(f: ^Fiber) { wait_frames(f, 100) }),
+            branch(proc(f: ^Fiber) { wait_frames(f, 100) }),
+            branch(proc(f: ^Fiber) { wait_frames(f, 100) }),
         )
     }, scope = &scope)
 
@@ -1247,19 +1247,19 @@ test_fiber_mutex_contention :: proc(t: ^testing.T) {
     p2 := Payload{id = 2, mutex = &m, log = &execution_order}
 
     spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        fiber_mutex_lock(f, p.mutex)
+        mutex_lock(f, p.mutex)
         append(p.log, p.id) // Critical section start
         wait_frames(f, 3)
         append(p.log, p.id + 10) // Critical section end
-        fiber_mutex_unlock(f.sched, p.mutex)
+        mutex_unlock(f.sched, p.mutex)
     }, &p1)
 
     spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        fiber_mutex_lock(f, p.mutex)
+        mutex_lock(f, p.mutex)
         append(p.log, p.id)
         wait_frames(f, 1)
         append(p.log, p.id + 10)
-        fiber_mutex_unlock(f.sched, p.mutex)
+        mutex_unlock(f.sched, p.mutex)
     }, &p2)
 
     for _ in 0 ..< 10 {

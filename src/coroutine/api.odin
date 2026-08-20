@@ -8,7 +8,7 @@ import "core:math"
 // Spawning Coroutines
 // ============================================================================
 
-spawn :: proc(
+spawn_typed :: proc(
     sched: ^Scheduler,
     entry: proc(f: ^Fiber, data: ^$T),
     data: ^T,
@@ -62,6 +62,9 @@ spawn_nil :: proc(
     return fiber.handle
 }
 
+// Unified overloaded entry point
+spawn :: proc{spawn_typed, spawn_nil}
+
 // ============================================================================
 // Suspension & Waiting Primitives
 // ============================================================================
@@ -107,7 +110,7 @@ yield_frame :: proc(f: ^Fiber) {
     wait_frames(f, 1)
 }
 
-wait_until :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
+wait_until_typed :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     if f == nil || f.sched == nil do return
 
     // If condition is already met, return immediately
@@ -125,7 +128,7 @@ wait_until :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     context = f.stored_context
 }
 
-wait_cond :: proc(f: ^Fiber, condition: proc() -> bool) {
+wait_until_nil :: proc(f: ^Fiber, condition: proc() -> bool) {
     if f == nil || f.sched == nil do return
 
     if condition != nil && condition() {
@@ -148,11 +151,14 @@ wait_cond :: proc(f: ^Fiber, condition: proc() -> bool) {
     context = f.stored_context
 }
 
+// Unified overloaded entry point
+wait_until :: proc{wait_until_typed, wait_until_nil}
+
 // ============================================================================
 // Structured Concurrency: Branch, Sync, and Race
 // ============================================================================
 
-branch :: proc(
+branch_typed :: proc(
     entry: proc(f: ^Fiber, data: ^$T),
     data: ^T,
     name: string = "",
@@ -177,6 +183,9 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
         name       = name,
     }
 }
+
+// Unified overloaded entry point
+branch :: proc{branch_typed, branch_nil}
 
 sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
     if f == nil || f.sched == nil || len(branches) == 0 do return true
@@ -388,7 +397,7 @@ mutex_destroy :: proc(m: ^Fiber_Mutex) {
     delete(m.waiters)
 }
 
-fiber_mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
+mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
     if m == nil do return false
     if !m.locked {
         m.locked = true
@@ -397,7 +406,7 @@ fiber_mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
     return false
 }
 
-fiber_mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
+mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
     if f == nil || m == nil || f.sched == nil do return
 
     if !m.locked {
@@ -413,7 +422,7 @@ fiber_mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
     context = f.stored_context
 }
 
-fiber_mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
+mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     if sched == nil || m == nil do return
 
     if len(m.waiters) > 0 {

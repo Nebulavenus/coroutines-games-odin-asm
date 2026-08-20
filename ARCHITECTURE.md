@@ -838,13 +838,15 @@ Local variables live naturally on the fiber's stack and stay valid across yields
 Every coroutine can belong to a `Fiber_Scope` (e.g., embedded in an `Enemy` or `Player`). If the entity is destroyed, calling `scope_cancel` cancels all its active coroutines instantly.
 
 ```odin
-// Spawn a detached or scoped root fiber
-spawn :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber, data: ^$T), data: ^T, scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
-spawn_nil :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber), scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
+// Spawn a detached or scoped root fiber (unified proc group)
+spawn_typed :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber, data: ^$T), data: ^T, scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
+spawn_nil   :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber), scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
+spawn       :: proc{spawn_typed, spawn_nil}  // Call spawn(...) for both
 
 // Cancel a specific fiber or an entire entity's scope
 fiber_cancel :: proc(sched: ^Scheduler, handle: Fiber_Handle)
 scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope)
+scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope)  // sched is required
 ```
 
 ### B. Suspension & Timing Primitives
@@ -859,9 +861,10 @@ wait_ptr    :: proc(f: ^Fiber, seconds_ptr: ^f32)
 wait_frames :: proc(f: ^Fiber, frames: int)
 yield_frame :: proc(f: ^Fiber) // Equivalent to wait_frames(f, 1)
 
-// Predicate-based wait (polls condition every frame)
-wait_until  :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T)
-wait_cond   :: proc(f: ^Fiber, condition: proc() -> bool)
+// Predicate-based wait (unified proc group)
+wait_until_typed :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T)
+wait_until_nil   :: proc(f: ^Fiber, condition: proc() -> bool)
+wait_until       :: proc{wait_until_typed, wait_until_nil}  // Call wait_until(...) for both
 
 // Smooth interpolation over time (blocks until completed)
 tween       :: proc(f: ^Fiber, output: ^f32, start, target: f32, duration: f32, ease: Ease_Proc = nil)
@@ -875,9 +878,10 @@ tween       :: proc(f: ^Fiber, output: ^f32, start, target: f32, duration: f32, 
 `branch` packages an Odin procedure and its parameter into a branch descriptor. Because it is polymorphic, it provides **100% compile-time type safety** with no manual casts.
 
 ```odin
-// Creates a branch descriptor with strongly-typed payload
-branch :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "") -> Branch_Desc
-branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc
+// Creates a branch descriptor with strongly-typed payload (unified proc group)
+branch_typed :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "") -> Branch_Desc
+branch_nil   :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc
+branch       :: proc{branch_typed, branch_nil}  // Call branch(...) for both
 ```
 
 ### B. `sync` (Join All)

@@ -1,19 +1,25 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
-A high-performance, deterministic **stackful coroutine engine** in [Odin](https://odin-lang.org/) powered by native AMD64 inline assembly (`asm`), featuring **SkookumScript-inspired structured concurrency** (`sync`, `race`, `branch`), hierarchical scope cancellations, per-fiber isolated temporary allocators (`context.temp_allocator`), unopinionated async job bridges (`Async_Token` / `await_async`), pure CSP typed channels (`Channel(T)`), stateful pull generators (`Generator(T)`), multi-tiered stack safety (`Stack_Allocation_Mode` with OS `PAGE_GUARD`), event broadcast signals (`Signal`), cooperative fiber mutexes (`Fiber_Mutex`), timeout wrappers (`with_timeout`), an interactive 2D Boss Encounter demo, and an interactive **All-Features Showcase Game** with a live F1 visual tree debugger built with `vendor:raylib`.
+A high-performance, deterministic **stackful coroutine engine** for [Odin](https://odin-lang.org/), context switching with newly added inline assembly feature [`asm`](https://odin-lang.org/docs/inline-asm/).
+
+Write gameplay scripts as straight-line code — `wait`, `sync`, `race`, `branch`, `tween` — while the scheduler handles suspension, cancellation, and hierarchy behind the scenes. No callback spaghetti, no state machines, no OOP boilerplate.
+
+**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`branch`) · scoped lifecycle cancellation · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocatr`) · multi-tiered stack safety with OS `PAGE_GUARD` · built-in tweening
+
+Ships with two interactive **Raylib** demos: a 2D Boss Encounter and an All-Features Showcase with a live F1 fiber-tree debugger.
 
 ---
 
 ## Highlights
 
 - **Native AMD64 Inline Assembly Context Switching**: Fast register swap using call/ret trampoline patterns with full register preservation (Windows x64 GPRs + `xmm6`..`xmm15`; System V AMD64 GPRs), `#volatile` and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`), and strict 16-byte stack alignment.
-- **SkookumScript Structured Concurrency & Advanced Primitives**:
+- **Structured Concurrency & Advanced Primitives**:
   - `sync`: Spawns parallel branches and suspends the parent fiber until all branches complete.
   - `race`: Preemptive first-to-finish race that immediately and recursively aborts competing sibling subtrees.
   - `with_timeout`: Auto-cancelling task execution within time limits.
   - `Signal`: Zero-polling event broadcasting (`signal_wait`, `signal_emit`).
-  - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion queue (`fiber_mutex_lock`, `fiber_mutex_unlock`, `fiber_mutex_try_lock`).
-  - `branch` / `branch_nil`: Type-safe closures for branch definitions.
+  - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion queue (`mutex_lock`, `mutex_unlock`, `mutex_try_lock`).
+  - `branch :: proc{branch_typed, branch_nil}`: Unified type-safe branch descriptors.
 - **Unopinionated Async Job Bridge (`await_async` / `Async_Token`)**:
   - Lock-free, zero-allocation contract allowing main-thread fibers to suspend until *any* background thread pool marks work complete.
 - **Pure CSP Typed Channels (`Channel(T)`)**:
@@ -26,7 +32,7 @@ A high-performance, deterministic **stackful coroutine engine** in [Odin](https:
   - $O(1)$ Ready FIFO Queue.
   - $O(\log N)$ Binary Timer Min-Heap (`wait`) with cached index for instant removal on cancel.
   - Frame Wait Queue (`wait_frames`, `yield_frame`).
-  - Condition Watchlist (`wait_until`, `wait_cond`).
+  - Condition Watchlist (`wait_until :: proc{wait_until_typed, wait_until_nil}`).
 - **Multi-Tiered Stack Safety**:
   - Configurable `Stack_Allocation_Mode`:
     - `Standard_Slab`: 100% portable heap slabs with 64-byte `0xDEAD_BEEF_CAFE_BABE` canary watermark.
@@ -98,11 +104,11 @@ main :: proc() {
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
     // SYNC: Run two tasks in parallel; resumes parent only when BOTH finish
     coroutine.sync(f,
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
             coroutine.wait(f, 1.0)
             fmt.println("Task A completed")
         }),
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
             coroutine.wait(f, 2.0)
             fmt.println("Task B completed")
         }),
@@ -110,7 +116,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
 
     // WITH_TIMEOUT: Automatically aborts task if it exceeds 3.0 seconds
     timed_out := coroutine.with_timeout(f, 3.0,
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
             coroutine.wait(f, 1.5)
             fmt.println("Subtask finished within time limit")
         }),

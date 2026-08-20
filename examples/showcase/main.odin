@@ -207,7 +207,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.status_color = rl.YELLOW
 
     // with_timeout uses race internally: aborts if time exceeds 3.5s
-    timed_out := coroutine.with_timeout(f, 3.5, coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+    timed_out := coroutine.with_timeout(f, 3.5, coroutine.branch(proc(f: ^coroutine.Fiber) {
         st := &g_world.station_capture
         for st.progress < 1.0 {
             coroutine.yield_frame(f)
@@ -248,7 +248,7 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     coroutine.tween(f, &d.pos.y, d.pos.y, charger_pos.y, 0.6)
 
     // CRITICAL SECTION: Mutex lock (only 1 drone can enter pad at a time)
-    coroutine.fiber_mutex_lock(f, &st.mutex)
+    coroutine.mutex_lock(f, &st.mutex)
     d.is_charging = true
 
     // Move into pad center
@@ -262,7 +262,7 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     coroutine.tween(f, &d.pos.x, d.pos.x, charger_pos.x + 40.0, 0.3)
 
     d.is_charging = false
-    coroutine.fiber_mutex_unlock(f.sched, &st.mutex)
+    coroutine.mutex_unlock(f.sched, &st.mutex)
     // END CRITICAL SECTION
 
     // Return to home position
@@ -451,13 +451,13 @@ showcase_init :: proc(w: ^Showcase_World) {
 }
 
 showcase_destroy :: proc(w: ^Showcase_World) {
-    coroutine.scope_destroy(&w.player.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_ritual.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_capture.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_charger.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_beacon.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_lab.scope, &w.sched)
-    coroutine.scope_destroy(&w.station_channel.scope, &w.sched)
+    coroutine.scope_destroy(&w.sched, &w.player.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_ritual.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_capture.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_charger.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_beacon.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_lab.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_channel.scope)
 
     coroutine.mutex_destroy(&w.station_charger.mutex)
     coroutine.signal_destroy(&w.station_beacon.alarm_signal)

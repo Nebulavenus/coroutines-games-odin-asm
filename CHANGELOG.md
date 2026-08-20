@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Ergonomic API Refinement] - 2026-08-20
+
+### Changed
+- **Unified `spawn` proc group**: `spawn :: proc{spawn_typed, spawn_nil}` — eliminates `_nil` suffix; call `spawn(...)` for both typed and nil-payload variants.
+- **Unified `branch` proc group**: `branch :: proc{branch_typed, branch_nil}` — same unification for branch descriptors.
+- **Unified `wait_until` proc group**: `wait_until :: proc{wait_until_typed, wait_until_nil}` — replaces separate `wait_until`/`wait_cond` with single entry point.
+- **Mutex naming cleanup**: `fiber_mutex_lock` → `mutex_lock`, `fiber_mutex_unlock` → `mutex_unlock`, `fiber_mutex_try_lock` → `mutex_try_lock` (removes `fiber_` prefix stutter).
+- **`scope_destroy` safety**: Parameter order changed to `scope_destroy(sched: ^Scheduler, scope: ^Fiber_Scope)` — `sched` is now required and first, preventing use-after-free from missing scheduler.
+
+### Breaking Changes
+- `fiber_mutex_lock` / `fiber_mutex_unlock` / `fiber_mutex_try_lock` renamed to `mutex_lock` / `mutex_unlock` / `mutex_try_lock`.
+- `scope_destroy` parameter order flipped; `sched` is no longer optional.
+
 ## [Unreleased] - 2026-08-20
 
 ### Added
