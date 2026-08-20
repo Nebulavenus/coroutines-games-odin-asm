@@ -1,6 +1,7 @@
 package coroutine
 
 import "base:runtime"
+import "base:intrinsics"
 import "core:math"
 
 // ============================================================================
@@ -424,4 +425,238 @@ fiber_mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     } else {
         m.locked = false
     }
+}
+
+// ============================================================================
+// Async Job Integration (await_async / Async_Token)
+// ============================================================================
+
+async_token_init :: proc(token: ^Async_Token) {
+    token.state = .Pending
+    token.waiter_fiber = nil
+}
+
+async_token_complete :: proc(token: ^Async_Token, success := true) {
+    intrinsics.atomic_store(&token.state, success ? .Completed : .Failed)
+}
+
+await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
+    if f == nil || token == nil || f.sched == nil do return false
+
+    if intrinsics.atomic_load(&token.state) != .Pending {
+        return intrinsics.atomic_load(&token.state) == .Completed
+    }
+
+    token.waiter_fiber = f
+    f.status = .Waiting_Condition
+    f.condition_fn = proc(data: rawptr) -> bool {
+        tok := (^Async_Token)(data)
+        return intrinsics.atomic_load(&tok.state) != .Pending
+    }
+    f.condition_data = token
+    append(&f.sched.condition_waiters, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+
+    return intrinsics.atomic_load(&token.state) == .Completed
+}
+
+// ============================================================================
+// CSP Typed Channels (Channel(T))
+// ============================================================================
+
+chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allocator) {
+    ch.buffer = make([dynamic]T, allocator)
+    ch.capacity = max(0, capacity)
+    ch.send_waiters = make([dynamic]^Fiber, allocator)
+    ch.recv_waiters = make([dynamic]^Fiber, allocator)
+    ch.is_closed = false
+    ch.allocator = allocator
+}
+
+chan_destroy :: proc(ch: ^Channel($T)) {
+    delete(ch.buffer)
+    delete(ch.send_waiters)
+    delete(ch.recv_waiters)
+}
+
+chan_close :: proc(ch: ^Channel($T)) {
+    if ch.is_closed do return
+    ch.is_closed = true
+
+    for f in ch.recv_waiters {
+        if f.status == .Suspended_Join {
+            f.status = .Ready
+            append(&f.sched.ready_queue, f)
+        }
+    }
+    clear(&ch.recv_waiters)
+
+    for f in ch.send_waiters {
+        if f.status == .Suspended_Join {
+            f.status = .Ready
+            append(&f.sched.ready_queue, f)
+        }
+    }
+    clear(&ch.send_waiters)
+}
+
+chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
+    if ch.is_closed do return false
+
+    if ch.capacity > 0 && len(ch.buffer) >= ch.capacity {
+        return false
+    }
+
+    append(&ch.buffer, value)
+
+    if len(ch.recv_waiters) > 0 {
+        receiver := pop_front(&ch.recv_waiters)
+        if receiver.status == .Suspended_Join {
+            receiver.status = .Ready
+            append(&receiver.sched.ready_queue, receiver)
+        }
+    }
+    return true
+}
+
+chan_try_recv :: proc(ch: ^Channel($T)) -> (value: T, ok: bool) {
+    if len(ch.buffer) > 0 {
+        val := pop_front(&ch.buffer)
+        if len(ch.send_waiters) > 0 {
+            sender := pop_front(&ch.send_waiters)
+            if sender.status == .Suspended_Join {
+                sender.status = .Ready
+                append(&sender.sched.ready_queue, sender)
+            }
+        }
+        return val, true
+    }
+    return {}, false
+}
+
+chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
+    if f == nil || ch == nil || f.sched == nil do return false
+    if ch.is_closed do return false
+
+    for {
+        if ch.is_closed do return false
+
+        if ch.capacity == 0 {
+            if len(ch.recv_waiters) > 0 {
+                append(&ch.buffer, value)
+                receiver := pop_front(&ch.recv_waiters)
+                if receiver.status == .Suspended_Join {
+                    receiver.status = .Ready
+                    append(&receiver.sched.ready_queue, receiver)
+                }
+                return true
+            }
+        } else if len(ch.buffer) < ch.capacity {
+            append(&ch.buffer, value)
+            if len(ch.recv_waiters) > 0 {
+                receiver := pop_front(&ch.recv_waiters)
+                if receiver.status == .Suspended_Join {
+                    receiver.status = .Ready
+                    append(&receiver.sched.ready_queue, receiver)
+                }
+            }
+            return true
+        }
+
+        append(&ch.send_waiters, f)
+        f.status = .Suspended_Join
+        f.stored_context = context
+        fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+        context = f.stored_context
+    }
+}
+
+chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
+    if f == nil || ch == nil || f.sched == nil do return {}, false
+
+    for {
+        if len(ch.buffer) > 0 {
+            val := pop_front(&ch.buffer)
+            if len(ch.send_waiters) > 0 {
+                sender := pop_front(&ch.send_waiters)
+                if sender.status == .Suspended_Join {
+                    sender.status = .Ready
+                    append(&sender.sched.ready_queue, sender)
+                }
+            }
+            return val, true
+        }
+
+        if ch.is_closed {
+            return {}, false
+        }
+
+        append(&ch.recv_waiters, f)
+        f.status = .Suspended_Join
+        f.stored_context = context
+        fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+        context = f.stored_context
+    }
+}
+
+// ============================================================================
+// Stateful Pull-Based Generators (Generator(T))
+// ============================================================================
+
+generator_init :: proc(gen: ^Generator($T), entry: proc(f: ^Fiber, g: ^Generator(T)), user_data: rawptr = nil) {
+    scheduler_init(&gen.sched)
+    gen.current_value = {}
+    gen.has_value = false
+    gen.is_done = false
+    gen.entry = entry
+    gen.user_data = user_data
+
+    gen.handle = spawn(&gen.sched, proc(f: ^Fiber, g: ^Generator(T)) {
+        g.entry(f, g)
+        g.is_done = true
+    }, gen)
+}
+
+generator_destroy :: proc(gen: ^Generator($T)) {
+    scheduler_destroy(&gen.sched)
+    gen.handle = 0
+    gen.is_done = true
+}
+
+yield_value :: proc(f: ^Fiber, g: ^Generator($T), value: T) {
+    if f == nil || g == nil do return
+    g.current_value = value
+    g.has_value = true
+    f.status = .Suspended_Join // Suspended until consumer calls generator_next
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+generator_next :: proc(gen: ^Generator($T)) -> (val: T, ok: bool) {
+    if gen == nil || gen.is_done do return {}, false
+
+    gen.has_value = false
+
+    // Resume generator fiber by pushing to ready queue
+    for f in gen.sched.fiber_pool.all_fibers {
+        if f.handle == gen.handle && (f.status == .Suspended_Join || f.status == .Ready) {
+            f.status = .Ready
+            append(&gen.sched.ready_queue, f)
+            break
+        }
+    }
+
+    scheduler_step(&gen.sched, 0.0)
+
+    if gen.has_value {
+        return gen.current_value, true
+    }
+
+    gen.is_done = true
+    return {}, false
 }

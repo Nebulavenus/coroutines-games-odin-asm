@@ -11,13 +11,34 @@ scheduler_init :: proc(
     sched: ^Scheduler,
     stack_size: uint = DEFAULT_STACK_SIZE,
     stacks_per_slab: int = 32,
+    alloc_mode: Stack_Allocation_Mode = .Standard_Slab,
     allocator := context.allocator,
 ) {
     sched.ready_queue = make([dynamic]^Fiber, allocator)
     sched.timer_heap = make([dynamic]^Fiber, allocator)
     sched.frame_waiters = make([dynamic]^Fiber, allocator)
     sched.condition_waiters = make([dynamic]^Fiber, allocator)
-    fiber_pool_init(&sched.fiber_pool, stack_size, stacks_per_slab, allocator)
+    fiber_pool_init(&sched.fiber_pool, stack_size, stacks_per_slab, alloc_mode, allocator)
+
+    sched.current_time = 0.0
+    sched.current_frame = 0
+    sched.delta_time = 0.0
+    sched.time_scale = 1.0
+    sched.is_paused = false
+    sched.scheduler_sp = nil
+    sched.current_fiber = nil
+}
+
+scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
+    allocator := config.allocator
+    if allocator.procedure == nil {
+        allocator = context.allocator
+    }
+    sched.ready_queue = make([dynamic]^Fiber, allocator)
+    sched.timer_heap = make([dynamic]^Fiber, allocator)
+    sched.frame_waiters = make([dynamic]^Fiber, allocator)
+    sched.condition_waiters = make([dynamic]^Fiber, allocator)
+    fiber_pool_init_config(&sched.fiber_pool, config)
 
     sched.current_time = 0.0
     sched.current_frame = 0

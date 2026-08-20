@@ -2,6 +2,7 @@ package coroutine
 
 import "base:runtime"
 import "core:mem"
+import win32 "core:sys/windows"
 
 // ============================================================================
 // Stack & Fiber Pool Implementation
@@ -11,6 +12,7 @@ fiber_pool_init :: proc(
     pool: ^Fiber_Pool,
     stack_size: uint = DEFAULT_STACK_SIZE,
     stacks_per_slab: int = 32,
+    alloc_mode: Stack_Allocation_Mode = .Standard_Slab,
     allocator := context.allocator,
 ) {
     pool.stack_size = max(stack_size, 16 * 1024)
@@ -19,10 +21,25 @@ fiber_pool_init :: proc(
         pool.stack_size = (pool.stack_size + 15) & ~uint(15)
     }
     pool.stacks_per_slab = max(stacks_per_slab, 1)
+    pool.alloc_mode = alloc_mode
     pool.slabs = make([dynamic]rawptr, allocator)
     pool.free_fibers = make([dynamic]^Fiber, allocator)
     pool.all_fibers = make([dynamic]^Fiber, allocator)
     pool.next_handle_id = 1
+}
+
+fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
+    allocator := config.allocator
+    if allocator.procedure == nil {
+        allocator = context.allocator
+    }
+    fiber_pool_init(
+        pool,
+        config.stack_size == 0 ? DEFAULT_STACK_SIZE : config.stack_size,
+        config.stacks_per_slab == 0 ? 32 : config.stacks_per_slab,
+        config.alloc_mode,
+        allocator,
+    )
 }
 
 fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
@@ -32,8 +49,20 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     delete(pool.all_fibers)
     delete(pool.free_fibers)
 
-    for slab in pool.slabs {
-        mem.free(slab, allocator)
+    if pool.alloc_mode == .Virtual_Memory_OS {
+        when ODIN_OS == .Windows {
+            for slab in pool.slabs {
+                win32.VirtualFree(slab, 0, win32.MEM_RELEASE)
+            }
+        } else {
+            for slab in pool.slabs {
+                mem.free(slab, allocator)
+            }
+        }
+    } else {
+        for slab in pool.slabs {
+            mem.free(slab, allocator)
+        }
     }
     delete(pool.slabs)
 }
@@ -69,6 +98,37 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     slab_size := int(pool.stack_size) * pool.stacks_per_slab
+
+    if pool.alloc_mode == .Virtual_Memory_OS {
+        when ODIN_OS == .Windows {
+            slab := win32.VirtualAlloc(nil, uint(slab_size), win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+            if slab == nil {
+                panic("Failed to allocate virtual memory slab for fiber pool")
+            }
+            append(&pool.slabs, slab)
+
+            for i in 0 ..< pool.stacks_per_slab {
+                raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
+                // Protect lowest 4KB page as PAGE_GUARD
+                old_protect: win32.DWORD
+                win32.VirtualProtect(raw_base, 4096, win32.PAGE_GUARD | win32.PAGE_READWRITE, &old_protect)
+
+                fiber := new(Fiber, allocator)
+                fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
+                fiber.stack_size = pool.stack_size - 4096
+                fiber.status = .Unused
+                fiber.heap_index = -1
+                fiber_watermark_stack(fiber)
+                fiber_init_canary(fiber)
+
+                append(&pool.all_fibers, fiber)
+                append(&pool.free_fibers, fiber)
+            }
+            return
+        }
+    }
+
+    // Standard slab allocation fallback
     slab, err := mem.alloc(slab_size, 16, allocator)
     if err != nil || slab == nil {
         panic("Failed to allocate memory slab for fiber pool")

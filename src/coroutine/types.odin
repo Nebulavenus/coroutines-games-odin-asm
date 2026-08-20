@@ -113,7 +113,7 @@ Fiber :: struct {
 }
 
 // ============================================================================
-// Synchronization Primitives
+// Synchronization & Concurrency Primitives
 // ============================================================================
 
 Signal :: struct {
@@ -125,17 +125,66 @@ Fiber_Mutex :: struct {
     waiters: [dynamic]^Fiber,
 }
 
+// --- Async Job Bridge ---
+
+Async_State :: enum u8 {
+    Pending,
+    Completed,
+    Failed,
+}
+
+Async_Token :: struct {
+    state:        Async_State, // Read and stored atomically
+    waiter_fiber: ^Fiber,
+}
+
+// --- CSP Typed Channels ---
+
+Channel :: struct($T: typeid) {
+    buffer:       [dynamic]T,
+    capacity:     int,
+    send_waiters: [dynamic]^Fiber,
+    recv_waiters: [dynamic]^Fiber,
+    is_closed:    bool,
+    allocator:    mem.Allocator,
+}
+
+// --- Stateful Pull Generators ---
+
+Generator :: struct($T: typeid) {
+    sched:         Scheduler,
+    handle:        Fiber_Handle,
+    current_value: T,
+    has_value:     bool,
+    is_done:       bool,
+    entry:         proc(f: ^Fiber, g: ^Generator(T)),
+    user_data:     rawptr,
+}
+
 // ============================================================================
 // Fiber Pool
 // ============================================================================
 
-Fiber_Pool :: struct {
-    stack_size:     uint,
+Stack_Allocation_Mode :: enum u8 {
+    Standard_Slab,      // Standard mem.alloc (100% portable, works on all platforms)
+    Virtual_Memory_OS,  // OS-level pages with hardware PAGE_GUARD (Windows/Linux/macOS)
+}
+
+Fiber_Pool_Config :: struct {
+    stack_size:      uint,
     stacks_per_slab: int,
-    slabs:          [dynamic]rawptr,
-    free_fibers:    [dynamic]^Fiber,
-    all_fibers:     [dynamic]^Fiber,
-    next_handle_id: u32,
+    alloc_mode:      Stack_Allocation_Mode,
+    allocator:       mem.Allocator,
+}
+
+Fiber_Pool :: struct {
+    stack_size:      uint,
+    stacks_per_slab: int,
+    alloc_mode:      Stack_Allocation_Mode,
+    slabs:           [dynamic]rawptr,
+    free_fibers:     [dynamic]^Fiber,
+    all_fibers:      [dynamic]^Fiber,
+    next_handle_id:  u32,
 }
 
 // ============================================================================

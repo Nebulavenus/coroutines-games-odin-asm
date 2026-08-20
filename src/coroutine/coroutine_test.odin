@@ -1317,3 +1317,214 @@ test_stack_watermark_usage_calculation :: proc(t: ^testing.T) {
     testing.expect(t, used_recorded >= 240, fmt.tprintf("Expected >= 240 bytes used (initial frame + locals), got %v", used_recorded))
     testing.expect(t, used_recorded < 32 * 1024, "Used bytes must be less than 32KB")
 }
+
+// ============================================================================
+// Test 34: Async Token Bridge (External Worker Simulation)
+// ============================================================================
+
+@(test)
+test_async_token_bridge :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    token: Async_Token
+    async_token_init(&token)
+
+    State :: struct {
+        token:     ^Async_Token,
+        completed: bool,
+        success:   bool,
+    }
+    state := State{token = &token}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        s.success = await_async(f, s.token)
+        s.completed = true
+    }, &state)
+
+    // Step 1: Fiber starts and suspends because token is Pending
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, state.completed, false)
+
+    // Simulate background worker thread finishing work
+    async_token_complete(&token, true)
+
+    // Step 2: Scheduler evaluates condition, detects completion, and resumes fiber
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, state.completed, true)
+    testing.expect_value(t, state.success, true)
+}
+
+// ============================================================================
+// Test 35: CSP Unbuffered Channel Synchronous Rendezvous
+// ============================================================================
+
+@(test)
+test_channel_synchronous_rendezvous :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 0)
+    defer chan_destroy(&ch)
+
+    received_val := 0
+
+    Payload :: struct {
+        ch:  ^Channel(int),
+        out: ^int,
+    }
+    payload := Payload{ch = &ch, out = &received_val}
+
+    // Receiver fiber waits on channel
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        val, ok := chan_recv(f, p.ch)
+        if ok {
+            p.out^ = val
+        }
+    }, &payload)
+
+    // Sender fiber sends value
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        chan_send(f, p.ch, 777)
+    }, &payload)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, received_val, 777)
+}
+
+// ============================================================================
+// Test 36: CSP Buffered Channel FIFO Ordering
+// ============================================================================
+
+@(test)
+test_channel_buffered_fifo :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 3)
+    defer chan_destroy(&ch)
+
+    results: [dynamic]int
+    results = make([dynamic]int)
+    defer delete(results)
+
+    Payload :: struct {
+        ch:  ^Channel(int),
+        res: ^[dynamic]int,
+    }
+    p := Payload{ch = &ch, res = &results}
+
+    // Producer sends 3 items
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        chan_send(f, p.ch, 10)
+        chan_send(f, p.ch, 20)
+        chan_send(f, p.ch, 30)
+    }, &p)
+
+    // Consumer reads 3 items
+    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
+        for _ in 0 ..< 3 {
+            val, ok := chan_recv(f, p.ch)
+            if ok {
+                append(p.res, val)
+            }
+        }
+    }, &p)
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, len(results), 3)
+    testing.expect_value(t, results[0], 10)
+    testing.expect_value(t, results[1], 20)
+    testing.expect_value(t, results[2], 30)
+}
+
+// ============================================================================
+// Test 37: Channel Close and Drain Remaining Items
+// ============================================================================
+
+@(test)
+test_channel_close_and_drain :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(string)
+    chan_init(&ch, capacity = 2)
+    defer chan_destroy(&ch)
+
+    chan_try_send(&ch, "alpha")
+    chan_try_send(&ch, "beta")
+    chan_close(&ch)
+
+    // Cannot send to closed channel
+    testing.expect_value(t, chan_try_send(&ch, "gamma"), false)
+
+    // Can still drain buffered values
+    val1, ok1 := chan_try_recv(&ch)
+    testing.expect_value(t, ok1, true)
+    testing.expect_value(t, val1, "alpha")
+
+    val2, ok2 := chan_try_recv(&ch)
+    testing.expect_value(t, ok2, true)
+    testing.expect_value(t, val2, "beta")
+
+    // Empty and closed
+    _, ok3 := chan_try_recv(&ch)
+    testing.expect_value(t, ok3, false)
+}
+
+// ============================================================================
+// Test 38: Stateful Pull-Based Generator Sequence
+// ============================================================================
+
+@(test)
+test_generator_lazy_sequence :: proc(t: ^testing.T) {
+    gen: Generator(int)
+    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
+        a, b := 0, 1
+        for _ in 0 ..< 6 {
+            yield_value(f, g, a)
+            next := a + b
+            a = b
+            b = next
+        }
+    })
+    defer generator_destroy(&gen)
+
+    expected := [6]int{0, 1, 1, 2, 3, 5}
+    for i in 0 ..< 6 {
+        val, ok := generator_next(&gen)
+        testing.expect_value(t, ok, true)
+        testing.expect_value(t, val, expected[i])
+    }
+
+    // Sequence exhausted
+    _, ok_end := generator_next(&gen)
+    testing.expect_value(t, ok_end, false)
+}
+
+// ============================================================================
+// Test 39: Configurable Virtual Memory Guard Page Allocation
+// ============================================================================
+
+@(test)
+test_virtual_memory_guard_pages :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, alloc_mode = .Virtual_Memory_OS)
+    defer scheduler_destroy(&sched)
+
+    ran := false
+    spawn(&sched, proc(f: ^Fiber, r: ^bool) {
+        r^ = true
+        yield_frame(f)
+    }, &ran)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, ran, true)
+}

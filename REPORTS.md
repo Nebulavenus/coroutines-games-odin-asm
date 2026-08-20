@@ -11,9 +11,12 @@ This document records the comprehensive verification matrix, architectural analy
 | **Low-Level ASM Context Switch** | [`src/coroutine/asm_amd64.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/asm_amd64.odin) — Call/ret pattern with callee-saved GPRs + XMM6..15 register preservation and stack alignment | **PASS** |
 | **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#volatile`) to prevent LLVM SSA optimization/caching across context switches | **PASS** |
 | **Per-Fiber Isolated Temporary Allocator** | [`src/coroutine/types.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/types.odin) & [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin) — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation (`test_fiber_temp_allocator_isolation`) | **PASS** |
-| **Stack Synthesis & Trampoline** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin#L173) — Initial frame layout with `%r12` fiber passing and trampoline re-acquisition | **PASS** |
+| **Multi-Tiered Stack Safety & Guard Pages** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin) — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_GUARD` virtual memory (`test_virtual_memory_guard_pages`) | **PASS** |
 | **Stack Overflow Protection** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin#L68) — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation (`test_stack_canary_guard`) | **PASS** |
 | **Stack Watermarking & High-Water Usage** | [`src/coroutine/pool.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/pool.odin) — `0xAA` watermarked stacks and `fiber_calc_stack_usage` runtime profiler (`test_stack_watermark_usage_calculation`) | **PASS** |
+| **Unopinionated Async Job Bridge** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Zero-allocation lock-free `Async_Token` and `await_async` bridging background workers to main-thread fibers (`test_async_token_bridge`) | **PASS** |
+| **Pure CSP Typed Channels (`Channel(T)`)** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Unbuffered (rendezvous) & bounded FIFO queues (`chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_close`) (`test_channel_synchronous_rendezvous`, `test_channel_buffered_fifo`, `test_channel_close_and_drain`) | **PASS** |
+| **Stateful Pull Generators (`Generator(T)`)** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Lazy pull-based generator iteration (`yield_value`, `generator_next`) (`test_generator_lazy_sequence`) | **PASS** |
 | **Structured Concurrency: `sync`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L180) — Parallel join of $N$ branches, returns success/failure boolean (`test_structured_sync`, `test_sync_failure_propagation`) | **PASS** |
 | **Structured Concurrency: `race`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L214) — First-to-finish race, tie-breaking, and recursive descendant subtree abortion (`test_structured_race`, `test_race_all_simultaneous_finish`, `test_race_loser_with_children_aborts_all_descendants`) | **PASS** |
 | **Higher-Level Helper: `with_timeout`** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin) — Auto-cancelling task execution within time limits (`test_with_timeout_completion`, `test_with_timeout_expired`) | **PASS** |
@@ -34,11 +37,11 @@ This document records the comprehensive verification matrix, architectural analy
 
 ## 2. Test Suite Execution Results
 
-All 33 unit tests are executed via `build.ps1 test`:
+All 39 unit tests are executed via `build.ps1 test`:
 
 ```
 Testing coroutine package...
-Finished 33 tests in ~43.6ms. All tests were successful.
+Finished 39 tests in ~46.5ms. All tests were successful.
 ```
 
 ### Complete Test Catalog:
@@ -75,6 +78,12 @@ Finished 33 tests in ~43.6ms. All tests were successful.
 31. `test_signal_broadcast`: Verifies zero-polling `Signal` broadcasts wake all waiting coroutines simultaneously.
 32. `test_fiber_mutex_contention`: Verifies FIFO mutual exclusion across coroutines without thread locking.
 33. `test_stack_watermark_usage_calculation`: Verifies real-time stack consumption calculation via `0xAA` watermarking.
+34. `test_async_token_bridge`: Verifies atomic lock-free background job completion waking suspended main-thread fiber.
+35. `test_channel_synchronous_rendezvous`: Verifies zero-capacity unbuffered CSP channel rendezvous synchronization.
+36. `test_channel_buffered_fifo`: Verifies bounded channel FIFO ordering and blocking on full buffer.
+37. `test_channel_close_and_drain`: Verifies draining remaining buffered values after channel close and returning `ok == false` when empty.
+38. `test_generator_lazy_sequence`: Verifies zero-allocation stateful pull iterator (`Generator(T)`) yielding sequence elements on demand.
+39. `test_virtual_memory_guard_pages`: Verifies configurable `Virtual_Memory_OS` stack allocation and execution with hardware page protection.
 
 ---
 
@@ -90,15 +99,15 @@ All 10 combinations of optimization levels, microarchitecture baselines, and rel
 
 | # | Configuration Name | Optimization & Architecture Flags | Build / Test Time | Status |
 | :-: | :--- | :--- | :-: | :---: |
-| **1** | **Debug** | `-o:none -debug` | 1.39s | **PASS (33/33 tests)** |
-| **2** | **Minimal** | `-o:minimal` | 1.01s | **PASS (33/33 tests)** |
-| **3** | **Size** | `-o:size -use-single-module` | 5.21s | **PASS (33/33 tests)** |
-| **4** | **Speed** | `-o:speed -use-single-module` | 6.10s | **PASS (33/33 tests)** |
-| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.60s | **PASS (33/33 tests)** |
-| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 5.50s | **PASS (33/33 tests)** |
-| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 5.45s | **PASS (33/33 tests)** |
-| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 5.42s | **PASS (33/33 tests)** |
-| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 5.61s | **PASS (33/33 tests)** |
-| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.68s | **PASS (`build/game_release.exe`)** |
+| **1** | **Debug** | `-o:none -debug` | 1.26s | **PASS (39/39 tests)** |
+| **2** | **Minimal** | `-o:minimal` | 1.04s | **PASS (39/39 tests)** |
+| **3** | **Size** | `-o:size -use-single-module` | 5.55s | **PASS (39/39 tests)** |
+| **4** | **Speed** | `-o:speed -use-single-module` | 6.40s | **PASS (39/39 tests)** |
+| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.46s | **PASS (39/39 tests)** |
+| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 5.77s | **PASS (39/39 tests)** |
+| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 5.57s | **PASS (39/39 tests)** |
+| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 5.32s | **PASS (39/39 tests)** |
+| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 5.74s | **PASS (39/39 tests)** |
+| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.89s | **PASS (`build/game_release.exe`)** |
 
 **Conclusion:** The coroutine engine and inline assembly context switcher are completely immune to LLVM optimization transformations, SIMD extensions, and target architecture variations.

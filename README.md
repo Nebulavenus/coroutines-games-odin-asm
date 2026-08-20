@@ -1,19 +1,25 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
-A high-performance, deterministic **stackful coroutine engine** in [Odin](https://odin-lang.org/) powered by native AMD64 inline assembly (`asm`), featuring **SkookumScript-inspired structured concurrency** (`sync`, `race`, `branch`), hierarchical scope cancellations, per-fiber isolated temporary allocators (`context.temp_allocator`), event broadcast signals (`Signal`), cooperative fiber mutexes (`Fiber_Mutex`), timeout wrappers (`with_timeout`), stack watermarking telemetry, and an interactive 2D Boss Encounter demo with a live F1 visual tree debugger built with `vendor:raylib`.
+A high-performance, deterministic **stackful coroutine engine** in [Odin](https://odin-lang.org/) powered by native AMD64 inline assembly (`asm`), featuring **SkookumScript-inspired structured concurrency** (`sync`, `race`, `branch`), hierarchical scope cancellations, per-fiber isolated temporary allocators (`context.temp_allocator`), unopinionated async job bridges (`Async_Token` / `await_async`), pure CSP typed channels (`Channel(T)`), stateful pull generators (`Generator(T)`), multi-tiered stack safety (`Stack_Allocation_Mode` with OS `PAGE_GUARD`), event broadcast signals (`Signal`), cooperative fiber mutexes (`Fiber_Mutex`), timeout wrappers (`with_timeout`), and an interactive 2D Boss Encounter demo with a live F1 visual tree debugger built with `vendor:raylib`.
 
 ---
 
 ## Highlights
 
 - **Native AMD64 Inline Assembly Context Switching**: Fast register swap using call/ret trampoline patterns with full register preservation (Windows x64 GPRs + `xmm6`..`xmm15`; System V AMD64 GPRs), `#volatile` and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`), and strict 16-byte stack alignment.
-- **SkookumScript Structured Concurrency & Higher-Level Primitives**:
+- **SkookumScript Structured Concurrency & Advanced Primitives**:
   - `sync`: Spawns parallel branches and suspends the parent fiber until all branches complete.
   - `race`: Preemptive first-to-finish race that immediately and recursively aborts competing sibling subtrees.
   - `with_timeout`: Auto-cancelling task execution within time limits.
   - `Signal`: Zero-polling event broadcasting (`signal_wait`, `signal_emit`).
   - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion queue (`fiber_mutex_lock`, `fiber_mutex_unlock`, `fiber_mutex_try_lock`).
   - `branch` / `branch_nil`: Type-safe closures for branch definitions.
+- **Unopinionated Async Job Bridge (`await_async` / `Async_Token`)**:
+  - Lock-free, zero-allocation contract allowing main-thread fibers to suspend until *any* background thread pool marks work complete.
+- **Pure CSP Typed Channels (`Channel(T)`)**:
+  - Synchronous unbuffered rendezvous (capacity 0) and bounded FIFO buffered queues (`chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_close`).
+- **Stateful Pull Generators (`Generator(T)`)**:
+  - Zero-allocation pull-based lazy sequence generators for procedural generation, loot rolling, and graph iteration (`yield_value`, `generator_next`).
 - **Isolated Per-Fiber Temporary Allocator**:
   - Embedded 4KB `mem.Arena` in each `Fiber` assigned to `context.temp_allocator`, guaranteeing allocations survive across yield points without cross-coroutine contamination.
 - **Deterministic 5-Stage Scheduler**:
@@ -21,10 +27,11 @@ A high-performance, deterministic **stackful coroutine engine** in [Odin](https:
   - $O(\log N)$ Binary Timer Min-Heap (`wait`) with cached index for instant removal on cancel.
   - Frame Wait Queue (`wait_frames`, `yield_frame`).
   - Condition Watchlist (`wait_until`, `wait_cond`).
-- **Memory & Stack Diagnostics**:
-  - Slab-allocated fiber pool with automatic growth and instant stack recycling.
-  - 64-byte stack canary watermark (`0xDEAD_BEEF_CAFE_BABE`) with overflow detection.
-  - `0xAA` stack watermarking and high-water usage profiling (`fiber_calc_stack_usage`).
+- **Multi-Tiered Stack Safety**:
+  - Configurable `Stack_Allocation_Mode`:
+    - `Standard_Slab`: 100% portable heap slabs with 64-byte `0xDEAD_BEEF_CAFE_BABE` canary watermark.
+    - `Virtual_Memory_OS`: OS-level virtual memory allocation with hardware `PAGE_GUARD` trapping.
+  - `0xAA` stack watermarking and real-time high-water usage profiling (`fiber_calc_stack_usage`).
 - **Hierarchical Cancellations**:
   - `scope_cancel` / `scope_destroy`: Cleanly cancels and unwinds all coroutines attached to an entity scope.
   - `fiber_cancel`: Cancels an individual fiber and all its descendant children bottom-up.
@@ -76,55 +83,56 @@ main :: proc() {
 }
 ```
 
-### 2. Structured Concurrency (`sync`, `race` & `with_timeout`)
+### 2. Async Job Integration (`await_async`)
 
 ```odin
-coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
-    // SYNC: Run two tasks in parallel; resumes parent only when BOTH finish
-    coroutine.sync(f,
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
-            coroutine.wait(f, 1.0)
-            fmt.println("Task A completed")
-        }),
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
-            coroutine.wait(f, 2.0)
-            fmt.println("Task B completed")
-        }),
-    )
-
-    // WITH_TIMEOUT: Automatically aborts task if it exceeds 3.0 seconds
-    timed_out := coroutine.with_timeout(f, 3.0,
-        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
-            coroutine.wait(f, 1.5)
-            fmt.println("Subtask finished within time limit")
-        }),
-    )
-    fmt.println("Timed out:", timed_out)
-})
+// Background worker signals token when compute finishes
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, token: ^coroutine.Async_Token) {
+    fmt.println("Dispatching background work...")
+    
+    // Fiber suspends; main thread remains at 144 FPS
+    if coroutine.await_async(f, token) {
+        fmt.println("Background work completed successfully!")
+    }
+}, &token)
 ```
 
-### 3. Signals & Fiber Mutex
+### 3. CSP Typed Channels (`Channel(T)`)
 
 ```odin
-sig: coroutine.Signal
-coroutine.signal_init(&sig)
+ch: coroutine.Channel(string)
+coroutine.chan_init(&ch, capacity = 2)
+defer coroutine.chan_destroy(&ch)
 
-mutex: coroutine.Fiber_Mutex
-coroutine.mutex_init(&mutex)
+// Sender fiber
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(string)) {
+    coroutine.chan_send(f, ch, "Hello from Fiber A")
+}, &ch)
 
-// Wait for event broadcast
-coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^coroutine.Signal) {
-    coroutine.signal_wait(f, s)
-    fmt.println("Signal received!")
-}, &sig)
+// Receiver fiber
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(string)) {
+    msg, ok := coroutine.chan_recv(f, ch)
+    if ok do fmt.println("Received:", msg)
+}, &ch)
+```
 
-// Mutual exclusion across fibers
-coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
-    coroutine.fiber_mutex_lock(f, m)
-    // Critical Section...
-    coroutine.wait_frames(f, 2)
-    coroutine.fiber_mutex_unlock(f.sched, m)
-}, &mutex)
+### 4. Stateful Pull Generators (`Generator(T)`)
+
+```odin
+gen: coroutine.Generator(int)
+coroutine.generator_init(&gen, proc(f: ^coroutine.Fiber, g: ^coroutine.Generator(int)) {
+    a, b := 0, 1
+    for {
+        coroutine.yield_value(f, g, a)
+        a, b = b, a + b
+    }
+})
+defer coroutine.generator_destroy(&gen)
+
+for _ in 0 ..< 5 {
+    val, ok := coroutine.generator_next(&gen)
+    fmt.println("Fib:", val) // 0, 1, 1, 2, 3
+}
 ```
 
 ---
@@ -136,15 +144,16 @@ coroutines_asm/
 ├── src/
 │   ├── coroutine/              # Core Stackful Coroutine Engine
 │   │   ├── asm_amd64.odin      # AMD64 inline assembly context switcher
-│   │   ├── types.odin          # Fiber, Scheduler, Signal, Mutex, and Coordinator definitions
-│   │   ├── pool.odin           # Slab allocator, canary watermark & temp arena
+│   │   ├── types.odin          # Fiber, Scheduler, Async_Token, Channel, Generator
+│   │   ├── pool.odin           # Slab allocator, canary watermark & VirtualAlloc
 │   │   ├── scheduler.odin      # 5-stage scheduler & timer min-heap
-│   │   ├── api.odin            # spawn, wait, sync, race, with_timeout, signals, mutex, tween
-│   │   └── coroutine_test.odin # 33 unit tests & stress validations
+│   │   ├── api.odin            # spawn, wait, sync, race, with_timeout, channels, generators
+│   │   └── coroutine_test.odin # 39 unit tests & stress validations
 │   └── main.odin               # Raylib 2D Boss Encounter game + F1 Tree Debugger
 ├── build.ps1                   # Build, test, matrix, and debug script
 ├── ARCHITECTURE.md             # Detailed engine architectural specification
 ├── PLAN.md                     # Advanced gameplay concurrency roadmap
+├── PLAN2.md                    # Foundational engine-agnostic library pillars
 ├── REPORTS.md                  # Comprehensive verification & LLVM matrix report
 ├── CHANGELOG.md                # Project version history
 └── README.md                   # Project overview & documentation
@@ -168,7 +177,7 @@ A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_
 ```
 *Outputs `build/game_release.exe` with `-o:speed -microarch:native -no-bounds-check -disable-assert`.*
 
-### Run All 33 Unit Tests
+### Run All 39 Unit Tests
 ```powershell
 .\build.ps1 test
 ```
@@ -191,15 +200,15 @@ The engine is validated against a 10-configuration build matrix across all optim
 
 | # | Configuration Name | Optimization & Architecture Flags | Tests | Status |
 | :-: | :--- | :--- | :-: | :-: |
-| **1** | **Debug** | `-o:none -debug` | 33 / 33 | **PASS** |
-| **2** | **Minimal (Default)** | `-o:minimal` | 33 / 33 | **PASS** |
-| **3** | **Size** | `-o:size -use-single-module` | 33 / 33 | **PASS** |
-| **4** | **Speed** | `-o:speed -use-single-module` | 33 / 33 | **PASS** |
-| **5** | **Aggressive LLVM** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 33 / 33 | **PASS** |
-| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 33 / 33 | **PASS** |
-| **7** | **Arch x86-64-v2 (Baseline)**| `-o:speed -microarch:x86-64-v2 -use-single-module` | 33 / 33 | **PASS** |
-| **8** | **Arch x86-64-v3 (AVX2/FMA)**| `-o:speed -microarch:x86-64-v3 -use-single-module` | 33 / 33 | **PASS** |
-| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 33 / 33 | **PASS** |
+| **1** | **Debug** | `-o:none -debug` | 39 / 39 | **PASS** |
+| **2** | **Minimal (Default)** | `-o:minimal` | 39 / 39 | **PASS** |
+| **3** | **Size** | `-o:size -use-single-module` | 39 / 39 | **PASS** |
+| **4** | **Speed** | `-o:speed -use-single-module` | 39 / 39 | **PASS** |
+| **5** | **Aggressive LLVM** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 39 / 39 | **PASS** |
+| **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 39 / 39 | **PASS** |
+| **7** | **Arch x86-64-v2 (Baseline)**| `-o:speed -microarch:x86-64-v2 -use-single-module` | 39 / 39 | **PASS** |
+| **8** | **Arch x86-64-v3 (AVX2/FMA)**| `-o:speed -microarch:x86-64-v3 -use-single-module` | 39 / 39 | **PASS** |
+| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 39 / 39 | **PASS** |
 | **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | Binary | **PASS** |
 
 See [`REPORTS.md`](file:///E:/OdinLang/Projects/coroutines_asm/REPORTS.md) for full benchmark and test breakdown.
