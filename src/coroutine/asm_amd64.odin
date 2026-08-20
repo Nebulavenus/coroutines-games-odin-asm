@@ -15,8 +15,16 @@ when ODIN_ARCH == .amd64 {
         fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
             from_rsp = %rcx,
             to_rsp   = %rdx,
+            #volatile,
             #clobber flags,
             #clobber memory,
+            #clobber %rax,
+            #clobber %rcx,
+            #clobber %rdx,
+            #clobber %r8,
+            #clobber %r9,
+            #clobber %r10,
+            #clobber %r11,
         ] {
             call .switch_body
             jmp .switch_done
@@ -84,8 +92,18 @@ when ODIN_ARCH == .amd64 {
         fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
             from_rsp = %rdi,
             to_rsp   = %rsi,
+            #volatile,
             #clobber flags,
             #clobber memory,
+            #clobber %rax,
+            #clobber %rcx,
+            #clobber %rdx,
+            #clobber %rsi,
+            #clobber %rdi,
+            #clobber %r8,
+            #clobber %r9,
+            #clobber %r10,
+            #clobber %r11,
         ] {
             call .switch_body
             jmp .switch_done

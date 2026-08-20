@@ -1,6 +1,7 @@
 package coroutine
 
 import "base:runtime"
+import "base:intrinsics"
 
 // ============================================================================
 // Scheduler Lifecycle
@@ -246,8 +247,9 @@ scheduler_step :: proc(sched: ^Scheduler, dt: f32) {
 
         sched.current_fiber = nil
 
-        // Post-execution check
-        if f.status == .Completed || f.status == .Failed || f.status == .Aborted {
+        // Post-execution check: reload status with volatile semantics to prevent compiler SSA caching across ASM switch
+        status := intrinsics.volatile_load(&f.status)
+        if status == .Completed || status == .Failed || status == .Aborted {
             fiber_cleanup_and_recycle(sched, f)
         }
     }
@@ -300,6 +302,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 }
 
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
+    // fmt.println("DEBUG: cleanup_and_recycle fiber status =", fiber.status)
     // 1. Run cleanup procedure if registered
     if fiber.cleanup_proc != nil {
         fiber.cleanup_proc(fiber.user_data)

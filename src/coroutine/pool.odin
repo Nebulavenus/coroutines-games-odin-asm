@@ -245,6 +245,14 @@ fiber_trampoline_entry :: proc "c" () {
         fiber.entry_proc(fiber, fiber.user_data)
     }
 
+    when ODIN_ARCH == .amd64 {
+        #no_bounds_check {
+            fiber = (^Fiber)(get_r12_reg())
+        }
+    }
+
+    if fiber == nil do return
+
     // 3. Mark completed if not already aborted / failed
     if fiber.status == .Running {
         fiber.status = .Completed
