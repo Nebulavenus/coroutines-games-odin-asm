@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] - 2026-08-20
 
 ### Added
+- **Interactive All-Features Showcase Application (`examples/showcase/main.odin`)**:
+  - Dedicated interactive game arena visualizing all 12 engine features across 7 distinct interactive stations:
+    - **Station 1 (The Ritual Circle):** `sync` parallel join of 3 charging runes.
+    - **Station 2 (The Capture Contest):** `race` and `with_timeout` countdown contest.
+    - **Station 3 (The Energy Charger):** `Fiber_Mutex` queuing 4 AI worker drones into a single charging pad.
+    - **Station 4 (The Alert Beacon):** `Signal` broadcast waking 6 sleeping sentries simultaneously.
+    - **Station 5 (The Loot Forge):** `Generator(T)` procedural on-demand item rolling.
+    - **Station 6 (The Async Research Lab):** `Async_Token` & `await_async` bridging OS background worker threads.
+    - **Station 7 (The Telemetry Feed & Tree Inspector):** CSP `Channel(T)` log stream + `F1` real-time tree and stack watermarking visualizer.
+  - Added `showcase` and `run-showcase` targets in `build.ps1`.
 - **Native Stackful Coroutine Engine (`coroutine` package)**:
   - Low-level inline assembly context switch for AMD64 architecture (`asm_amd64.odin`) supporting Windows x64 ABI (GPRs + XMM6..XMM15) and System V AMD64 ABI.
   - Call/ret switch mechanism preserving frame alignment, register invariants, `#volatile` constraints, and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`).
@@ -32,7 +42,7 @@ All notable changes to this project will be documented in this file.
     - `scope_cancel` / `fiber_cancel`: Hierarchical subtree cancellation with zero dangling child tasks.
     - `tween`: Smooth interpolation with customizable easing functions (`ease_linear`, `ease_in_quad`, `ease_out_quad`, `ease_in_out_quad`, `ease_in_out_cubic`).
   - Exhaustive 39-test unit suite (`coroutine_test.odin`) covering 4-tier deep hierarchies (`sync`/`race`), 1000-timer min-heap stress, random mid-sleep cancellations, multi-slab expansion (15+ slabs), 10-generation pool reuse, stack isolation across 50 fibers, heterogeneous scope cancellation, temporary allocator isolation across yields, timeouts, signals, mutexes, async job bridges, CSP channels, stateful generators, stack watermark telemetry, and virtual memory guard pages.
-- **Interactive Raylib Game (`src/main.odin`)**:
+- **Interactive Raylib Boss Fight Game (`src/main.odin`)**:
   - Full graphical boss encounter rendered via `vendor:raylib`.
   - Boss AI running 3 multi-phase timelines using `race`, `sync`, and `tween`.
   - Player dash ability, camera shake, and floating damage numbers powered by dedicated coroutines.

@@ -30,7 +30,8 @@ This document records the comprehensive verification matrix, architectural analy
 | **Value Interpolation & Easing** | [`src/coroutine/api.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/coroutine/api.odin#L286) — `tween` with linear, quad, and cubic easing curves (`test_tween_interpolation`) | **PASS** |
 | **Pool Slab Expansion & Reclaim** | Multi-slab growth (120+ fibers across 15 slabs), stack recycling, and zero memory leaks (`test_pool_multi_slab_expansion_and_reclaim`, `test_fiber_lifecycle_generation_reuse`) | **PASS** |
 | **Boundary Safety & 10k Loops** | Zero/negative duration waits and 10,000-yield loops (`test_zero_and_negative_waits`, `test_10k_yield_loop`) | **PASS** |
-| **Live F1 / TAB Coroutine Tree Debugger** | [`src/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/main.odin) — Real-time visual overlay rendering the active fiber hierarchy tree, remaining timers, and stack byte telemetry | **PASS** |
+| **Live F1 / TAB Coroutine Tree Debugger** | [`src/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/main.odin) & [`examples/showcase/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/examples/showcase/main.odin) — Real-time visual overlay rendering active fiber tree, statuses, timers, and stack telemetry | **PASS** |
+| **Interactive Feature Showcase Game** | [`examples/showcase/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/examples/showcase/main.odin) — 7 interactive stations demonstrating `sync`, `race`, `with_timeout`, `Fiber_Mutex`, `Signal`, `Channel(T)`, `Generator(T)`, and `await_async` | **PASS** |
 | **Full Boss Encounter Demo Game** | [`src/main.odin`](file:///E:/OdinLang/Projects/coroutines_asm/src/main.odin) — Raylib 2D game with multi-phase Boss AI timeline, racing triggers, combat `sync`, `tween` movement, and tracking allocator (0 memory leaks) | **PASS** |
 
 ---
@@ -89,7 +90,7 @@ Finished 39 tests in ~46.5ms. All tests were successful.
 
 ## 3. LLVM Optimization & Architecture Matrix Validation
 
-All 10 combinations of optimization levels, microarchitecture baselines, and release codegen flags were executed via `.\build.ps1 matrix`:
+All 11 combinations of optimization levels, microarchitecture baselines, release codegen flags, and showcase binaries were executed via `.\build.ps1 matrix`:
 
 ```powershell
 .\build.ps1 matrix
@@ -98,16 +99,17 @@ All 10 combinations of optimization levels, microarchitecture baselines, and rel
 ### Matrix Validation Summary:
 
 | # | Configuration Name | Optimization & Architecture Flags | Build / Test Time | Status |
-| :-: | :--- | :--- | :-: | :---: |
-| **1** | **Debug** | `-o:none -debug` | 1.26s | **PASS (39/39 tests)** |
-| **2** | **Minimal** | `-o:minimal` | 1.04s | **PASS (39/39 tests)** |
-| **3** | **Size** | `-o:size -use-single-module` | 5.55s | **PASS (39/39 tests)** |
-| **4** | **Speed** | `-o:speed -use-single-module` | 6.40s | **PASS (39/39 tests)** |
-| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.46s | **PASS (39/39 tests)** |
+| :-: | :--- | :--- | :-: | :-: |
+| **1** | **Debug** | `-o:none -debug` | 1.53s | **PASS (39/39 tests)** |
+| **2** | **Minimal** | `-o:minimal` | 1.15s | **PASS (39/39 tests)** |
+| **3** | **Size** | `-o:size -use-single-module` | 5.51s | **PASS (39/39 tests)** |
+| **4** | **Speed** | `-o:speed -use-single-module` | 6.54s | **PASS (39/39 tests)** |
+| **5** | **Aggressive** | `-o:aggressive -use-single-module -no-bounds-check -disable-assert` | 5.81s | **PASS (39/39 tests)** |
 | **6** | **Arch x86-64 (v1 Legacy)** | `-o:speed -microarch:x86-64 -use-single-module` | 5.77s | **PASS (39/39 tests)** |
-| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 5.57s | **PASS (39/39 tests)** |
-| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 5.32s | **PASS (39/39 tests)** |
-| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 5.74s | **PASS (39/39 tests)** |
-| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.89s | **PASS (`build/game_release.exe`)** |
+| **7** | **Arch x86-64-v2 (Baseline)** | `-o:speed -microarch:x86-64-v2 -use-single-module` | 6.67s | **PASS (39/39 tests)** |
+| **8** | **Arch x86-64-v3 (AVX2/FMA)** | `-o:speed -microarch:x86-64-v3 -use-single-module` | 6.27s | **PASS (39/39 tests)** |
+| **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 6.37s | **PASS (39/39 tests)** |
+| **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.85s | **PASS (`build/game_release.exe`)** |
+| **11** | **Showcase Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | 3.83s | **PASS (`build/showcase.exe`)** |
 
 **Conclusion:** The coroutine engine and inline assembly context switcher are completely immune to LLVM optimization transformations, SIMD extensions, and target architecture variations.

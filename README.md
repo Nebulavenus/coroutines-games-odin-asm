@@ -1,6 +1,6 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
-A high-performance, deterministic **stackful coroutine engine** in [Odin](https://odin-lang.org/) powered by native AMD64 inline assembly (`asm`), featuring **SkookumScript-inspired structured concurrency** (`sync`, `race`, `branch`), hierarchical scope cancellations, per-fiber isolated temporary allocators (`context.temp_allocator`), unopinionated async job bridges (`Async_Token` / `await_async`), pure CSP typed channels (`Channel(T)`), stateful pull generators (`Generator(T)`), multi-tiered stack safety (`Stack_Allocation_Mode` with OS `PAGE_GUARD`), event broadcast signals (`Signal`), cooperative fiber mutexes (`Fiber_Mutex`), timeout wrappers (`with_timeout`), and an interactive 2D Boss Encounter demo with a live F1 visual tree debugger built with `vendor:raylib`.
+A high-performance, deterministic **stackful coroutine engine** in [Odin](https://odin-lang.org/) powered by native AMD64 inline assembly (`asm`), featuring **SkookumScript-inspired structured concurrency** (`sync`, `race`, `branch`), hierarchical scope cancellations, per-fiber isolated temporary allocators (`context.temp_allocator`), unopinionated async job bridges (`Async_Token` / `await_async`), pure CSP typed channels (`Channel(T)`), stateful pull generators (`Generator(T)`), multi-tiered stack safety (`Stack_Allocation_Mode` with OS `PAGE_GUARD`), event broadcast signals (`Signal`), cooperative fiber mutexes (`Fiber_Mutex`), timeout wrappers (`with_timeout`), an interactive 2D Boss Encounter demo, and an interactive **All-Features Showcase Game** with a live F1 visual tree debugger built with `vendor:raylib`.
 
 ---
 
@@ -41,18 +41,27 @@ A high-performance, deterministic **stackful coroutine engine** in [Odin](https:
 
 ---
 
-## Interactive 2D Boss Encounter Demo
+## Interactive Games & Examples
 
-The repository includes a complete 2D Boss Fight demo rendered in `vendor:raylib` visualizing coroutine execution:
+### 1. Feature Showcase Game (`examples/showcase`)
+A dedicated interactive sandbox game demonstrating all 12 engine features across 7 gameplay stations:
+- **Station 1 (The Ritual Circle):** `sync` parallel join of 3 charging runes.
+- **Station 2 (The Capture Contest):** `race` and `with_timeout` countdown contest.
+- **Station 3 (The Energy Charger):** `Fiber_Mutex` queuing 4 AI worker drones into a single charging pad.
+- **Station 4 (The Alert Beacon):** `Signal` broadcast waking 6 sleeping sentries simultaneously.
+- **Station 5 (The Loot Forge):** `Generator(T)` procedural on-demand item rolling.
+- **Station 6 (The Async Research Lab):** `Async_Token` & `await_async` bridging OS background worker threads.
+- **Station 7 (The Telemetry Feed & Tree Inspector):** CSP `Channel(T)` log stream + `F1` real-time tree and stack watermarking visualizer.
+
+### 2. 2D Boss Encounter Demo (`src/main.odin`)
 - **Boss AI Timeline**: Multi-phase behavior running combat `race` triggers, laser charges, and radial bullet barrages.
 - **Player Dash Ability**: Invulnerability frames and motion tweens running as concurrent fibers.
-- **Live F1 / TAB Hierarchy Tree Debugger**: Real-time visual overlay displaying the active fiber tree hierarchy, remaining sleep timers, and per-fiber stack usage percentages `[Used: 2.1 KB / 32 KB] (6.5%)`.
+- **Live F1 / TAB Hierarchy Tree Debugger**: Real-time visual overlay displaying the active fiber tree hierarchy, remaining sleep timers, and per-fiber stack usage percentages.
 - **Dynamic Camera Shake & Damage Floaters**: Visual coroutines self-animating and freeing themselves on completion.
-- **Live Diagnostics HUD**: Real-time visualization of active fibers, ready queue sizes, frame waiters, and boss HP.
 
 ---
 
-## Quickstart & Examples
+## Quickstart & Code Examples
 
 ### 1. Minimal Coroutine & Temp Allocator
 
@@ -83,7 +92,34 @@ main :: proc() {
 }
 ```
 
-### 2. Async Job Integration (`await_async`)
+### 2. Structured Concurrency (`sync`, `race` & `with_timeout`)
+
+```odin
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+    // SYNC: Run two tasks in parallel; resumes parent only when BOTH finish
+    coroutine.sync(f,
+        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 1.0)
+            fmt.println("Task A completed")
+        }),
+        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 2.0)
+            fmt.println("Task B completed")
+        }),
+    )
+
+    // WITH_TIMEOUT: Automatically aborts task if it exceeds 3.0 seconds
+    timed_out := coroutine.with_timeout(f, 3.0,
+        coroutine.branch_nil(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 1.5)
+            fmt.println("Subtask finished within time limit")
+        }),
+    )
+    fmt.println("Timed out:", timed_out)
+})
+```
+
+### 3. Async Job Bridge (`await_async`)
 
 ```odin
 // Background worker signals token when compute finishes
@@ -97,7 +133,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, token: ^coroutine.Async_Token)
 }, &token)
 ```
 
-### 3. CSP Typed Channels (`Channel(T)`)
+### 4. CSP Typed Channels (`Channel(T)`)
 
 ```odin
 ch: coroutine.Channel(string)
@@ -116,7 +152,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(string)
 }, &ch)
 ```
 
-### 4. Stateful Pull Generators (`Generator(T)`)
+### 5. Stateful Pull Generators (`Generator(T)`)
 
 ```odin
 gen: coroutine.Generator(int)
@@ -150,6 +186,9 @@ coroutines_asm/
 │   │   ├── api.odin            # spawn, wait, sync, race, with_timeout, channels, generators
 │   │   └── coroutine_test.odin # 39 unit tests & stress validations
 │   └── main.odin               # Raylib 2D Boss Encounter game + F1 Tree Debugger
+├── examples/
+│   └── showcase/
+│       └── main.odin           # Interactive All-Features Showcase Game (7 stations)
 ├── build.ps1                   # Build, test, matrix, and debug script
 ├── ARCHITECTURE.md             # Detailed engine architectural specification
 ├── PLAN.md                     # Advanced gameplay concurrency roadmap
@@ -165,17 +204,21 @@ coroutines_asm/
 
 A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_asm/build.ps1) is provided for all workflows:
 
+### Run the Interactive All-Features Showcase Game
+```powershell
+.\build.ps1 run-showcase
+```
+
 ### Run the 2D Boss Fight Demo
 ```powershell
 .\build.ps1 run
 ```
-*Press `F1` or `TAB` in-game to toggle the Live Coroutine Hierarchy Visualizer.*
 
-### Build Production Release Binary
+### Build Production Release Binaries
 ```powershell
 .\build.ps1 release
+.\build.ps1 showcase
 ```
-*Outputs `build/game_release.exe` with `-o:speed -microarch:native -no-bounds-check -disable-assert`.*
 
 ### Run All 39 Unit Tests
 ```powershell
@@ -196,7 +239,7 @@ A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_
 
 ## Optimization & Architecture Validation Matrix
 
-The engine is validated against a 10-configuration build matrix across all optimization levels and microarchitecture baselines:
+The engine is validated against an 11-configuration build matrix across all optimization levels and microarchitecture baselines:
 
 | # | Configuration Name | Optimization & Architecture Flags | Tests | Status |
 | :-: | :--- | :--- | :-: | :-: |
@@ -210,6 +253,7 @@ The engine is validated against a 10-configuration build matrix across all optim
 | **8** | **Arch x86-64-v3 (AVX2/FMA)**| `-o:speed -microarch:x86-64-v3 -use-single-module` | 39 / 39 | **PASS** |
 | **9** | **Arch Native (Host Max)** | `-o:speed -microarch:native -use-single-module` | 39 / 39 | **PASS** |
 | **10** | **Release Game Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | Binary | **PASS** |
+| **11** | **Showcase Binary** | `-o:speed -microarch:native -no-bounds-check -disable-assert` | Binary | **PASS** |
 
 See [`REPORTS.md`](file:///E:/OdinLang/Projects/coroutines_asm/REPORTS.md) for full benchmark and test breakdown.
 

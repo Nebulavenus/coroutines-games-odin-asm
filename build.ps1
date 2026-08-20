@@ -1,11 +1,13 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase")]
     [string]$Action
 )
 
 $OutExe = "build/game.exe"
+$ShowcaseExe = "build/showcase.exe"
 $Source = "src"
+$ShowcaseSource = "examples/showcase"
 $ProjectFile = "game.raddbg"
 
 function Invoke-OdinBuild
@@ -44,7 +46,8 @@ function Invoke-Matrix
         @{ Name = "Arch x86-64-v2 (Baseline)"; Args = @("-o:speed", "-microarch:x86-64-v2", "-use-single-module") },
         @{ Name = "Arch x86-64-v3 (AVX2/FMA)"; Args = @("-o:speed", "-microarch:x86-64-v3", "-use-single-module") },
         @{ Name = "Arch Native (Host Max)"; Args = @("-o:speed", "-microarch:native", "-use-single-module") },
-        @{ Name = "Release Game Binary"; BuildOnly = $true; Source = "src"; Out = "build/game_release.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") }
+        @{ Name = "Release Game Binary"; BuildOnly = $true; Source = "src"; Out = "build/game_release.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
+        @{ Name = "Showcase Binary"; BuildOnly = $true; Source = "examples/showcase"; Out = "build/showcase.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") }
     )
 
     $Results = @()
@@ -136,6 +139,18 @@ switch ($Action)
     "release"
     {
         Invoke-OdinBuild $Source "build/game_release.exe" @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert")
+    }
+    "showcase"
+    {
+        Invoke-OdinBuild $ShowcaseSource $ShowcaseExe @("-debug")
+    }
+    "run-showcase"
+    {
+        if ((Invoke-OdinBuild $ShowcaseSource $ShowcaseExe @("-debug")) -eq 0)
+        {
+            Write-Host "Running $ShowcaseExe..." -ForegroundColor Green
+            & $ShowcaseExe
+        }
     }
     "run"
     {
