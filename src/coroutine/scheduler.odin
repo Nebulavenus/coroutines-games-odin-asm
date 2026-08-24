@@ -210,7 +210,14 @@ fiber_unlink_child :: proc(parent: ^Fiber, child: ^Fiber) {
 
 scheduler_step :: proc(sched: ^Scheduler, dt: f32) {
     if sched.is_paused do return
+    scheduler_advance(sched, dt)
+}
 
+scheduler_single_step :: proc(sched: ^Scheduler, dt: f32) {
+    scheduler_advance(sched, dt)
+}
+
+scheduler_advance :: proc(sched: ^Scheduler, dt: f32) {
     // 1. Advance Time
     sched.delta_time = dt
     effective_dt := f64(dt * sched.time_scale)
@@ -304,6 +311,40 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     }
 
                     // Wake up parent
+                    parent.status = .Ready
+                    append(&fiber.sched.ready_queue, parent)
+                }
+            }
+        } else if coord.kind == .Rush {
+            if fiber.status == .Completed && !coord.completed {
+                // First SUCCESS wins!
+                coord.completed = true
+                coord.winner = fiber
+                coord.winner_index = fiber.branch_index
+
+                // Abort sibling branches immediately
+                parent := coord.parent
+                if parent != nil {
+                    child := parent.first_child
+                    for child != nil {
+                        next := child.next_sibling
+                        if child != fiber {
+                            fiber_abort_tree(fiber.sched, child)
+                        }
+                        child = next
+                    }
+
+                    // Wake up parent
+                    parent.status = .Ready
+                    append(&fiber.sched.ready_queue, parent)
+                }
+            } else if coord.active_branches <= 0 && !coord.completed {
+                // All branches finished without any success
+                coord.completed = true
+                coord.winner = nil
+                coord.winner_index = -1
+                parent := coord.parent
+                if parent != nil {
                     parent.status = .Ready
                     append(&fiber.sched.ready_queue, parent)
                 }
@@ -424,6 +465,7 @@ scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
     if scope == nil do return
     scope_cancel(sched, scope)
     delete(scope.handles)
+    scope.handles = nil
 }
 
 scope_active_count :: proc(scope: ^Fiber_Scope) -> int {

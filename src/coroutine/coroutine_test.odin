@@ -2181,3 +2181,471 @@ test_generator_lightweight_memory :: proc(t: ^testing.T) {
     _, ok := generator_next(&gen)
     testing.expect_value(t, ok, false)
 }
+
+// ============================================================================
+// Test 56: Fallback Control Flow (Sequential Branch Fallback on Failure)
+// ============================================================================
+
+@(test)
+test_fallback_control_flow :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Results :: struct {
+        success:    bool,
+        action_idx: int,
+    }
+
+    res: Results
+
+    spawn(&sched, proc(f: ^Fiber, r: ^Results) {
+        ok, idx := fallback(f,
+            branch(proc(f: ^Fiber) {
+                // Branch 0: Fails immediately
+                fail(f)
+            }, "Try Melee (Fails)"),
+            branch(proc(f: ^Fiber) {
+                // Branch 1: Fails after small delay
+                wait(f, 0.02)
+                fail(f)
+            }, "Try Snipe (Fails)"),
+            branch(proc(f: ^Fiber) {
+                // Branch 2: Succeeds
+                wait(f, 0.02)
+            }, "Fallback Patrol (Succeeds)"),
+        )
+        r.success = ok
+        r.action_idx = idx
+    }, &res)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, res.success, true)
+    testing.expect_value(t, res.action_idx, 2)
+}
+
+// ============================================================================
+// Test 57: Rush Concurrency (Parallel Success Preemption Ignoring Failures)
+// ============================================================================
+
+@(test)
+test_rush_success_preemption :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    winning_branch: int = -99
+
+    spawn(&sched, proc(f: ^Fiber, win: ^int) {
+        winner := rush(f,
+            branch(proc(f: ^Fiber) {
+                // Branch 0: Fails quickly at 0.02s (failure is ignored!)
+                wait(f, 0.02)
+                fail(f)
+            }, "Quest A (Fails early)"),
+            branch(proc(f: ^Fiber) {
+                // Branch 1: Succeeds at 0.06s (First to SUCCEED wins!)
+                wait(f, 0.06)
+            }, "Quest B (Succeeds first)"),
+            branch(proc(f: ^Fiber) {
+                // Branch 2: Would succeed at 0.20s, but is aborted by Branch 1
+                wait(f, 0.20)
+            }, "Quest C (Aborted)"),
+        )
+        win^ = winner
+    }, &winning_branch)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, winning_branch, 1)
+}
+
+// ============================================================================
+// Test 58: Phase Director (FSM State Machine Lifecycle)
+// ============================================================================
+
+@(test)
+test_phase_director_fsm :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    director: Phase_Director
+    phase_director_init(&director, &sched)
+    defer phase_director_destroy(&director)
+
+    testing.expect_value(t, phase_current(&director), 0)
+    testing.expect_value(t, phase_is_busy(&director), false)
+
+    phase1_ran := false
+    phase2_ran := false
+
+    // Switch to Phase 1 (Spawns long combat loop)
+    phase_switch(&director, 1, proc(f: ^Fiber, r: ^bool) {
+        r^ = true
+        for {
+            yield_frame(f)
+        }
+    }, &phase1_ran, name = "Phase 1: Combat")
+
+    testing.expect_value(t, phase_current(&director), 1)
+    testing.expect_value(t, phase_name(&director), "Phase 1: Combat")
+    testing.expect_value(t, phase_is_busy(&director), true)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, phase1_ran, true)
+
+    // Switch to Phase 2 (Cancels Phase 1 immediately)
+    phase_switch(&director, 2, proc(f: ^Fiber, r: ^bool) {
+        r^ = true
+    }, &phase2_ran, name = "Phase 2: Enraged")
+
+    testing.expect_value(t, phase_current(&director), 2)
+    testing.expect_value(t, phase_name(&director), "Phase 2: Enraged")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, phase2_ran, true)
+}
+
+// ============================================================================
+// Test 59: Headless Simulation Runner (simulate_until)
+// ============================================================================
+
+@(test)
+test_simulate_until_headless :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    counter: int = 0
+
+    spawn(&sched, proc(f: ^Fiber, c: ^int) {
+        for _ in 0 ..< 100 {
+            wait(f, 0.1) // 100 * 0.1s = 10.0 virtual seconds
+            c^ += 1
+        }
+    }, &counter)
+
+    // Run simulated 10 seconds of timeline instantaneously
+    ok, sim_time := simulate_until(&sched, 0.016, 15.0, proc(c: ^int) -> bool {
+        return c^ >= 50
+    }, &counter)
+
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, counter, 50)
+    testing.expect(t, sim_time >= 5.0 && sim_time <= 6.0, "Simulated time ~5.6s")
+}
+
+// ============================================================================
+// Test 60: fail Primitive & Sync Error Propagation
+// ============================================================================
+
+@(test)
+test_fail_primitive :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    all_passed := true
+
+    spawn(&sched, proc(f: ^Fiber, res: ^bool) {
+        ok := sync(f,
+            branch(proc(f: ^Fiber) {
+                wait(f, 0.01)
+            }),
+            branch(proc(f: ^Fiber) {
+                fail(f) // Marks sync coordination as failed
+            }),
+        )
+        res^ = ok
+    }, &all_passed)
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, all_passed, false)
+}
+
+// ============================================================================
+// Test 61: Fallback All Failing & Value-Based Payload Branches
+// ============================================================================
+
+@(test)
+test_fallback_all_failing_and_by_value :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // 1. All branches fail -> returns (false, -1)
+    all_failed_res: bool = true
+    all_failed_idx: int = 99
+
+    spawn(&sched, proc(f: ^Fiber, out: ^[2]int) {
+        ok, idx := fallback(f,
+            branch(proc(f: ^Fiber) { fail(f) }),
+            branch(proc(f: ^Fiber) { fail(f) }),
+            branch(proc(f: ^Fiber) { fail(f) }),
+        )
+        out[0] = ok ? 1 : 0
+        out[1] = idx
+    }, &[2]int{1, 99})
+
+    // 2. By-value branch passing
+    Arg :: struct {
+        val: int,
+        out: ^int,
+    }
+    val_res: int = 0
+    spawn(&sched, proc(f: ^Fiber, out: ^int) {
+        ok, idx := fallback(f,
+            branch(proc(f: ^Fiber, a: Arg) {
+                if a.val < 10 do fail(f)
+            }, Arg{val = 5, out = out}),
+            branch(proc(f: ^Fiber, a: Arg) {
+                if a.val >= 10 {
+                    a.out^ = a.val * 2
+                }
+            }, Arg{val = 20, out = out}),
+        )
+        if !ok do out^ = -1
+    }, &val_res)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, val_res, 40)
+}
+
+// ============================================================================
+// Test 62: Rush 5 Parallel Branches & All Failing Edge Case
+// ============================================================================
+
+@(test)
+test_rush_5_branches_and_all_failing :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    winner_5: int = -99
+    all_fail_winner: int = 99
+
+    // 5 branches: 0, 1 fail early; 2 takes long; 3 finishes successfully first; 4 takes longest
+    spawn(&sched, proc(f: ^Fiber, win: ^int) {
+        w := rush(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.02); fail(f) }, "Branch 0 (Fails)"),
+            branch(proc(f: ^Fiber) { wait(f, 0.03); fail(f) }, "Branch 1 (Fails)"),
+            branch(proc(f: ^Fiber) { wait(f, 0.25) }, "Branch 2 (Long)"),
+            branch(proc(f: ^Fiber) { wait(f, 0.06) }, "Branch 3 (First Success)"),
+            branch(proc(f: ^Fiber) { wait(f, 0.50) }, "Branch 4 (Longest)"),
+        )
+        win^ = w
+    }, &winner_5)
+
+    // All branches fail -> returns -1
+    spawn(&sched, proc(f: ^Fiber, win: ^int) {
+        w := rush(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.01); fail(f) }),
+            branch(proc(f: ^Fiber) { wait(f, 0.02); fail(f) }),
+            branch(proc(f: ^Fiber) { wait(f, 0.03); fail(f) }),
+        )
+        win^ = w
+    }, &all_fail_winner)
+
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, winner_5, 3)
+    testing.expect_value(t, all_fail_winner, -1)
+}
+
+// ============================================================================
+// Test 63: Phase Director Rapid Multi-Phase Transitions (1 -> 2 -> 3 -> 4)
+// ============================================================================
+
+@(test)
+test_phase_director_rapid_transitions :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    director: Phase_Director
+    phase_director_init(&director, &sched)
+    defer phase_director_destroy(&director)
+
+    executed_phases: [5]bool
+
+    // Rapidly switch through phases
+    for p in 1 ..= 4 {
+        phase_num := p
+        phase_switch(&director, phase_num, proc(f: ^Fiber, d: ^[5]bool) {
+            for {
+                yield_frame(f)
+            }
+        }, &executed_phases, name = "Phase Step")
+
+        testing.expect_value(t, phase_current(&director), phase_num)
+        testing.expect_value(t, phase_is_busy(&director), true)
+        scheduler_step(&sched, 0.016)
+    }
+
+    // Only 1 fiber should be active in current_scope
+    testing.expect_value(t, scope_active_count(&director.current_scope), 1)
+
+    // Destroy director
+    phase_director_destroy(&director)
+    testing.expect_value(t, scope_active_count(&director.current_scope), 0)
+    testing.expect_value(t, phase_is_busy(&director), false)
+}
+
+// ============================================================================
+// Test 64: Headless Simulation of Channel Producer-Consumer Pipeline
+// ============================================================================
+
+@(test)
+test_simulate_until_channel_pipeline :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Context :: struct {
+        ch:       Channel(int),
+        received: int,
+    }
+
+    ctx: Context
+    chan_init(&ctx.ch, capacity = 4)
+    defer chan_destroy(&ctx.ch)
+
+    // Producer fiber: pushes 30 items with small delays
+    spawn(&sched, proc(f: ^Fiber, c: ^Context) {
+        for i in 1 ..= 30 {
+            wait(f, 0.02)
+            chan_send(f, &c.ch, i)
+        }
+        chan_close(&c.ch)
+    }, &ctx)
+
+    // Consumer fiber: receives items
+    spawn(&sched, proc(f: ^Fiber, c: ^Context) {
+        for {
+            _, ok := chan_recv(f, &c.ch)
+            if !ok do break
+            c.received += 1
+        }
+    }, &ctx)
+
+    // Simulate entire 30-item pipeline in <1ms without window
+    ok, sim_time := simulate_until(&sched, 0.016, 5.0, proc(c: ^Context) -> bool {
+        return c.received >= 30
+    }, &ctx)
+
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, ctx.received, 30)
+    testing.expect(t, sim_time >= 0.5 && sim_time <= 2.0, "Pipeline completed in expected sim window")
+}
+
+// ============================================================================
+// Test 65: Deeply Nested Concurrency Combinators (Sync { Rush, Fallback, Race })
+// ============================================================================
+
+@(test)
+test_nested_concurrency_combinators :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    all_ok := false
+
+    spawn(&sched, proc(f: ^Fiber, out_ok: ^bool) {
+        // Sync outer join
+        res := sync(f,
+            // Branch 0: Nested Rush
+            branch(proc(f: ^Fiber) {
+                winner := rush(f,
+                    branch(proc(f: ^Fiber) { wait(f, 0.01); fail(f) }),
+                    branch(proc(f: ^Fiber) { wait(f, 0.04) }),
+                )
+                if winner != 1 do fail(f)
+            }, "Nested Rush"),
+
+            // Branch 1: Nested Fallback
+            branch(proc(f: ^Fiber) {
+                ok, idx := fallback(f,
+                    branch(proc(f: ^Fiber) { fail(f) }),
+                    branch(proc(f: ^Fiber) { wait(f, 0.02) }),
+                )
+                if !ok || idx != 1 do fail(f)
+            }, "Nested Fallback"),
+
+            // Branch 2: Nested Race
+            branch(proc(f: ^Fiber) {
+                winner := race(f,
+                    branch(proc(f: ^Fiber) { wait(f, 0.02) }),
+                    branch(proc(f: ^Fiber) { wait(f, 0.50) }),
+                )
+                if winner != 0 do fail(f)
+            }, "Nested Race"),
+        )
+
+        out_ok^ = res
+    }, &all_ok)
+
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, all_ok, true)
+}
+
+// ============================================================================
+// Test 66: Scheduler Step Execution While Paused (Debugger Manual Stepping)
+// ============================================================================
+
+g_test66_flag: bool
+
+@(test)
+test_scheduler_step_while_paused :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sched.is_paused = true
+
+    counter := 0
+    g_test66_flag = false
+
+    // Fiber 1: Waits on timer and spawns child fiber
+    spawn(&sched, proc(f: ^Fiber, c: ^int) {
+        wait(f, 0.05)
+        c^ += 1
+        spawn(f.sched, proc(f2: ^Fiber) {
+            wait(f2, 0.05)
+            g_test66_flag = true
+        })
+    }, &counter)
+
+    // 1. Normal scheduler_step is skipped while is_paused == true
+    scheduler_step(&sched, 0.50)
+    testing.expect_value(t, counter, 0)
+
+    // 2. Explicit scheduler_single_step forces simulation forward even while is_paused == true
+    // Step A: 0.01s (Fiber 1 runs and registers timer for 0.01 + 0.05 = 0.06s)
+    scheduler_single_step(&sched, 0.01)
+    testing.expect_value(t, counter, 0)
+
+    // Step B: 0.06s -> Total 0.07s (Fiber 1 wakes, increments counter to 1, spawns child for 0.07 + 0.05 = 0.12s)
+    scheduler_single_step(&sched, 0.06)
+    testing.expect_value(t, counter, 1)
+
+    // Step C: 0.06s -> Total 0.13s (Child fiber wakes, sets flag)
+    scheduler_single_step(&sched, 0.06)
+    testing.expect_value(t, g_test66_flag, true)
+}

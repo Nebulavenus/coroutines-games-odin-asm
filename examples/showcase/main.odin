@@ -155,6 +155,12 @@ Showcase_World :: struct {
     station_channel:         Channel_Station,
     show_coroutine_debugger: bool,
     global_time:             f32,
+    step_count:              int,
+    step_flash_timer:        f32,
+    last_step_dt:            f32,
+    hold_step_timer:         f32,
+    latched_station:         int,
+    latched_interact:        bool,
 }
 
 g_world: ^Showcase_World
@@ -470,15 +476,67 @@ showcase_destroy :: proc(w: ^Showcase_World) {
 // ============================================================================
 
 showcase_update :: proc(w: ^Showcase_World, dt: f32) {
-    w.global_time += dt
-
-    // Step coroutine engine
-    coroutine.scheduler_step(&w.sched, dt)
+    if rl.IsKeyPressed(.F3) {
+        w.sched.is_paused = !w.sched.is_paused
+    }
 
     // Debugger overlay toggle
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
         w.show_coroutine_debugger = !w.show_coroutine_debugger
     }
+
+    // Determine simulation delta-time for this frame
+    sim_dt: f32 = 0.0
+
+    if !w.sched.is_paused {
+        sim_dt = dt
+        w.step_flash_timer = 0.0
+    } else {
+        if w.step_flash_timer > 0.0 {
+            w.step_flash_timer = max(0.0, w.step_flash_timer - dt)
+        }
+
+        if rl.IsKeyPressed(.F4) {
+            sim_dt = 0.016
+            w.step_count += 1
+            w.last_step_dt = sim_dt
+            w.step_flash_timer = 0.4
+        } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
+            sim_dt = 0.160 // 10 frames (~160ms jump)
+            w.step_count += 10
+            w.last_step_dt = sim_dt
+            w.step_flash_timer = 0.5
+        } else if rl.IsKeyDown(.F4) {
+            // Slow-motion continuous step when holding F4 (~15 FPS slow-mo)
+            w.hold_step_timer += dt
+            if w.hold_step_timer >= 0.066 {
+                w.hold_step_timer = 0.0
+                sim_dt = 0.016
+                w.step_count += 1
+                w.last_step_dt = sim_dt
+                w.step_flash_timer = 0.2
+            }
+        } else {
+            w.hold_step_timer = 0.0
+        }
+    }
+
+    // Latch station interaction keys while running or paused
+    if rl.IsKeyPressed(.ONE)   do w.latched_station = 1
+    if rl.IsKeyPressed(.TWO)   do w.latched_station = 2
+    if rl.IsKeyPressed(.THREE) do w.latched_station = 3
+    if rl.IsKeyPressed(.FOUR)  do w.latched_station = 4
+    if rl.IsKeyPressed(.FIVE) || rl.IsKeyPressed(.L) do w.latched_station = 5
+    if rl.IsKeyPressed(.SIX)   do w.latched_station = 6
+    if rl.IsKeyPressed(.E)     do w.latched_interact = true
+
+    // If simulation is completely paused with no step this frame, halt world updates
+    if sim_dt <= 0.0 do return
+
+    w.global_time += sim_dt
+
+    // Step coroutine engine
+    coroutine.scheduler_single_step(&w.sched, sim_dt)
 
     // --- Player Movement ---
     move_dir: rl.Vector2
@@ -489,12 +547,18 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
 
     if linalg.length(move_dir) > 0 {
         move_dir = linalg.normalize(move_dir)
-        w.player.pos += move_dir * w.player.speed * dt
+        w.player.pos += move_dir * w.player.speed * sim_dt
     }
+
+    // Process latched station triggers
+    trigger_station := w.latched_station
+    interact := w.latched_interact || rl.IsKeyPressed(.E)
+    w.latched_station = 0
+    w.latched_interact = false
 
     // --- Station 1 Interaction: Ritual (Press [1] or [E] near station) ---
     dist1 := linalg.length(w.player.pos - w.station_ritual.pos)
-    if (dist1 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.ONE) {
+    if (dist1 < 80.0 && interact) || trigger_station == 1 {
         if !coroutine.scope_is_busy(&w.station_ritual.scope) {
             coroutine.spawn(&w.sched, ritual_master_fiber, &w.station_ritual, scope = &w.station_ritual.scope, name = "Ritual Master (sync)")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Ritual [sync] triggered")
@@ -503,7 +567,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
 
     // --- Station 2 Interaction: Capture Contest (Press [2] or [E] near station) ---
     dist2 := linalg.length(w.player.pos - w.station_capture.pos)
-    if (dist2 < w.station_capture.radius && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.TWO) {
+    if (dist2 < w.station_capture.radius && interact) || trigger_station == 2 {
         if !coroutine.scope_is_busy(&w.station_capture.scope) {
             coroutine.spawn(&w.sched, capture_contest_fiber, &w.station_capture, scope = &w.station_capture.scope, name = "Capture [race/timeout]")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Capture Contest [race] started")
@@ -512,7 +576,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
 
     // --- Station 3 Interaction: Charger Mutex (Press [3] or [E] near station) ---
     dist3 := linalg.length(w.player.pos - w.station_charger.pos)
-    if (dist3 < 90.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.THREE) {
+    if (dist3 < 90.0 && interact) || trigger_station == 3 {
         if !coroutine.scope_is_busy(&w.station_charger.scope) {
             for i in 0 ..< 4 {
                 d := &w.station_charger.drones[i]
@@ -524,14 +588,14 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
 
     // --- Station 4 Interaction: Beacon Signal (Press [4] or [E] near station) ---
     dist4 := linalg.length(w.player.pos - w.station_beacon.pos)
-    if (dist4 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.FOUR) {
+    if (dist4 < 80.0 && interact) || trigger_station == 4 {
         coroutine.signal_emit(&w.sched, &w.station_beacon.alarm_signal)
         coroutine.chan_try_send(&w.station_channel.log_channel, "Alarm [Signal] broadcast to 6 sentries")
     }
 
     // --- Station 5 Interaction: Loot Forge (Press [5] or [E] near station) ---
     dist5 := linalg.length(w.player.pos - w.station_forge.pos)
-    if (dist5 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.FIVE) || rl.IsKeyPressed(.L) {
+    if (dist5 < 80.0 && interact) || trigger_station == 5 {
         item, ok := coroutine.generator_next(&w.station_forge.loot_gen)
         if ok {
             w.station_forge.current_item = item
@@ -543,7 +607,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
 
     // --- Station 6 Interaction: Async Research (Press [6] or [E] near station) ---
     dist6 := linalg.length(w.player.pos - w.station_lab.pos)
-    if (dist6 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.SIX) {
+    if (dist6 < 80.0 && interact) || trigger_station == 6 {
         if !coroutine.scope_is_busy(&w.station_lab.scope) {
             coroutine.spawn(&w.sched, lab_research_fiber, &w.station_lab, scope = &w.station_lab.scope, name = "Async Research Lab")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Dispatched [await_async] background worker")
@@ -652,9 +716,17 @@ showcase_render :: proc(w: ^Showcase_World) {
     rl.DrawCircleV(w.player.pos, w.player.radius, rl.WHITE)
     rl.DrawCircleLines(i32(w.player.pos.x), i32(w.player.pos.y), w.player.radius + 3.0, rl.LIME)
 
-    // --- Instructions Header ---
-    rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {12, 14, 20, 220})
-    rl.DrawText("WASD: Move | [1-6] or [E]: Trigger Nearby Station | [F1] or [TAB]: Toggle Live Hierarchy Debugger", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
+    // --- Instructions Header & Pause Banner ---
+    if w.sched.is_paused {
+        flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)
+        rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {15, 18, 30, 230})
+        rl.DrawRectangleLines(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, flash_col)
+        rl.DrawText(step_text, 30, SCREEN_HEIGHT - 30, 14, flash_col)
+    } else {
+        rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {12, 14, 20, 220})
+        rl.DrawText("WASD: Move | [1-6] or [E]: Trigger Station | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
+    }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
     if w.show_coroutine_debugger {
@@ -666,7 +738,11 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawRectangle(overlay_x, overlay_y, overlay_w, overlay_h, {10, 12, 18, 245})
         rl.DrawRectangleLines(overlay_x, overlay_y, overlay_w, overlay_h, {0, 200, 255, 220})
 
-        rl.DrawText("COROUTINE HIERARCHY & STACK PROFILER (F1 / TAB)", overlay_x + 15, overlay_y + 12, 15, rl.GOLD)
+        pause_header := ""
+        if w.sched.is_paused {
+            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
+        }
+        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY & STACK PROFILER (F1) %s", pause_header), overlay_x + 15, overlay_y + 12, 15, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
         rl.DrawLine(overlay_x + 10, overlay_y + 35, overlay_x + overlay_w - 10, overlay_y + 35, {60, 80, 120, 255})
 
         tree_y := overlay_y + 45
@@ -698,7 +774,13 @@ showcase_render :: proc(w: ^Showcase_World) {
                 status_str = "Waiting_Condition"
                 status_col = rl.ORANGE
             case .Suspended_Join:
-                kind := f.active_coord.kind == .Sync ? "Sync" : "Race"
+                kind := "Sync"
+                switch f.active_coord.kind {
+                case .Sync:     kind = "Sync"
+                case .Race:     kind = "Race"
+                case .Rush:     kind = "Rush"
+                case .Fallback: kind = "Fallback"
+                }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE
             case:

@@ -128,6 +128,15 @@ wait :: proc(f: ^Fiber, seconds: f32) {
     context = f.stored_context
 }
 
+fail :: proc(f: ^Fiber) {
+    if f == nil || f.sched == nil do return
+    f.status = .Failed
+    fiber_on_finish(f)
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
 delta_time :: #force_inline proc "contextless" (f: ^Fiber) -> f32 {
     return f != nil && f.sched != nil ? f.sched.delta_time : 0.0
 }
@@ -469,6 +478,61 @@ race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
     context = f.stored_context
 
     return f.active_coord.winner_index
+}
+
+rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
+    if f == nil || f.sched == nil || len(branches) == 0 do return -1
+
+    f.active_coord = Join_Coordinator{
+        kind            = .Rush,
+        parent          = f,
+        total_branches  = len(branches),
+        active_branches = len(branches),
+        winner          = nil,
+        winner_index    = -1,
+        has_failed      = false,
+        completed       = false,
+    }
+
+    for b, i in branches {
+        child := fiber_pool_acquire(&f.sched.fiber_pool)
+        child.sched = f.sched
+        child.debug_name = b.name
+        child.stored_context = context
+        child.start_time = f.sched.current_time
+        if b.has_payload {
+            child.payload_storage = b.payload_storage
+            child.user_data = &child.payload_storage[0]
+        } else {
+            child.user_data = b.user_data
+        }
+        child.user_fn = b.user_fn
+        child.entry_proc = b.entry_proc
+        child.join_coord = &f.active_coord
+        child.branch_index = i
+
+        fiber_link_child(f, child)
+        append(&f.sched.ready_queue, child)
+    }
+
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+
+    return f.active_coord.winner_index
+}
+
+fallback :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (succeeded: bool, winning_index: int) {
+    if f == nil || f.sched == nil || len(branches) == 0 do return false, -1
+
+    for b, i in branches {
+        ok := sync(f, b)
+        if ok {
+            return true, i
+        }
+    }
+    return false, -1
 }
 
 // ============================================================================
@@ -1081,3 +1145,134 @@ generator_next :: proc(gen: ^Generator($T)) -> (val: T, ok: bool) {
     gen.is_done = true
     return {}, false
 }
+
+// ============================================================================
+// Phase Director (State Machines on Top of Coroutines)
+// ============================================================================
+
+phase_director_init :: proc(director: ^Phase_Director, sched: ^Scheduler) {
+    if director == nil do return
+    director.sched = sched
+    director.current_phase = 0
+    director.phase_name = ""
+    director.current_scope.handles = nil
+}
+
+phase_director_destroy :: proc(director: ^Phase_Director) {
+    if director == nil || director.sched == nil do return
+    scope_destroy(director.sched, &director.current_scope)
+    director.current_phase = 0
+    director.phase_name = ""
+}
+
+phase_switch_ptr :: proc(
+    director: ^Phase_Director,
+    phase_id: int,
+    entry: proc(f: ^Fiber, data: ^$T),
+    data: ^T,
+    name: string = "",
+) -> Fiber_Handle {
+    if director == nil || director.sched == nil do return 0
+    scope_cancel(director.sched, &director.current_scope)
+    director.current_phase = phase_id
+    director.phase_name = name
+    return spawn(director.sched, entry, data, scope = &director.current_scope, name = name)
+}
+
+phase_switch_val :: proc(
+    director: ^Phase_Director,
+    phase_id: int,
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    name: string = "",
+) -> Fiber_Handle where !intrinsics.type_is_pointer(T) {
+    if director == nil || director.sched == nil do return 0
+    scope_cancel(director.sched, &director.current_scope)
+    director.current_phase = phase_id
+    director.phase_name = name
+    return spawn(director.sched, entry, data, scope = &director.current_scope, name = name)
+}
+
+phase_switch_nil :: proc(
+    director: ^Phase_Director,
+    phase_id: int,
+    entry: proc(f: ^Fiber),
+    name: string = "",
+) -> Fiber_Handle {
+    if director == nil || director.sched == nil do return 0
+    scope_cancel(director.sched, &director.current_scope)
+    director.current_phase = phase_id
+    director.phase_name = name
+    return spawn(director.sched, entry, scope = &director.current_scope, name = name)
+}
+
+// Unified overloaded entry point
+phase_switch :: proc{phase_switch_ptr, phase_switch_val, phase_switch_nil}
+
+phase_current :: #force_inline proc "contextless" (director: ^Phase_Director) -> int {
+    return director != nil ? director.current_phase : 0
+}
+
+phase_name :: #force_inline proc "contextless" (director: ^Phase_Director) -> string {
+    return director != nil ? director.phase_name : ""
+}
+
+phase_is_busy :: #force_inline proc (director: ^Phase_Director) -> bool {
+    return director != nil && scope_is_busy(&director.current_scope)
+}
+
+// ============================================================================
+// Headless Simulation Runner (CI/CD Testing Harness)
+// ============================================================================
+
+simulate_until_ptr :: proc(
+    sched: ^Scheduler,
+    step_dt: f32,
+    max_sim_seconds: f64,
+    condition: proc(user_data: ^$T) -> bool,
+    data: ^T,
+) -> (condition_met: bool, elapsed_sim_time: f64) {
+    if sched == nil do return false, 0.0
+    dt := step_dt > 0.0 ? step_dt : 0.016
+    start_time := sched.current_time
+
+    for {
+        if condition != nil && condition(data) {
+            return true, sched.current_time - start_time
+        }
+        if sched.current_time - start_time >= max_sim_seconds {
+            return false, sched.current_time - start_time
+        }
+        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
+            return (condition != nil && condition(data)), sched.current_time - start_time
+        }
+        scheduler_step(sched, dt)
+    }
+}
+
+simulate_until_nil :: proc(
+    sched: ^Scheduler,
+    step_dt: f32,
+    max_sim_seconds: f64,
+    condition: proc() -> bool,
+) -> (condition_met: bool, elapsed_sim_time: f64) {
+    if sched == nil do return false, 0.0
+    dt := step_dt > 0.0 ? step_dt : 0.016
+    start_time := sched.current_time
+
+    for {
+        if condition != nil && condition() {
+            return true, sched.current_time - start_time
+        }
+        if sched.current_time - start_time >= max_sim_seconds {
+            return false, sched.current_time - start_time
+        }
+        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
+            return (condition != nil && condition()), sched.current_time - start_time
+        }
+        scheduler_step(sched, dt)
+    }
+}
+
+// Unified overloaded entry point
+simulate_until :: proc{simulate_until_ptr, simulate_until_nil}

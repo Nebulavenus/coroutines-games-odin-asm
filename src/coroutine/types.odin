@@ -31,12 +31,14 @@ Fiber_Status :: enum u8 {
 Fiber_Handle :: distinct u32
 
 Join_Kind :: enum u8 {
-    Sync, // All children must finish; parent resumes when remaining == 0
-    Race, // First child to finish wins; immediately aborts all siblings
+    Sync,     // All children must finish; parent resumes when remaining == 0
+    Race,     // First child to finish wins; immediately aborts all siblings
+    Rush,     // First child to SUCCEED wins; aborts siblings; failures ignored unless all fail
+    Fallback, // Sequential execution of branches until first success
 }
 
 // ============================================================================
-// Coordinators & Scope
+// Coordinators, Scope & Phase Director
 // ============================================================================
 
 Join_Coordinator :: struct {
@@ -52,6 +54,13 @@ Join_Coordinator :: struct {
 
 Fiber_Scope :: struct {
     handles: [dynamic]Fiber_Handle,
+}
+
+Phase_Director :: struct {
+    sched:         ^Scheduler,
+    current_scope: Fiber_Scope,
+    current_phase: int,
+    phase_name:    string,
 }
 
 FIBER_PAYLOAD_SIZE :: 128

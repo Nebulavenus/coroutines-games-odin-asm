@@ -1,13 +1,15 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest")]
     [string]$Action
 )
 
 $OutExe = "build/game.exe"
 $ShowcaseExe = "build/showcase.exe"
+$QuestExe = "build/quest_ai.exe"
 $Source = "src"
 $ShowcaseSource = "examples/showcase"
+$QuestSource = "examples/quest_ai"
 $ProjectFile = "game.raddbg"
 
 function Invoke-OdinBuild
@@ -150,6 +152,18 @@ switch ($Action)
         {
             Write-Host "Running $ShowcaseExe..." -ForegroundColor Green
             & $ShowcaseExe
+        }
+    }
+    "quest"
+    {
+        Invoke-OdinBuild $QuestSource $QuestExe @("-debug")
+    }
+    "run-quest"
+    {
+        if ((Invoke-OdinBuild $QuestSource $QuestExe @("-debug")) -eq 0)
+        {
+            Write-Host "Running $QuestExe..." -ForegroundColor Green
+            & $QuestExe
         }
     }
     "run"

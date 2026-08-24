@@ -66,6 +66,7 @@ Boss :: struct {
     shield_alpha: f32,
     color:        rl.Color,
     scope:        coroutine.Fiber_Scope,
+    director:     coroutine.Phase_Director,
     alive:        bool,
 }
 
@@ -81,6 +82,12 @@ Game :: struct {
     show_coroutine_debugger: bool,
     game_over:               bool,
     victory:                 bool,
+    step_count:              int,
+    step_flash_timer:        f32,
+    last_step_dt:            f32,
+    hold_step_timer:         f32,
+    latched_dash:            bool,
+    latched_shoot:           bool,
 }
 
 // Global Game Reference for Coroutines
@@ -424,11 +431,13 @@ game_init :: proc(g: ^Game) {
 
     g_game = g
 
-    // Spawn Boss AI timeline coroutine
+    // Initialize Boss Phase Director & Spawn Boss AI timeline coroutine
+    coroutine.phase_director_init(&g.boss.director, &g.sched)
     coroutine.spawn(&g.sched, boss_master_ai, &g.boss, scope = &g.boss.scope, name = "Boss AI Timeline")
 }
 
 game_destroy :: proc(g: ^Game) {
+    coroutine.phase_director_destroy(&g.boss.director)
     coroutine.scope_destroy(&g.sched, &g.player.scope)
     coroutine.scope_destroy(&g.sched, &g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
@@ -441,14 +450,66 @@ game_destroy :: proc(g: ^Game) {
 }
 
 game_update :: proc(g: ^Game, dt: f32) {
-    g.game_time += dt
-
-    // Step the Coroutine Engine
-    coroutine.scheduler_step(&g.sched, dt)
+    if rl.IsKeyPressed(.F3) {
+        g.sched.is_paused = !g.sched.is_paused
+    }
 
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
         g.show_coroutine_debugger = !g.show_coroutine_debugger
     }
+
+    // Determine simulation delta-time for this frame
+    sim_dt: f32 = 0.0
+
+    if !g.sched.is_paused {
+        sim_dt = dt
+        g.step_flash_timer = 0.0
+    } else {
+        // Paused state: check for single-step, 10-frame jump, or slow-motion hold
+        if g.step_flash_timer > 0.0 {
+            g.step_flash_timer = max(0.0, g.step_flash_timer - dt)
+        }
+
+        if rl.IsKeyPressed(.F4) {
+            sim_dt = 0.016
+            g.step_count += 1
+            g.last_step_dt = sim_dt
+            g.step_flash_timer = 0.4
+        } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
+            sim_dt = 0.160 // 10 frames (~160ms jump)
+            g.step_count += 10
+            g.last_step_dt = sim_dt
+            g.step_flash_timer = 0.5
+        } else if rl.IsKeyDown(.F4) {
+            // Slow-motion continuous step when holding F4 (~15 FPS slow-mo)
+            g.hold_step_timer += dt
+            if g.hold_step_timer >= 0.066 {
+                g.hold_step_timer = 0.0
+                sim_dt = 0.016
+                g.step_count += 1
+                g.last_step_dt = sim_dt
+                g.step_flash_timer = 0.2
+            }
+        } else {
+            g.hold_step_timer = 0.0
+        }
+    }
+
+    // Latch actions while paused or running
+    if rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) {
+        g.latched_dash = true
+    }
+    if rl.IsMouseButtonPressed(.LEFT) || rl.IsKeyPressed(.J) || rl.IsKeyPressed(.Z) {
+        g.latched_shoot = true
+    }
+
+    // If simulation is completely paused with no step this frame, halt world updates
+    if sim_dt <= 0.0 do return
+
+    g.game_time += sim_dt
+
+    // Step the Coroutine Engine
+    coroutine.scheduler_single_step(&g.sched, sim_dt)
 
     if g.game_over || g.victory do return
 
@@ -461,21 +522,25 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     if linalg.length(move_dir) > 0 {
         move_dir = linalg.normalize(move_dir)
-        g.player.pos += move_dir * g.player.speed * dt
+        g.player.pos += move_dir * g.player.speed * sim_dt
     }
 
     // Clamp Player to screen bounds
     g.player.pos.x = clamp(g.player.pos.x, g.player.radius, f32(SCREEN_WIDTH) - g.player.radius)
     g.player.pos.y = clamp(g.player.pos.y, g.player.radius, f32(SCREEN_HEIGHT) - g.player.radius)
 
-    // Player Dash Trigger (Space or Right Mouse)
-    if (rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT)) && g.player.can_dash && !coroutine.scope_is_busy(&g.player.scope) {
+    // Player Dash Trigger (Space, Right Mouse or Latched)
+    do_dash := g.latched_dash || rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT)
+    g.latched_dash = false
+    if do_dash && g.player.can_dash && !coroutine.scope_is_busy(&g.player.scope) {
         coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash")
     }
 
-    // Player Shooting (Left Click or J / Z)
-    if rl.IsMouseButtonDown(.LEFT) || rl.IsKeyDown(.J) || rl.IsKeyDown(.Z) {
-        if math.mod(g.game_time, 0.12) < dt {
+    // Player Shooting (Left Click, J/Z, or Latched)
+    is_shooting := g.latched_shoot || rl.IsMouseButtonDown(.LEFT) || rl.IsKeyDown(.J) || rl.IsKeyDown(.Z)
+    g.latched_shoot = false
+    if is_shooting {
+        if math.mod(g.game_time, 0.12) < sim_dt || sim_dt >= 0.12 {
             mouse_pos := rl.GetMousePosition()
             shoot_dir := rl.Vector2{0, -1}
             if linalg.length(mouse_pos - g.player.pos) > 10.0 {
@@ -489,7 +554,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     // --- Update Projectiles ---
     for i := len(g.projectiles) - 1; i >= 0; i -= 1 {
         p := &g.projectiles[i]
-        p.pos += p.vel * dt
+        p.pos += p.vel * sim_dt
 
         // Check Out of bounds
         if p.pos.x < -50 || p.pos.x > SCREEN_WIDTH + 50 || p.pos.y < -50 || p.pos.y > SCREEN_HEIGHT + 50 {
@@ -549,8 +614,8 @@ game_update :: proc(g: ^Game, dt: f32) {
     // --- Update Particles ---
     for i := len(g.particles) - 1; i >= 0; i -= 1 {
         p := &g.particles[i]
-        p.pos += p.vel * dt
-        p.alpha -= dt * 2.0
+        p.pos += p.vel * sim_dt
+        p.alpha -= sim_dt * 2.0
         if p.alpha <= 0.0 {
             unordered_remove(&g.particles, i)
         }
@@ -674,8 +739,16 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 260, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 260, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
-    // Instructions
-    rl.DrawText("WASD/Arrows: Move | Left Click: Shoot | Space/RMB: Dash | F1/TAB: Debugger Tree", 30, SCREEN_HEIGHT - 20, 14, rl.LIGHTGRAY)
+    // Instructions & Pause Banner
+    if g.sched.is_paused {
+        flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", g.step_count, g.last_step_dt, g.game_time)
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 850, 24, {15, 18, 30, 220})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 850, 24, flash_col)
+        rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
+    } else {
+        rl.DrawText("WASD: Move | LMB: Shoot | Space: Dash | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+    }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
     if g.show_coroutine_debugger {
@@ -687,7 +760,11 @@ game_render :: proc(g: ^Game) {
         rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 14, 22, 235})
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
-        rl.DrawText("COROUTINE HIERARCHY DEBUGGER (F1 / TAB)", panel_x + 15, panel_y + 12, 16, rl.GOLD)
+        pause_header := ""
+        if g.sched.is_paused {
+            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", g.step_count, g.game_time)
+        }
+        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (F1) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
         rl.DrawLine(panel_x + 10, panel_y + 35, panel_x + panel_w - 10, panel_y + 35, {60, 80, 120, 255})
 
         tree_y := panel_y + 45
@@ -719,7 +796,13 @@ game_render :: proc(g: ^Game) {
                 status_str = "Waiting_Condition"
                 status_col = rl.ORANGE
             case .Suspended_Join:
-                kind := f.active_coord.kind == .Sync ? "Sync" : "Race"
+                kind := "Sync"
+                switch f.active_coord.kind {
+                case .Sync:     kind = "Sync"
+                case .Race:     kind = "Race"
+                case .Rush:     kind = "Rush"
+                case .Fallback: kind = "Fallback"
+                }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE
             case:
