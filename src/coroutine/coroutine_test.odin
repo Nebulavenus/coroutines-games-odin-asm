@@ -1528,3 +1528,255 @@ test_virtual_memory_guard_pages :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, ran, true)
 }
+
+// ============================================================================
+// Test 40: Spawn by Value - Primitives
+// ============================================================================
+
+Test_Val_Primitive :: struct {
+    intensity: f32,
+    out:       ^f32,
+}
+
+@(test)
+test_spawn_by_value_primitives :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    out_1: f32 = 0.0
+    out_2: f32 = 0.0
+
+    spawn_fn :: proc(f: ^Fiber, p: Test_Val_Primitive) {
+        yield_frame(f)
+        p.out^ = p.intensity * 2.0
+    }
+
+    spawn(&sched, spawn_fn, Test_Val_Primitive{intensity = 12.5, out = &out_1})
+    spawn(&sched, spawn_fn, Test_Val_Primitive{intensity = 50.0, out = &out_2})
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, out_1, 0.0)
+    testing.expect_value(t, out_2, 0.0)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, out_1, 25.0)
+    testing.expect_value(t, out_2, 100.0)
+}
+
+// ============================================================================
+// Test 41: Spawn by Value - Composite Struct
+// ============================================================================
+
+Test_Payload_Struct :: struct {
+    pos:    [2]f32,
+    speed:  f32,
+    id:     int,
+    active: bool,
+    out:    ^[2]f32,
+}
+
+@(test)
+test_spawn_by_value_struct :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    res1: [2]f32
+    res2: [2]f32
+
+    spawn_struct_fn :: proc(f: ^Fiber, p: Test_Payload_Struct) {
+        yield_frame(f)
+        if p.active {
+            p.out^ = p.pos + {p.speed, p.speed}
+        }
+    }
+
+    p1 := Test_Payload_Struct{pos = {10, 20}, speed = 100.0, id = 1, active = true, out = &res1}
+    p2 := Test_Payload_Struct{pos = {30, 40}, speed = 200.0, id = 2, active = true, out = &res2}
+
+    spawn(&sched, spawn_struct_fn, p1)
+    spawn(&sched, spawn_struct_fn, p2)
+
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, res1.x, 110.0)
+    testing.expect_value(t, res1.y, 120.0)
+    testing.expect_value(t, res2.x, 230.0)
+    testing.expect_value(t, res2.y, 240.0)
+}
+
+// ============================================================================
+// Test 42: Spawn by Value - Concurrency & Zero Crosstalk
+// ============================================================================
+
+@(test)
+test_spawn_by_value_concurrency_no_crosstalk :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    FIBER_COUNT :: 32
+    results: [FIBER_COUNT]int
+
+    Worker_Arg :: struct {
+        idx: int,
+        out: ^[FIBER_COUNT]int,
+    }
+
+    worker :: proc(f: ^Fiber, arg: Worker_Arg) {
+        for _ in 0 ..< 3 {
+            yield_frame(f)
+        }
+        arg.out[arg.idx] = (arg.idx + 1) * 10
+    }
+
+    for i in 0 ..< FIBER_COUNT {
+        spawn(&sched, worker, Worker_Arg{idx = i, out = &results})
+    }
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    for i in 0 ..< FIBER_COUNT {
+        testing.expect_value(t, results[i], (i + 1) * 10)
+    }
+}
+
+// ============================================================================
+// Test 43: Branch by Value - Sync
+// ============================================================================
+
+@(test)
+test_branch_by_value_sync :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    results: [3]int
+
+    Branch_Val_Arg :: struct {
+        multiplier: int,
+        out:        ^int,
+    }
+
+    branch_task :: proc(f: ^Fiber, arg: Branch_Val_Arg) {
+        yield_frame(f)
+        arg.out^ = arg.multiplier * 10
+    }
+
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]int) {
+        sync(f,
+            branch(branch_task, Branch_Val_Arg{10, &res[0]}, "Branch 1"),
+            branch(branch_task, Branch_Val_Arg{20, &res[1]}, "Branch 2"),
+            branch(branch_task, Branch_Val_Arg{30, &res[2]}, "Branch 3"),
+        )
+    }, &results)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, results[0], 100)
+    testing.expect_value(t, results[1], 200)
+    testing.expect_value(t, results[2], 300)
+}
+
+// ============================================================================
+// Test 44: Branch by Value - Race
+// ============================================================================
+
+@(test)
+test_branch_by_value_race :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    winner_value := -1
+
+    Race_Val_Arg :: struct {
+        val: int,
+        out: ^int,
+    }
+
+    fast_task :: proc(f: ^Fiber, arg: Race_Val_Arg) {
+        yield_frame(f)
+        arg.out^ = arg.val
+    }
+
+    slow_task :: proc(f: ^Fiber, arg: Race_Val_Arg) {
+        for _ in 0 ..< 10 {
+            yield_frame(f)
+        }
+        arg.out^ = arg.val
+    }
+
+    spawn(&sched, proc(f: ^Fiber, win: ^int) {
+        race(f,
+            branch(slow_task, Race_Val_Arg{999, win}, "Slow Branch"),
+            branch(fast_task, Race_Val_Arg{42, win}, "Fast Branch"),
+        )
+    }, &winner_value)
+
+    for _ in 0 ..< 3 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, winner_value, 42)
+}
+
+// ============================================================================
+// Test 45: Ephemeral Stack Safety (Dangling Pointer Prevention)
+// ============================================================================
+
+@(test)
+test_spawn_by_value_ephemeral_stack_safety :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    results: [4]f32
+
+    spawn_from_ephemeral_stack :: proc(sched: ^Scheduler, out: ^[4]f32) {
+        for i in 0 ..< 4 {
+            ephemeral_intensity: f32 = f32(i + 1) * 7.5
+
+            Arg :: struct {
+                intensity: f32,
+                out_slot:  ^f32,
+            }
+
+            spawn(sched, proc(f: ^Fiber, arg: Arg) {
+                yield_frame(f)
+                yield_frame(f)
+                arg.out_slot^ = arg.intensity
+            }, Arg{ephemeral_intensity, &out[i]})
+        }
+
+        trash_stack: [2048]byte
+        for &b, idx in &trash_stack {
+            b = u8(idx & 0xFF)
+        }
+    }
+
+    spawn_from_ephemeral_stack(&sched, &results)
+
+    deep_stack_call :: proc(depth: int) -> int {
+        arr: [256]int
+        for i in 0 ..< 256 do arr[i] = depth * i
+        if depth <= 0 do return arr[10]
+        return arr[5] + deep_stack_call(depth - 1)
+    }
+    _ = deep_stack_call(10)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, results[0], 7.5)
+    testing.expect_value(t, results[1], 15.0)
+    testing.expect_value(t, results[2], 22.5)
+    testing.expect_value(t, results[3], 30.0)
+}

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [By-Value Coroutine Spawning & Branching] - 2026-08-24
+
+### Added
+- **Embedded 128-Byte Inline Fiber Payload Storage (`FIBER_PAYLOAD_SIZE :: 128`)**:
+  - `Fiber` and `Branch_Desc` structures now carry an inline fixed-size byte buffer (`payload_storage: [128]byte`) and procedure pointer (`user_fn: rawptr`).
+  - Eliminates heap allocations (`new()`, `defer free()`) and dangling stack frame bugs for transient arguments (primitives, math vectors, and parameter structs $\le 128$ bytes).
+  - Enforced via compile-time assertion `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
+- **`spawn_val` & `branch_val` Procedure Overloads**:
+  - `spawn :: proc{spawn_ptr, spawn_val, spawn_nil}` automatically dispatches to by-value or by-pointer execution without user code boilerplate.
+  - `branch :: proc{branch_ptr, branch_val, branch_nil}` supports by-value branch creation for `coroutine.sync` and `coroutine.race`.
+  - Disambiguated using Odin's `where !intrinsics.type_is_pointer(T)` predicate.
+- **Unit Tests 40–44 (`src/coroutine/coroutine_test.odin`)**:
+  - Added unit test coverage for by-value primitives, composite structs, 32-fiber zero-crosstalk concurrency, `sync` with value branches, and `race` with value branches.
+
+### Changed
+- **Gameplay Cleanup (`src/main.odin`)**:
+  - Refactored `trigger_camera_shake` and `camera_shake_coroutine` to pass `intensity: f32` directly by value without `new(f32)` and `defer free(i)`.
+
 ## [Ergonomic API Refinement] - 2026-08-20
 
 ### Changed

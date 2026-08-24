@@ -123,16 +123,15 @@ spawn_projectile :: proc(pos, vel: rl.Vector2, radius: f32, color: rl.Color, is_
 // Coroutines: Player Abilities & Camera Effects
 // ============================================================================
 
-camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: ^f32) {
+camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: f32) {
     dur: f32 = 0.3
     elapsed: f32 = 0.0
-    initial := intensity^
 
     for elapsed < dur {
         coroutine.yield_frame(f)
         elapsed += f.sched.delta_time
         decay := clamp(1.0 - (elapsed / dur), 0.0, 1.0)
-        curr := initial * decay
+        curr := intensity * decay
         if curr > 0.0 {
             g_game.camera_offset = {
                 rand.float32_range(-curr, curr),
@@ -146,12 +145,7 @@ camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: ^f32) {
 }
 
 trigger_camera_shake :: proc(intensity: f32) {
-    int_copy := new(f32)
-    int_copy^ = intensity
-    coroutine.spawn(&g_game.sched, proc(f: ^coroutine.Fiber, i: ^f32) {
-        defer free(i)
-        camera_shake_coroutine(f, i)
-    }, int_copy)
+    coroutine.spawn(&g_game.sched, camera_shake_coroutine, intensity)
 }
 
 floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {

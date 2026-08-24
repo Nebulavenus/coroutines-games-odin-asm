@@ -54,10 +54,15 @@ Fiber_Scope :: struct {
     handles: [dynamic]Fiber_Handle,
 }
 
+FIBER_PAYLOAD_SIZE :: 128
+
 Branch_Desc :: struct {
-    entry_proc: proc(f: ^Fiber, user_data: rawptr),
-    user_data:  rawptr,
-    name:       string,
+    entry_proc:      proc(f: ^Fiber, user_data: rawptr),
+    user_data:       rawptr,
+    user_fn:         rawptr,
+    payload_storage: [FIBER_PAYLOAD_SIZE]byte,
+    has_payload:     bool,
+    name:            string,
 }
 
 // ============================================================================
@@ -100,6 +105,8 @@ Fiber :: struct {
     // --- User Entry & State ---
     entry_proc:       proc(f: ^Fiber, user_data: rawptr),
     user_data:        rawptr,
+    user_fn:          rawptr,          // Function pointer for generic/value entry thunks
+    payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
     cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
 
     // --- Isolated Temporary Allocator ---

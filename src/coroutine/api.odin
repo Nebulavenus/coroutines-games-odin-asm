@@ -3,12 +3,13 @@ package coroutine
 import "base:runtime"
 import "base:intrinsics"
 import "core:math"
+import "core:mem"
 
 // ============================================================================
 // Spawning Coroutines
 // ============================================================================
 
-spawn_typed :: proc(
+spawn_ptr :: proc(
     sched: ^Scheduler,
     entry: proc(f: ^Fiber, data: ^$T),
     data: ^T,
@@ -21,7 +22,48 @@ spawn_typed :: proc(
     fiber.stored_context = context
     fiber.start_time = sched.current_time
     fiber.user_data = rawptr(data)
+    fiber.user_fn = rawptr(entry)
     fiber.entry_proc = cast(proc(f: ^Fiber, user_data: rawptr))entry
+
+    if scope != nil {
+        fiber.scope = scope
+        append(&scope.handles, fiber.handle)
+    }
+
+    append(&sched.ready_queue, fiber)
+    return fiber.handle
+}
+
+spawn_typed :: spawn_ptr
+
+spawn_val :: proc(
+    sched: ^Scheduler,
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+) -> Fiber_Handle where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "spawn_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+
+    wrapper :: proc(f: ^Fiber, user_data: rawptr) {
+        fn := cast(proc(f: ^Fiber, data: T))f.user_fn
+        if fn != nil && user_data != nil {
+            val := (^T)(user_data)^
+            fn(f, val)
+        }
+    }
+
+    fiber := fiber_pool_acquire(&sched.fiber_pool)
+    fiber.sched = sched
+    fiber.debug_name = name
+    fiber.stored_context = context
+    fiber.start_time = sched.current_time
+
+    data_copy := data
+    mem.copy(&fiber.payload_storage[0], &data_copy, size_of(T))
+    fiber.user_data = &fiber.payload_storage[0]
+    fiber.user_fn = rawptr(entry)
+    fiber.entry_proc = wrapper
 
     if scope != nil {
         fiber.scope = scope
@@ -51,6 +93,7 @@ spawn_nil :: proc(
     fiber.stored_context = context
     fiber.start_time = sched.current_time
     fiber.user_data = rawptr(entry)
+    fiber.user_fn = rawptr(entry)
     fiber.entry_proc = wrapper
 
     if scope != nil {
@@ -63,7 +106,7 @@ spawn_nil :: proc(
 }
 
 // Unified overloaded entry point
-spawn :: proc{spawn_typed, spawn_nil}
+spawn :: proc{spawn_ptr, spawn_val, spawn_nil}
 
 // ============================================================================
 // Suspension & Waiting Primitives
@@ -158,16 +201,46 @@ wait_until :: proc{wait_until_typed, wait_until_nil}
 // Structured Concurrency: Branch, Sync, and Race
 // ============================================================================
 
-branch_typed :: proc(
+branch_ptr :: proc(
     entry: proc(f: ^Fiber, data: ^$T),
     data: ^T,
     name: string = "",
 ) -> Branch_Desc {
     return Branch_Desc{
-        entry_proc = cast(proc(f: ^Fiber, user_data: rawptr))entry,
-        user_data  = rawptr(data),
-        name       = name,
+        entry_proc  = cast(proc(f: ^Fiber, user_data: rawptr))entry,
+        user_data   = rawptr(data),
+        user_fn     = rawptr(entry),
+        has_payload = false,
+        name        = name,
     }
+}
+
+branch_typed :: branch_ptr
+
+branch_val :: proc(
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    name: string = "",
+) -> Branch_Desc where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "branch_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+
+    wrapper :: proc(f: ^Fiber, user_data: rawptr) {
+        fn := cast(proc(f: ^Fiber, data: T))f.user_fn
+        if fn != nil && user_data != nil {
+            val := (^T)(user_data)^
+            fn(f, val)
+        }
+    }
+
+    desc := Branch_Desc{
+        entry_proc  = wrapper,
+        user_fn     = rawptr(entry),
+        has_payload = true,
+        name        = name,
+    }
+    data_copy := data
+    mem.copy(&desc.payload_storage[0], &data_copy, size_of(T))
+    return desc
 }
 
 branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
@@ -178,14 +251,16 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
         }
     }
     return Branch_Desc{
-        entry_proc = wrapper,
-        user_data  = rawptr(entry),
-        name       = name,
+        entry_proc  = wrapper,
+        user_data   = rawptr(entry),
+        user_fn     = rawptr(entry),
+        has_payload = false,
+        name        = name,
     }
 }
 
 // Unified overloaded entry point
-branch :: proc{branch_typed, branch_nil}
+branch :: proc{branch_ptr, branch_val, branch_nil}
 
 sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
     if f == nil || f.sched == nil || len(branches) == 0 do return true
@@ -207,7 +282,13 @@ sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
         child.debug_name = b.name
         child.stored_context = context
         child.start_time = f.sched.current_time
-        child.user_data = b.user_data
+        if b.has_payload {
+            child.payload_storage = b.payload_storage
+            child.user_data = &child.payload_storage[0]
+        } else {
+            child.user_data = b.user_data
+        }
+        child.user_fn = b.user_fn
         child.entry_proc = b.entry_proc
         child.join_coord = &f.active_coord
         child.branch_index = i
@@ -244,7 +325,13 @@ race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
         child.debug_name = b.name
         child.stored_context = context
         child.start_time = f.sched.current_time
-        child.user_data = b.user_data
+        if b.has_payload {
+            child.payload_storage = b.payload_storage
+            child.user_data = &child.payload_storage[0]
+        } else {
+            child.user_data = b.user_data
+        }
+        child.user_fn = b.user_fn
         child.entry_proc = b.entry_proc
         child.join_coord = &f.active_coord
         child.branch_index = i

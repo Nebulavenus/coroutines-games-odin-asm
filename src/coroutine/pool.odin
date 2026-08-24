@@ -198,6 +198,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.condition_data = nil
     fiber.entry_proc = nil
     fiber.user_data = nil
+    fiber.user_fn = nil
     fiber.cleanup_proc = nil
     fiber.debug_name = ""
     fiber.start_time = 0
