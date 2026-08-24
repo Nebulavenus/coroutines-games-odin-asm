@@ -17,6 +17,9 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 10. [Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)](#recipe-10-multi-channel-network--input-multiplexer-chan_select_recv)
 11. [Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)](#recipe-11-decoupled-stage-transition-cancellation-token-cancel_token)
 12. [Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)](#recipe-12-category-mass-cancellation--emp-disruption-user_tag--scheduler_cancel_by_tag)
+13. [Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)](#recipe-13-channel-timeout--deadlock-free-message-polling-chan_recv_timeout)
+
+> 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) for the 8 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
 
 ---
 
@@ -606,4 +609,45 @@ detonate_emp_blast :: proc(sched: ^coroutine.Scheduler) {
         cancelled_combat, cancelled_shields)
 }
 ```
+
+---
+
+## Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)
+
+### Problem
+A receiver fiber needs to read telemetry or heartbeat signals from a remote producer or network socket. If the producer terminates, crashes, or stalls, the consumer must not block forever.
+
+### Solution
+Use `coroutine.chan_recv_timeout(f, ch, timeout_seconds)` to specify a maximum wait deadline.
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+Telemetry_Packet :: struct {
+    sender_id: int,
+    ping_ms:   f32,
+}
+
+telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(Telemetry_Packet)) {
+    for {
+        // Wait at most 1.5 seconds for the next packet
+        packet, ok, timed_out := coroutine.chan_recv_timeout(f, ch, timeout_seconds = 1.5)
+
+        if timed_out {
+            fmt.println("[WARN] Remote sensor heartbeat lost! Falling back to autonomous navigation.")
+            break
+        }
+
+        if !ok {
+            fmt.println("[INFO] Telemetry channel closed cleanly.")
+            break
+        }
+
+        fmt.printf("[TELEMETRY] Node #%d ping: %.1f ms\n", packet.sender_id, packet.ping_ms)
+    }
+}
 ```
+

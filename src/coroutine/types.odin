@@ -312,6 +312,10 @@ Scheduler :: struct {
     is_paused:         bool,
 
     // Execution Context
-    scheduler_sp:      rawptr, // Saved %rsp of the scheduler main thread
-    current_fiber:     ^Fiber, // Currently executing fiber
+    scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread
+    current_fiber:         ^Fiber, // Currently executing fiber
+
+    // Debug Watchdog Timer (Detects non-yielding infinite loops)
+    watchdog_enabled:      bool,
+    watchdog_max_slice_ms: f64,
 }

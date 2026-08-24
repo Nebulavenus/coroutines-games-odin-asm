@@ -4483,5 +4483,431 @@ test_rush_and_fallback_combined_with_timeout_and_tag_cancellation :: proc(t: ^te
     testing.expect_value(t, outcome, "FALLBACK_RECOVERY")
 }
 
+// ============================================================================
+// SUITE 16: SAFETY HARNESS, TIMEOUTS & FOOTGUN GUARDS (Tests 111-120)
+// ============================================================================
+
+// ============================================================================
+// Test 111: Channel Destruction Auto-Wakes Blocked Receivers (chan_destroy)
+// ============================================================================
+
+@(test)
+test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch := new(Channel(int))
+    chan_init(ch, capacity = 0) // Unbuffered rendezvous
+
+    woken_count := 0
+    ok_count := 0
+
+    Chan_Unblock_Ctx :: struct {
+        ch:    ^Channel(int),
+        woken: ^int,
+        ok_c:  ^int,
+    }
+
+    ctx := Chan_Unblock_Ctx{ch = ch, woken = &woken_count, ok_c = &ok_count}
+
+    for _ in 0 ..< 4 {
+        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Unblock_Ctx) {
+            val, ok := chan_recv(f, c.ch)
+            c.woken^ += 1
+            if ok do c.ok_c^ += 1
+        }, &ctx)
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(ch.recv_waiters), 4)
+
+    // Destroying the channel must auto-close and wake all 4 receivers with ok = false
+    chan_destroy(ch)
+    free(ch)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, woken_count, 4)
+    testing.expect_value(t, ok_count, 0)
+}
+
+// ============================================================================
+// Test 112: Channel Destruction Auto-Wakes Blocked Senders (chan_destroy)
+// ============================================================================
+
+@(test)
+test_chan_destroy_auto_wakes_blocked_senders :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch := new(Channel(int))
+    chan_init(ch, capacity = 1)
+
+    woken_count := 0
+    ok_count := 0
+
+    Chan_Send_Unblock_Ctx :: struct {
+        ch:    ^Channel(int),
+        woken: ^int,
+        ok_c:  ^int,
+    }
+
+    ctx := Chan_Send_Unblock_Ctx{ch = ch, woken = &woken_count, ok_c = &ok_count}
+
+    // Fill the buffer
+    chan_try_send(ch, 42)
+
+    // Spawn senders that will block
+    for _ in 0 ..< 3 {
+        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Send_Unblock_Ctx) {
+            ok := chan_send(f, c.ch, 99)
+            c.woken^ += 1
+            if ok do c.ok_c^ += 1
+        }, &ctx)
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(ch.send_waiters), 3)
+
+    // Destroy channel
+    chan_destroy(ch)
+    free(ch)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, woken_count, 3)
+    testing.expect_value(t, ok_count, 0)
+}
+
+// ============================================================================
+// Test 113: Channel Receive Timeout Success (chan_recv_timeout)
+// ============================================================================
+
+@(test)
+test_chan_recv_timeout_success :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 2)
+    defer chan_destroy(&ch)
+
+    Recv_Timeout_Test_Ctx :: struct {
+        ch:        ^Channel(int),
+        val:       int,
+        ok:        bool,
+        timed_out: bool,
+    }
+
+    ctx := Recv_Timeout_Test_Ctx{ch = &ch}
+
+    // Receiver with 0.5s timeout
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Timeout_Test_Ctx) {
+        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
+        c.val = val
+        c.ok = ok
+        c.timed_out = timed_out
+    }, &ctx)
+
+    // Delayed producer sends after 0.05s
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        wait(f, 0.05)
+        chan_send(f, ch, 777)
+    }, &ch)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, ctx.val, 777)
+    testing.expect(t, ctx.ok)
+    testing.expect(t, !ctx.timed_out)
+}
+
+// ============================================================================
+// Test 114: Channel Receive Timeout Expiration (chan_recv_timeout)
+// ============================================================================
+
+@(test)
+test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 2)
+    defer chan_destroy(&ch)
+
+    Recv_Timeout_Expire_Ctx :: struct {
+        ch:        ^Channel(int),
+        val:       int,
+        ok:        bool,
+        timed_out: bool,
+        finished:  bool,
+    }
+
+    ctx := Recv_Timeout_Expire_Ctx{ch = &ch}
+
+    // Receiver with 0.05s timeout
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Timeout_Expire_Ctx) {
+        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.05)
+        c.val = val
+        c.ok = ok
+        c.timed_out = timed_out
+        c.finished = true
+    }, &ctx)
+
+    // Step scheduler past 0.05s deadline
+    for _ in 0 ..< 8 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect(t, ctx.finished)
+    testing.expect(t, !ctx.ok)
+    testing.expect(t, ctx.timed_out)
+}
+
+// ============================================================================
+// Test 115: Channel Receive Timeout with Closed Channel
+// ============================================================================
+
+@(test)
+test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(string)
+    chan_init(&ch, capacity = 2)
+    defer chan_destroy(&ch)
+
+    Recv_Closed_Ctx :: struct {
+        ch:        ^Channel(string),
+        val:       string,
+        ok:        bool,
+        timed_out: bool,
+    }
+
+    ctx := Recv_Closed_Ctx{ch = &ch}
+
+    // Receiver waiting with 1.0s timeout
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Closed_Ctx) {
+        val, ok, timed_out := chan_recv_timeout(f, c.ch, 1.0)
+        c.val = val
+        c.ok = ok
+        c.timed_out = timed_out
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+
+    // Close channel mid-wait
+    chan_close(&ch)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect(t, !ctx.ok)
+    testing.expect(t, !ctx.timed_out)
+}
+
+// ============================================================================
+// Test 116: Scheduler Watchdog Configuration & Dynamic Adjustments
+// ============================================================================
+
+@(test)
+test_watchdog_configuration_and_disable :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    testing.expect_value(t, sched.watchdog_max_slice_ms, 100.0)
+
+    // Adjust watchdog
+    scheduler_set_watchdog(&sched, enabled = false, max_slice_ms = 50.0)
+    testing.expect(t, !sched.watchdog_enabled)
+    testing.expect_value(t, sched.watchdog_max_slice_ms, 50.0)
+
+    scheduler_set_watchdog(&sched, enabled = true, max_slice_ms = 250.0)
+    testing.expect(t, sched.watchdog_enabled)
+    testing.expect_value(t, sched.watchdog_max_slice_ms, 250.0)
+}
+
+// ============================================================================
+// Test 117: Channel Close Multicast with Interleaved Receivers
+// ============================================================================
+
+@(test)
+test_channel_close_multicast_with_interleaved_receivers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 0)
+    defer chan_destroy(&ch)
+
+    Chan_Close_Multi_Ctx :: struct {
+        ch:    ^Channel(int),
+        count: ^int,
+    }
+
+    woken_count := 0
+    ctxs: [5]Chan_Close_Multi_Ctx
+
+    for i in 0 ..< 5 {
+        ctxs[i] = Chan_Close_Multi_Ctx{ch = &ch, count = &woken_count}
+        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Close_Multi_Ctx) {
+            chan_recv(f, c.ch)
+            c.count^ += 1
+        }, &ctxs[i])
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(ch.recv_waiters), 5)
+
+    chan_close(&ch)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect_value(t, woken_count, 5)
+}
+
+// ============================================================================
+// Test 118: Channel Timeout Receiving with Concurrent Producers
+// ============================================================================
+
+@(test)
+test_chan_recv_timeout_concurrent_producers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 2)
+    defer chan_destroy(&ch)
+
+    Chan_Recv_Val_Ctx :: struct {
+        ch:  ^Channel(int),
+        val: ^int,
+    }
+
+    received_val := 0
+    ctx := Chan_Recv_Val_Ctx{ch = &ch, val = &received_val}
+
+    // Fast receiver with timeout
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Recv_Val_Ctx) {
+        v, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
+        if ok do c.val^ = v
+    }, &ctx)
+
+    // Producer 1 (0.04s delay)
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        wait(f, 0.04)
+        chan_send(f, ch, 111)
+    }, &ch)
+
+    // Producer 2 (0.08s delay)
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        wait(f, 0.08)
+        chan_send(f, ch, 222)
+    }, &ch)
+
+    for _ in 0 ..< 8 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, received_val, 111)
+}
+
+// ============================================================================
+// Test 119: Scope Destruction Prevents Stale Entity Pointer Access
+// ============================================================================
+
+Test_Monster :: struct {
+    hp:    int,
+    scope: Fiber_Scope,
+}
+
+@(test)
+test_scope_destroy_prevents_stale_pointer_access :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    monster := new(Test_Monster)
+    monster.hp = 100
+
+    touched_after_death := false
+
+    Monster_Attack_Ctx :: struct {
+        m:       ^Test_Monster,
+        touched: ^bool,
+    }
+
+    ctx := Monster_Attack_Ctx{m = monster, touched = &touched_after_death}
+
+    // Fiber bound to monster.scope
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Monster_Attack_Ctx) {
+        wait(f, 0.1)
+        // If not cancelled, touches memory:
+        c.m.hp = 0
+        c.touched^ = true
+    }, &ctx, scope = &monster.scope)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scope_active_count(&monster.scope), 1)
+
+    // Monster dies after 0.02s -> scope destroyed
+    scope_destroy(&sched, &monster.scope)
+    free(monster) // Memory wiped!
+
+    // Advance time past 0.1s
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    // Fiber was cancelled on scope_destroy and never touched dead monster!
+    testing.expect(t, !touched_after_death)
+}
+
+// ============================================================================
+// Test 120: Fiber Temporary Allocator Memory Isolation
+// ============================================================================
+
+@(test)
+test_temp_allocator_isolation_invariants :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    f1_alloc_ok := false
+    f2_alloc_ok := false
+
+    spawn_ptr(&sched, proc(f: ^Fiber, ok: ^bool) {
+        data := make([]byte, 1024, context.temp_allocator)
+        for i in 0 ..< len(data) do data[i] = 0xAA
+        wait(f, 0.02)
+        // Verify contents unchanged
+        all_valid := true
+        for b in data do if b != 0xAA do all_valid = false
+        ok^ = all_valid
+    }, &f1_alloc_ok)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, ok: ^bool) {
+        data := make([]byte, 2048, context.temp_allocator)
+        for i in 0 ..< len(data) do data[i] = 0xBB
+        wait(f, 0.02)
+        all_valid := true
+        for b in data do if b != 0xBB do all_valid = false
+        ok^ = all_valid
+    }, &f2_alloc_ok)
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, f1_alloc_ok)
+    testing.expect(t, f2_alloc_ok)
+}
+
+
 
 

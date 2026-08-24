@@ -354,6 +354,12 @@ fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user
     }
 }
 
+scheduler_set_watchdog :: proc(sched: ^Scheduler, enabled: bool, max_slice_ms: f64 = 100.0) {
+    if sched == nil do return
+    sched.watchdog_enabled = enabled
+    sched.watchdog_max_slice_ms = max_slice_ms
+}
+
 wait_until_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     if f == nil || f.sched == nil do return
 
@@ -1300,6 +1306,10 @@ chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allo
 }
 
 chan_destroy :: proc(ch: ^Channel($T)) {
+    if ch == nil do return
+    if !ch.is_closed {
+        chan_close(ch)
+    }
     delete(ch.buffer, ch.allocator)
     delete(ch.send_waiters)
     delete(ch.recv_waiters)
@@ -1464,6 +1474,59 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
         fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
         context = f.stored_context
     }
+}
+
+chan_recv_timeout :: proc(f: ^Fiber, ch: ^Channel($T), timeout_seconds: f32) -> (value: T, ok: bool, timed_out: bool) {
+    if f == nil || ch == nil do return {}, false, false
+
+    // Fast-path: if items are already available in buffer
+    if ch.count > 0 || (ch.capacity == 0 && len(ch.send_waiters) > 0) {
+        val, ok_recv := chan_recv(f, ch)
+        return val, ok_recv, false
+    }
+
+    if ch.is_closed {
+        return {}, false, false
+    }
+
+    if timeout_seconds <= 0.0 {
+        val, ok_recv := chan_try_recv(ch)
+        return val, ok_recv, !ok_recv
+    }
+
+    Recv_Result :: struct {
+        val:       T,
+        ok:        bool,
+        timed_out: bool,
+    }
+    res := Recv_Result{}
+
+    Chan_Recv_Pair :: struct {
+        ch:              ^Channel(T),
+        res:             ^Recv_Result,
+        timeout_seconds: f32,
+    }
+    pair := Chan_Recv_Pair{ch = ch, res = &res, timeout_seconds = timeout_seconds}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, p: ^Chan_Recv_Pair) {
+            v, ok_recv := chan_recv(f, p.ch)
+            p.res.val = v
+            p.res.ok = ok_recv
+            p.res.timed_out = false
+        }, &pair, name = "Chan Recv Branch"),
+
+        branch(proc(f: ^Fiber, p: ^Chan_Recv_Pair) {
+            wait(f, p.timeout_seconds)
+            p.res.timed_out = true
+            p.res.ok = false
+        }, &pair, name = "Chan Timeout Branch"),
+    )
+
+    if winner == 1 {
+        return {}, false, true
+    }
+    return res.val, res.ok, res.timed_out
 }
 
 // --- Multi-Channel Select (CSP Multiplexer) ---

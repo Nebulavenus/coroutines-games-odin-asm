@@ -2,6 +2,8 @@ package coroutine
 
 import "base:runtime"
 import "base:intrinsics"
+import "core:fmt"
+import "core:time"
 
 // ============================================================================
 // Scheduler Lifecycle
@@ -34,6 +36,8 @@ scheduler_init :: proc(
     sched.is_paused = false
     sched.scheduler_sp = nil
     sched.current_fiber = nil
+    sched.watchdog_enabled = ODIN_DEBUG
+    sched.watchdog_max_slice_ms = 100.0
 }
 
 scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
@@ -61,6 +65,8 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
     sched.is_paused = false
     sched.scheduler_sp = nil
     sched.current_fiber = nil
+    sched.watchdog_enabled = ODIN_DEBUG
+    sched.watchdog_max_slice_ms = 100.0
 }
 
 scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
@@ -482,7 +488,17 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
         sched.current_fiber = f
 
         // Context switch into the fiber
-        fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+        if sched.watchdog_enabled {
+            t0 := time.tick_now()
+            fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+            elapsed := time.tick_since(t0)
+            elapsed_ms := time.duration_milliseconds(elapsed)
+            if elapsed_ms > sched.watchdog_max_slice_ms {
+                fmt.panicf("[WATCHDOG PANIC] Runaway non-yielding fiber detected! Fiber [#%d] '%s' executed for %.2f ms without yielding! Did you write an infinite loop without wait() or yield_frame()?", f.handle, f.debug_name, elapsed_ms)
+            }
+        } else {
+            fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+        }
 
         sched.current_fiber = nil
 

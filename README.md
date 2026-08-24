@@ -97,6 +97,7 @@ coroutines_asm/
 │   │   └── 09_headless_ci_testing.md   # Headless Simulation with simulate_until
 │   │
 │   └── guides/
+│       ├── GUIDE_FOOTGUNS.md    # The 8 Fiber Footguns & Prevention Guide
 │       ├── GUIDE_INTEGRATION.md # Engine Integration (Raylib, Sokol, Custom)
 │       ├── GUIDE_SCHEDULERS.md   # Multi-Scheduler Architecture (World vs. UI)
 │       ├── GUIDE_DETERMINISM.md  # Determinism, Physics & Rollback Netcode

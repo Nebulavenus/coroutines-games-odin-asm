@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [The 8 Footguns Safety Upgrades & Comprehensive Concurrency Hardening] - 2026-08-24
+
+### Added
+- **Debug Infinite Loop Watchdog (`Scheduler.watchdog_enabled`, `scheduler_set_watchdog`)**:
+  - In debug builds (`when ODIN_DEBUG`), measures the duration of each fiber execution slice.
+  - Automatically panics with descriptive diagnostics (`[WATCHDOG PANIC]`) naming the offending fiber handle and debug name if a fiber runs for $>100\text{ms}$ without yielding.
+- **Channel Auto-Wake on Destruction (`chan_destroy`)**:
+  - Automatically invokes `chan_close(ch)` before freeing backing arrays, waking all pending senders and receivers with `ok = false`.
+- **Channel Receive with Deadline / Timeout (`chan_recv_timeout`)**:
+  - Allows fibers to specify a timeout deadline returning `(value: T, ok: bool, timed_out: bool)` via structured `race` coordination.
+- **Tag Inheritance in Structured Concurrency (`Branch_Desc.tag`)**:
+  - `branch_ptr`, `branch_val`, and `branch_nil` now support `tag: u32 = 0`.
+  - `sync`, `race`, and `rush` automatically propagate `tag` to spawned child branches, enabling category mass cancellations (e.g. EMP disruption) on nested behaviors.
+- **Coordinator Abort Resolution (`fiber_abort_tree` & `fiber_on_finish`)**:
+  - `fiber_abort_tree` now calls `fiber_on_finish` on `.Aborted` fibers to decrement `active_branches` and wake parent fibers awaiting `sync`, `race`, `rush`, or `fallback`.
+- **Guaranteed Fiber Teardown (`fiber_set_cleanup`)**:
+  - Registers a guaranteed cleanup callback that runs on normal fiber completion or external abort.
+- **Master Footguns Guide (`docs/guides/GUIDE_FOOTGUNS.md`)**:
+  - Comprehensive guide detailing the 8 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules Cheat Sheet.
+- **Cookbook Recipe 13 (`COOKBOOK.md`)**:
+  - Added Recipe 13 demonstrating deadlock-free telemetry polling via `chan_recv_timeout`.
+- **Unit Tests 91–120 (`src/coroutine/coroutine_test.odin`)**:
+  - 30 new unit tests (Suites 14, 15, and 16) covering tag propagation, multi-channel select with producer aborts, cancel token cascades, deep hierarchy cleanup, semaphore/mutex contention churn, event multicast pruning, latch countdown aborts, mixed-queue mass cancellation, slab growth, composite fallback/rush coordination, channel destruction auto-wake, channel timeouts, watchdog controls, scope protection against stale pointers, and temp allocator isolation.
+  - Test suite expanded to **120 / 120 unit tests passing** (100% with 0 memory leaks).
+
 ## [Pure Systems Enhancements & POSIX Parity] - 2026-08-24
 
 ### Added
