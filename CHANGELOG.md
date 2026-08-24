@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [3-Tier Engine Clock Architecture] - 2026-08-24
+
+### Added
+- **3-Tier Multi-Domain Engine Clock (`Scheduler_Clock` & `Time_Clock`)**:
+  - **1. Real / Wall Clock (`real_time: f64`, `real_delta: f32`, `real_ticks: u64`)**: Unscaled and unpaused clock for UI, pause menus, network timeouts, and diagnostics (`wait_real`, `spawn_real`, `delta_real`, `real_time`).
+  - **2. Scaled Simulation Clock (`sim_time: f64`, `sim_delta: f32`, `time_scale: f32`, `is_paused: bool`)**: Scaled gameplay clock for AI, combat, tweens, and timers (`wait`, `delta_time`, `current_time`).
+  - **3. Discrete Simulation Ticks (`sim_ticks: u64`, `tick_rate_hz: u32`, `frame_count: u64`)**: Zero-drift integer ticking for deterministic physics, replay systems, and rollback netcode (`wait_ticks`, `current_ticks`, `scheduler_step_ticks`).
+- **Engine-Agnostic Pluggable Time Drivers**:
+  - `scheduler_step(sched, dt)`: Variable frame delta step.
+  - `scheduler_single_step(sched, dt)`: Forced simulation step during debugger pause.
+  - `scheduler_step_ticks(sched, ticks)`: Integer tick driver for fixed physics and headless testing.
+  - `scheduler_step_dual(sched, real_dt, sim_dt)`: Dual real/simulation delta driver.
+- **Dual Min-Heap & Multi-Queue Synchronization**:
+  - `real_timer_heap`: Dedicated $O(\log N)$ min-heap for real-time timers.
+  - `timer_heap`: Scaled simulation timer min-heap.
+  - `tick_waiters`: Discrete integer tick waiting queue.
+- **Unit Tests 67–70 (`src/coroutine/coroutine_test.odin`)**:
+  - Tests covering real-time execution while paused (`test_real_time_clock_while_paused`), fixed integer discrete ticks (`test_fixed_integer_tick_clock`), dual-clock slow-mo / fast-forward scaling (`test_dual_clock_time_scaling`), and multi-clock heap integrity (`test_multi_clock_heap_integrity`). 70 / 70 unit tests passing (100%).
+
 ## [Gameplay Control Flow, Phase Director & Headless Runner] - 2026-08-24
 
 ### Added

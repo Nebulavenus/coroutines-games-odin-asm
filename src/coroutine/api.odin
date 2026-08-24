@@ -108,6 +108,35 @@ spawn_nil :: proc(
 // Unified overloaded entry point
 spawn :: proc{spawn_ptr, spawn_val, spawn_nil}
 
+spawn_real_nil :: proc(
+    sched: ^Scheduler,
+    entry: proc(f: ^Fiber),
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+) -> Fiber_Handle {
+    h := spawn_nil(sched, entry, scope, name)
+    if f := fiber_find_by_handle(sched, h); f != nil {
+        f.wake_clock = .Real_Time
+    }
+    return h
+}
+
+spawn_real_ptr :: proc(
+    sched: ^Scheduler,
+    entry: proc(f: ^Fiber, data: ^$T),
+    data: ^T,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+) -> Fiber_Handle {
+    h := spawn_ptr(sched, entry, data, scope, name)
+    if f := fiber_find_by_handle(sched, h); f != nil {
+        f.wake_clock = .Real_Time
+    }
+    return h
+}
+
+spawn_real :: proc{spawn_real_ptr, spawn_real_nil}
+
 // ============================================================================
 // Suspension & Waiting Primitives
 // ============================================================================
@@ -119,9 +148,44 @@ wait :: proc(f: ^Fiber, seconds: f32) {
         return
     }
 
-    f.wake_time = f.sched.current_time + f64(seconds)
+    f.wake_time = f.sched.clock.sim_time + f64(seconds)
+    f.wake_clock = .Sim_Scaled
     f.status = .Sleeping_Time
     timer_heap_push(f.sched, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+wait_real :: proc(f: ^Fiber, seconds: f32) {
+    if f == nil || f.sched == nil do return
+    if seconds <= 0.0 {
+        yield_frame(f)
+        return
+    }
+
+    f.wake_time = f.sched.clock.real_time + f64(seconds)
+    f.wake_clock = .Real_Time
+    f.status = .Sleeping_Real_Time
+    real_timer_heap_push(f.sched, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+wait_ticks :: proc(f: ^Fiber, ticks: u64) {
+    if f == nil || f.sched == nil do return
+    if ticks == 0 {
+        yield_frame(f)
+        return
+    }
+
+    f.wake_ticks = f.sched.clock.sim_ticks + ticks
+    f.wake_clock = .Fixed_Tick
+    f.status = .Sleeping_Ticks
+    append(&f.sched.tick_waiters, f)
 
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -138,15 +202,27 @@ fail :: proc(f: ^Fiber) {
 }
 
 delta_time :: #force_inline proc "contextless" (f: ^Fiber) -> f32 {
-    return f != nil && f.sched != nil ? f.sched.delta_time : 0.0
+    return f != nil && f.sched != nil ? f.sched.clock.sim_delta : 0.0
+}
+
+delta_real :: #force_inline proc "contextless" (f: ^Fiber) -> f32 {
+    return f != nil && f.sched != nil ? f.sched.clock.real_delta : 0.0
 }
 
 current_time :: #force_inline proc "contextless" (f: ^Fiber) -> f64 {
-    return f != nil && f.sched != nil ? f.sched.current_time : 0.0
+    return f != nil && f.sched != nil ? f.sched.clock.sim_time : 0.0
+}
+
+real_time :: #force_inline proc "contextless" (f: ^Fiber) -> f64 {
+    return f != nil && f.sched != nil ? f.sched.clock.real_time : 0.0
+}
+
+current_ticks :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
+    return f != nil && f.sched != nil ? f.sched.clock.sim_ticks : 0
 }
 
 current_frame :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
-    return f != nil && f.sched != nil ? f.sched.current_frame : 0
+    return f != nil && f.sched != nil ? f.sched.clock.frame_count : 0
 }
 
 scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {

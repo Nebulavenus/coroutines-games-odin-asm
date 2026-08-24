@@ -530,13 +530,20 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if rl.IsKeyPressed(.SIX)   do w.latched_station = 6
     if rl.IsKeyPressed(.E)     do w.latched_interact = true
 
-    // If simulation is completely paused with no step this frame, halt world updates
-    if sim_dt <= 0.0 do return
+    // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
+    if sim_dt <= 0.0 {
+        coroutine.scheduler_step(&w.sched, dt)
+        return
+    }
 
     w.global_time += sim_dt
 
     // Step coroutine engine
-    coroutine.scheduler_single_step(&w.sched, sim_dt)
+    if !w.sched.is_paused {
+        coroutine.scheduler_step(&w.sched, sim_dt)
+    } else {
+        coroutine.scheduler_single_step(&w.sched, sim_dt)
+    }
 
     // --- Player Movement ---
     move_dir: rl.Vector2
@@ -763,11 +770,19 @@ showcase_render :: proc(w: ^Showcase_World) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - f.sched.current_time)
-                status_str = fmt.tprintf("Sleeping_Time (%.2fs left)", left)
+                left := max(0.0, f.wake_time - f.sched.clock.sim_time)
+                status_str = fmt.tprintf("Sleeping_Sim (%.2fs left)", left)
                 status_col = rl.SKYBLUE
+            case .Sleeping_Real_Time:
+                left := max(0.0, f.wake_time - f.sched.clock.real_time)
+                status_str = fmt.tprintf("Sleeping_Real (%.2fs left)", left)
+                status_col = rl.PINK
+            case .Sleeping_Ticks:
+                left := f.wake_ticks > f.sched.clock.sim_ticks ? f.wake_ticks - f.sched.clock.sim_ticks : 0
+                status_str = fmt.tprintf("Sleeping_Ticks (%d left)", left)
+                status_col = rl.MAGENTA
             case .Sleeping_Frames:
-                left := f.wake_frame > f.sched.current_frame ? f.wake_frame - f.sched.current_frame : 0
+                left := f.wake_frame > f.sched.clock.frame_count ? f.wake_frame - f.sched.clock.frame_count : 0
                 status_str = fmt.tprintf("Sleeping_Frames (%d frames)", left)
                 status_col = rl.SKYBLUE
             case .Waiting_Condition:

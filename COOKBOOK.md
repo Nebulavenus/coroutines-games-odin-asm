@@ -10,6 +10,7 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 3. [Recipe 3: Multi-Wave Enemy Spawner (`Phase_Director` + `scope_wait`)](#recipe-3-multi-wave-enemy-spawner-phase_director--scope_wait)
 4. [Recipe 4: AI Behavior Priority Fallbacks & Rush Objectives (`fallback` + `rush`)](#recipe-4-ai-behavior-priority-fallbacks--rush-objectives-fallback--rush)
 5. [Recipe 5: Damped Smooth Spring Follower (`tween`)](#recipe-5-damped-smooth-spring-follower-tween)
+6. [Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)](#recipe-6-unpausable-real-time-pause-menus--hud-animations-wait_real--spawn_real)
 
 ---
 
@@ -260,5 +261,82 @@ camera_follower_coroutine :: proc(f: ^coroutine.Fiber, cam: ^Camera_Rig) {
             coroutine.yield_frame(f)
         }
     }
+}
+```
+
+---
+
+## Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)
+
+### Problem
+When the player opens the pause menu or hits an in-game freeze frame, gameplay physics and enemy coroutines must halt completely (`sched.is_paused = true`). However, UI transitions, button hover wobbles, and particle effects must continue animating smoothly at 60 FPS in real wall-clock time.
+
+### Solution
+Use `coroutine.spawn_real` and `coroutine.wait_real` / `coroutine.delta_real`. Real-time fibers are driven by the unscaled Real Clock and never pause when gameplay simulation is frozen.
+
+```odin
+package ui
+
+import "src/coroutine"
+
+Pause_Menu :: struct {
+    is_open:      bool,
+    backdrop_dim: f32, // 0.0 -> 0.75
+    banner_scale: f32, // 0.0 -> 1.0
+    sched:        ^coroutine.Scheduler,
+}
+
+open_pause_menu :: proc(menu: ^Pause_Menu) {
+    menu.is_open = true
+
+    // 1. Freeze gameplay simulation clock (all standard `wait` fibers halt)
+    coroutine.scheduler_set_paused(menu.sched, true)
+
+    // 2. Spawn unpausable real-time UI animation fiber
+    coroutine.spawn_real(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
+        // Animate backdrop fade and banner popup in real wall-clock time
+        elapsed: f32 = 0.0
+        duration: f32 = 0.30
+
+        for elapsed < duration {
+            dt := coroutine.delta_real(f)
+            elapsed += dt
+            t := min(1.0, elapsed / duration)
+
+            m.backdrop_dim = coroutine.ease_out_quad(t) * 0.75
+            m.banner_scale = coroutine.ease_out_back(t)
+
+            coroutine.yield_frame(f)
+        }
+
+        m.backdrop_dim = 0.75
+        m.banner_scale = 1.0
+    }, menu)
+}
+
+close_pause_menu :: proc(menu: ^Pause_Menu) {
+    // Spawn real-time closing transition, then resume gameplay
+    coroutine.spawn_real(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
+        elapsed: f32 = 0.0
+        duration: f32 = 0.20
+
+        for elapsed < duration {
+            dt := coroutine.delta_real(f)
+            elapsed += dt
+            t := min(1.0, elapsed / duration)
+
+            m.backdrop_dim = 0.75 * (1.0 - coroutine.ease_in_quad(t))
+            m.banner_scale = 1.0 - coroutine.ease_in_quad(t)
+
+            coroutine.yield_frame(f)
+        }
+
+        m.is_open = false
+        m.backdrop_dim = 0.0
+        m.banner_scale = 0.0
+
+        // Unfreeze gameplay simulation clock
+        coroutine.scheduler_set_paused(m.sched, false)
+    }, menu)
 }
 ```

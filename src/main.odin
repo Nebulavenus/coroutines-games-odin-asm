@@ -503,13 +503,20 @@ game_update :: proc(g: ^Game, dt: f32) {
         g.latched_shoot = true
     }
 
-    // If simulation is completely paused with no step this frame, halt world updates
-    if sim_dt <= 0.0 do return
+    // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
+    if sim_dt <= 0.0 {
+        coroutine.scheduler_step(&g.sched, dt)
+        return
+    }
 
     g.game_time += sim_dt
 
     // Step the Coroutine Engine
-    coroutine.scheduler_single_step(&g.sched, sim_dt)
+    if !g.sched.is_paused {
+        coroutine.scheduler_step(&g.sched, sim_dt)
+    } else {
+        coroutine.scheduler_single_step(&g.sched, sim_dt)
+    }
 
     if g.game_over || g.victory do return
 
@@ -785,11 +792,19 @@ game_render :: proc(g: ^Game) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - f.sched.current_time)
-                status_str = fmt.tprintf("Sleeping_Time (%.2fs left)", left)
+                left := max(0.0, f.wake_time - f.sched.clock.sim_time)
+                status_str = fmt.tprintf("Sleeping_Sim (%.2fs left)", left)
                 status_col = rl.SKYBLUE
+            case .Sleeping_Real_Time:
+                left := max(0.0, f.wake_time - f.sched.clock.real_time)
+                status_str = fmt.tprintf("Sleeping_Real (%.2fs left)", left)
+                status_col = rl.PINK
+            case .Sleeping_Ticks:
+                left := f.wake_ticks > f.sched.clock.sim_ticks ? f.wake_ticks - f.sched.clock.sim_ticks : 0
+                status_str = fmt.tprintf("Sleeping_Ticks (%d left)", left)
+                status_col = rl.MAGENTA
             case .Sleeping_Frames:
-                left := f.wake_frame > f.sched.current_frame ? f.wake_frame - f.sched.current_frame : 0
+                left := f.wake_frame > f.sched.clock.frame_count ? f.wake_frame - f.sched.clock.frame_count : 0
                 status_str = fmt.tprintf("Sleeping_Frames (%d frames)", left)
                 status_col = rl.SKYBLUE
             case .Waiting_Condition:

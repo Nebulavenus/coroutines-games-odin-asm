@@ -668,24 +668,46 @@ Join_Coordinator :: struct {
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### A. The `Scheduler` Struct
+### A. The `Scheduler` & `Scheduler_Clock` Structs
 ```odin
+Time_Clock :: enum u8 {
+    Sim_Scaled,  // Scaled by time_scale and halted by is_paused (Default for gameplay)
+    Real_Time,   // Always runs at 1.0x real wall-clock speed (UI, menus, network)
+    Fixed_Tick,  // Driven by fixed integer discrete ticks (Physics, rollback netcode)
+}
+
+Scheduler_Clock :: struct {
+    // --- 1. Real / Wall Clock (Unscaled & Unpaused) ---
+    real_time:         f64,     // Absolute real-world seconds since start
+    real_delta:        f32,     // Real-world frame delta (seconds)
+    real_ticks:        u64,     // Real-world millisecond integer timestamp
+
+    // --- 2. Simulation Clock (Scaled & Pausable) ---
+    sim_time:          f64,     // Scaled simulation seconds since start
+    sim_delta:         f32,     // Scaled delta for this step
+    time_scale:        f32,     // Multiplier (1.0 = normal, 0.5 = slow-mo, 2.0 = fast)
+    is_paused:         bool,    // Freeze sim_time when true
+
+    // --- 3. Discrete Simulation Ticks (Deterministic Integer Clock) ---
+    sim_ticks:         u64,     // Integer simulation ticks (zero drift)
+    tick_rate_hz:      u32,     // e.g. 60 Hz physics or 1000 Hz ms clock
+    frame_count:       u64,     // Total scheduler steps executed
+}
+
 Scheduler :: struct {
-    // Queues
+    // Queues & Heaps
     ready_queue:       [dynamic]^Fiber,
-    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time
+    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)
+    real_timer_heap:   [dynamic]^Fiber, // Min-Heap sorted by wake_time (Real/Wall Clock)
+    tick_waiters:      [dynamic]^Fiber, // Waiting on discrete integer simulation ticks
     frame_waiters:     [dynamic]^Fiber, // Waiting on frame count
     condition_waiters: [dynamic]^Fiber, // Waiting on boolean predicates
     
     // Stack Allocator & Pool
     fiber_pool:        Fiber_Pool,
     
-    // Engine Time
-    current_time:      f64,
-    current_frame:     u64,
-    delta_time:        f32,
-    time_scale:        f32,
-    is_paused:         bool,
+    // 3-Tier Multi-Domain Engine Clock
+    clock:             Scheduler_Clock,
 
     // Execution Context
     scheduler_sp:      rawptr, // Saved %rsp of the scheduler main thread
@@ -693,30 +715,39 @@ Scheduler :: struct {
 }
 ```
 
-### B. Dispatch Loop Execution Order (Per Frame)
+### B. Multi-Domain Dispatch Loop Pipeline
 
-Every frame, `scheduler_step(sched, dt)` ticks in a deterministic 5-stage pipeline:
+The scheduler supports **three pluggable engine drivers**:
+1. `scheduler_step(sched, dt)`: Standard variable frame delta step.
+2. `scheduler_step_ticks(sched, ticks)`: Deterministic integer tick step.
+3. `scheduler_single_step(sched, dt)`: Debugger freeze step.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. Advance Time (current_time += dt * time_scale, current_frame += 1)  │
+│ 1. Advance Clocks:                                                      │
+│    • Real Clock: real_time += dt, real_ticks += dt * 1000               │
+│    • Sim Clock:  sim_time += sim_dt, sim_ticks += ticks, frames += 1   │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 2. Wake Timers:                                                         │
-│    Inspect Min-Heap root. While root.wake_time <= current_time:         │
-│    Pop root, set status = .Ready, append to Ready Queue.                │
+│ 2. Wake Real Timers (Real-Timer Min-Heap):                              │
+│    While root.wake_time <= real_time -> pop to Ready Queue.             │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 3. Wake Frame Waiters:                                                  │
-│    For each waiter: if wake_frame <= current_frame -> move to Ready.   │
+│ 3. Wake Sim Timers (Sim-Timer Min-Heap):                                │
+│    While root.wake_time <= sim_time -> pop to Ready Queue.              │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 4. Poll Conditions:                                                     │
-│    For each waiter: if condition_fn(user_data) == true -> move to Ready│
+│ 4. Wake Integer Tick Waiters:                                           │
+│    For each waiter: if wake_ticks <= sim_ticks -> move to Ready.        │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 5. Execute Ready Queue:                                                 │
+│ 5. Wake Frame Waiters:                                                  │
+│    For each waiter: if wake_frame <= frame_count -> move to Ready.      │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 6. Poll Conditions:                                                     │
+│    For each waiter: if condition_fn(user_data) == true -> move to Ready │
+├─────────────────────────────────────────────────────────────────────────┤
+│ 7. Execute Ready Queue:                                                 │
 │    While len(ready_queue) > 0:                                          │
 │      f = pop_front(ready_queue)                                         │
 │      f.status = .Running                                                │
 │      fiber_context_switch(&sched.scheduler_sp, f.saved_sp)              │
-│      // Control returns here when fiber yields or finishes             │
 │      process_post_execution(f)                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```

@@ -2649,3 +2649,195 @@ test_scheduler_step_while_paused :: proc(t: ^testing.T) {
     scheduler_single_step(&sched, 0.06)
     testing.expect_value(t, g_test66_flag, true)
 }
+
+// ============================================================================
+// Test 67: Real / Wall Clock While Game Is Paused
+// ============================================================================
+
+@(test)
+test_real_time_clock_while_paused :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    real_fiber_done := false
+    sim_fiber_done := false
+
+    // Real-Time UI Fiber (e.g. pause menu animation)
+    spawn_real(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait_real(f, 0.10)
+        done^ = true
+    }, &real_fiber_done)
+
+    // Sim-Time Gameplay Fiber (e.g. enemy attack)
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.10)
+        done^ = true
+    }, &sim_fiber_done)
+
+    // Pause the game simulation!
+    sched.is_paused = true
+
+    // Step 3 times at 0.05s real time (total 0.15s real elapsed)
+    for _ in 0 ..< 3 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    // Real-time fiber must be completed, but sim-time fiber must be FROZEN
+    testing.expect_value(t, real_fiber_done, true)
+    testing.expect_value(t, sim_fiber_done, false)
+    testing.expect_value(t, sched.clock.sim_time, 0.0)
+    testing.expect(t, sched.clock.real_time >= 0.14)
+
+    // Unpause game
+    sched.is_paused = false
+    for _ in 0 ..< 3 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    // Sim-time fiber now finishes
+    testing.expect_value(t, sim_fiber_done, true)
+}
+
+// ============================================================================
+// Test 68: Fixed Discrete Integer Simulation Ticks
+// ============================================================================
+
+@(test)
+test_fixed_integer_tick_clock :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sched.clock.tick_rate_hz = 60 // 60 ticks per second (physics tick)
+
+    tick50_done := false
+    tick100_done := false
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait_ticks(f, 50)
+        done^ = true
+    }, &tick50_done)
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait_ticks(f, 100)
+        done^ = true
+    }, &tick100_done)
+
+    // Step 1: 30 ticks (sim_ticks = 30; fibers register wait_ticks for 30+50=80 and 30+100=130)
+    scheduler_step_ticks(&sched, 30)
+    testing.expect_value(t, tick50_done, false)
+    testing.expect_value(t, tick100_done, false)
+    testing.expect_value(t, sched.clock.sim_ticks, 30)
+
+    // Step 2: 50 more ticks (sim_ticks = 80 >= 80) -> Fiber 1 wakes!
+    scheduler_step_ticks(&sched, 50)
+    testing.expect_value(t, tick50_done, true)
+    testing.expect_value(t, tick100_done, false)
+    testing.expect_value(t, sched.clock.sim_ticks, 80)
+
+    // Step 3: 50 more ticks (sim_ticks = 130 >= 130) -> Fiber 2 wakes!
+    scheduler_step_ticks(&sched, 50)
+    testing.expect_value(t, tick100_done, true)
+    testing.expect_value(t, sched.clock.sim_ticks, 130)
+}
+
+// ============================================================================
+// Test 69: Dual-Clock Time Scaling & Multipliers
+// ============================================================================
+
+@(test)
+test_dual_clock_time_scaling :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sched.clock.time_scale = 0.5 // Slow-motion 0.5x
+
+    observed_sim_delta: f32 = 0.0
+    observed_real_delta: f32 = 0.0
+    observed_sim_time: f64 = 0.0
+    observed_real_time: f64 = 0.0
+
+    spawn(&sched, proc(f: ^Fiber, data: ^Test69_Data) {
+        yield_frame(f)
+        data.sim_dt = delta_time(f)
+        data.real_dt = delta_real(f)
+        data.sim_t = current_time(f)
+        data.real_t = real_time(f)
+    }, &Test69_Data{})
+
+    // Frame 1
+    scheduler_step(&sched, 0.10)
+    // Frame 2
+    data := Test69_Data{}
+    spawn(&sched, proc(f: ^Fiber, d: ^Test69_Data) {
+        d.sim_dt = delta_time(f)
+        d.real_dt = delta_real(f)
+        d.sim_t = current_time(f)
+        d.real_t = real_time(f)
+    }, &data)
+
+    scheduler_step(&sched, 0.10)
+
+    // Real delta is 0.10, Sim delta is 0.05 (0.5x scale)
+    testing.expect(t, abs(data.real_dt - 0.10) < 0.001)
+    testing.expect(t, abs(data.sim_dt - 0.05) < 0.001)
+    testing.expect(t, abs(data.real_t - 0.20) < 0.001)
+    testing.expect(t, abs(data.sim_t - 0.10) < 0.001)
+}
+
+Test69_Data :: struct {
+    sim_dt:  f32,
+    real_dt: f32,
+    sim_t:   f64,
+    real_t:  f64,
+}
+
+// ============================================================================
+// Test 70: Multi-Clock Heap Integrity & Mixed Cancellation
+// ============================================================================
+
+@(test)
+test_multi_clock_heap_integrity :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    completed_count := 0
+
+    // Spawn 20 real timers
+    for i in 0 ..< 20 {
+        spawn_real(&sched, proc(f: ^Fiber, c: ^int) {
+            wait_real(f, 0.02)
+            c^ += 1
+        }, &completed_count)
+    }
+
+    // Spawn 20 sim timers
+    for i in 0 ..< 20 {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            wait(f, 0.02)
+            c^ += 1
+        }, &completed_count)
+    }
+
+    // Spawn 20 tick waiters
+    for i in 0 ..< 20 {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            wait_ticks(f, 20)
+            c^ += 1
+        }, &completed_count)
+    }
+
+    // Step scheduler forward
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    // All 60 fibers should have woken and completed cleanly
+    testing.expect_value(t, completed_count, 60)
+    testing.expect_value(t, len(sched.real_timer_heap), 0)
+    testing.expect_value(t, len(sched.timer_heap), 0)
+    testing.expect_value(t, len(sched.tick_waiters), 0)
+}

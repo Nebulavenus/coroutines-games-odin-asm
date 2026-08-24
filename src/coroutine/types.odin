@@ -16,19 +16,45 @@ CANARY_MAGIC       :: 0xDEAD_BEEF_CAFE_BABE
 // ============================================================================
 
 Fiber_Status :: enum u8 {
-    Unused,            // In stack pool / free list
+    Unused,            // In pool free list
     Ready,             // In ready queue, ready to be dispatched
     Running,           // Currently active on the CPU
     Sleeping_Time,     // Sleeping in timer min-heap (wait / wait_seconds)
+    Sleeping_Real_Time,// Sleeping in real-time min-heap (wait_real)
+    Sleeping_Ticks,    // Sleeping in integer tick waiter queue (wait_ticks)
     Sleeping_Frames,   // Sleeping in frame-counter queue (wait_frames)
     Waiting_Condition, // Polling a predicate each frame (wait_until)
-    Suspended_Join,    // Suspended waiting for children (sync / race)
+    Suspended_Join,    // Suspended waiting for children (sync / race / rush / fallback)
     Completed,         // Naturally finished execution
     Failed,            // Encountered error / explicitly failed
     Aborted,           // Cancelled by parent or sibling race winner
 }
 
 Fiber_Handle :: distinct u32
+
+Time_Clock :: enum u8 {
+    Sim_Scaled,  // Scaled by time_scale and halted by is_paused (Default for gameplay)
+    Real_Time,   // Always runs at 1.0x real wall-clock speed (UI, menus, network)
+    Fixed_Tick,  // Driven by fixed integer discrete ticks (Physics, replays, netcode)
+}
+
+Scheduler_Clock :: struct {
+    // --- Real / Wall Clock (Unscaled & Unpaused) ---
+    real_time:         f64,     // Absolute real-world seconds since start
+    real_delta:        f32,     // Real-world frame delta (seconds)
+    real_ticks:        u64,     // Real-world millisecond integer timestamp
+
+    // --- Simulation Clock (Scaled & Pausable) ---
+    sim_time:          f64,     // Scaled simulation seconds since start
+    sim_delta:         f32,     // Scaled delta for this step
+    time_scale:        f32,     // Multiplier (1.0 = normal, 0.5 = slow-mo, 2.0 = fast)
+    is_paused:         bool,    // Freeze sim_time when true
+
+    // --- Discrete Simulation Ticks (Deterministic Integer Clock) ---
+    sim_ticks:         u64,     // Integer simulation ticks (e.g. 1 tick = 1 ms or 1 fixed tick)
+    tick_rate_hz:      u32,     // e.g. 60 Hz, 120 Hz, or 1000 Hz (default: 1000 = 1 tick per ms)
+    frame_count:       u64,     // Total scheduler steps executed
+}
 
 Join_Kind :: enum u8 {
     Sync,     // All children must finish; parent resumes when remaining == 0
@@ -38,7 +64,7 @@ Join_Kind :: enum u8 {
 }
 
 // ============================================================================
-// Coordinators, Scope & Phase Director
+// Internal Fiber & Coordinator Structs
 // ============================================================================
 
 Join_Coordinator :: struct {
@@ -103,8 +129,10 @@ Fiber :: struct {
     branch_index:     int,               // Index in parent's branch array
 
     // --- Wait / Wake Triggers ---
-    wake_time:        f64,               // Target absolute timestamp for Sleeping_Time
+    wake_time:        f64,               // Target absolute timestamp for Sleeping_Time / Sleeping_Real_Time
+    wake_ticks:       u64,               // Target absolute tick count for Sleeping_Ticks
     wake_frame:       u64,               // Target engine frame for Sleeping_Frames
+    wake_clock:       Time_Clock,        // Target clock domain (.Sim_Scaled, .Real_Time, .Fixed_Tick)
     heap_index:       int,               // Index in Timer Min-Heap (for O(log N) deletion on abort)
 
     // Condition polling
@@ -213,14 +241,19 @@ Fiber_Pool :: struct {
 Scheduler :: struct {
     // Queues
     ready_queue:       [dynamic]^Fiber,
-    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time
+    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)
+    real_timer_heap:   [dynamic]^Fiber, // Min-Heap sorted by wake_time (Real/Wall Clock)
+    tick_waiters:      [dynamic]^Fiber, // Waiting on integer simulation ticks
     frame_waiters:     [dynamic]^Fiber, // Waiting on frame count
     condition_waiters: [dynamic]^Fiber, // Waiting on boolean predicates
 
     // Stack Allocator & Pool
     fiber_pool:        Fiber_Pool,
 
-    // Engine Time
+    // 3-Tier Multi-Domain Clock
+    clock:             Scheduler_Clock,
+
+    // Legacy / Mirror Engine Time (synchronized with clock for backwards compatibility)
     current_time:      f64,
     current_frame:     u64,
     delta_time:        f32,
