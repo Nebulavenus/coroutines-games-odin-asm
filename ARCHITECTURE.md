@@ -1115,3 +1115,29 @@ boss_spiral_shoot_loop :: proc(f: ^Fiber, boss: ^Boss) {
 | **Cleanup / Destructors** | Custom callback wrappers in `Rc_Header` | **Native Odin `defer` blocks** |
 | **`sync` / `race`** | Nested node combinators | `sync(f, branch(...), branch(...))` |
 | **Entity Lifetime** | Fragile `weak(..., is_alive)` polling | `scope_cancel(&entity.scope)` |
+
+---
+
+# 6. Modern Architectural Expansions
+
+### A. The 3-Tier Multi-Domain Engine Clock
+The engine provides three distinct temporal domains:
+1. **Simulation Clock (`sim_time: f64`, `sim_delta: f32`, `time_scale: f32`, `is_paused: bool`)**: Pausable, scaleable clock for AI, combat, and tweens.
+2. **Real Clock (`real_time: f64`, `real_delta: f32`, `real_ticks: u64`)**: Unscaled wall-clock time for UI menus, pause screens, and diagnostics (`wait_real`, `spawn_real`).
+3. **Discrete Ticks (`sim_ticks: u64`, `tick_rate_hz: u32`, `frame_count: u64`)**: Zero-drift integer clock for deterministic physics and rollback netcode (`wait_ticks`, `scheduler_step_ticks`).
+
+### B. Dual Min-Heap Architecture
+- `timer_heap`: $O(\log N)$ min-heap for simulation timers.
+- `real_timer_heap`: $O(\log N)$ min-heap for unpaused real-time timers.
+- Sleeping fibers store cached heap indices, allowing $O(\log N)$ cancellation without linear scans.
+
+### C. $O(1)$ Ring Buffer Channel & 16KB Generator Memory
+- `Channel(T)` utilizes a circular ring buffer (`head`, `tail`, `count`) for $O(1)$ push/pop operations.
+- `Generator(T)` allocates lightweight 16KB stacks, reducing per-generator footprint by 64x compared to full 1MB engine slabs.
+
+### D. Inline 128-Byte By-Value Payloads (`spawn_val`)
+- Transient parameters are copied into `fiber.payload: [128]u8`, validated via `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
+- Eliminates dangling stack pointers when spawning from transient procedures without dynamic heap allocations.
+
+### E. Phase Director FSM (`Phase_Director`)
+- Clean state machine for boss fights and cutscenes. Switching phases via `phase_switch` automatically cancels and cleans up all active coroutines belonging to the previous phase.

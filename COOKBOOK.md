@@ -11,6 +11,8 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 4. [Recipe 4: AI Behavior Priority Fallbacks & Rush Objectives (`fallback` + `rush`)](#recipe-4-ai-behavior-priority-fallbacks--rush-objectives-fallback--rush)
 5. [Recipe 5: Damped Smooth Spring Follower (`tween`)](#recipe-5-damped-smooth-spring-follower-tween)
 6. [Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)](#recipe-6-unpausable-real-time-pause-menus--hud-animations-wait_real--spawn_real)
+7. [Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)](#recipe-7-lockstep-fixed-tick-physics--rollback-netcode-wait_ticks)
+8. [Recipe 8: Multi-Phase Boss AI with `Phase_Director`](#recipe-8-multi-phase-boss-ai-with-phase_director)
 
 ---
 
@@ -44,21 +46,21 @@ cast_fireball_coroutine :: proc(f: ^coroutine.Fiber, player: ^Player_Cast) {
     player.took_damage = false
 
     // Race workload vs cancellation triggers
-    winner := coroutine.race(f,
+    winner := coroutine.race(f, {
         // Branch 0: Casting Workload
         coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
-            coroutine.tween(f, &p.cast_progress, 0.0, 1.0, 2.5, coroutine.ease_in_quad)
+            coroutine.tween_f32(f, &p.cast_progress, 0.0, 1.0, 2.5, coroutine.ease_in_quad)
             // Cast completed! Fire missile!
             spawn_fireball_projectile(p.pos)
-        }, player, "Cast Workload"),
+        }, player),
 
         // Branch 1: Cancellation Watchdog
         coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
             coroutine.wait_until(f, proc(p: ^Player_Cast) -> bool {
                 return p.took_damage || p.is_moving
             }, p)
-        }, player, "Cast Cancel Watchdog"),
-    )
+        }, player),
+    })
 
     player.is_casting = false
     if winner == 1 {
@@ -148,12 +150,12 @@ Wave_Manager :: struct {
 }
 
 spawn_enemy :: proc(sched: ^coroutine.Scheduler, scope: ^coroutine.Fiber_Scope, pos: [2]f32) {
-    coroutine.spawn(sched, proc(f: ^coroutine.Fiber, p: [2]f32) {
-        for is_enemy_alive(p) {
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
+        for is_enemy_alive() {
             coroutine.yield_frame(f)
             // AI behavior...
         }
-    }, pos, scope = scope)
+    }, scope = scope)
 }
 
 arena_master_timeline :: proc(f: ^coroutine.Fiber, wm: ^Wave_Manager) {
@@ -203,7 +205,7 @@ Enemy_AI :: struct {
 enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
     for {
         // Executes sequentially until first SUCCESS
-        coroutine.fallback(f,
+        coroutine.fallback(f, {
             // 1. Priority: Melee Slam
             coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                 dist := distance(e.pos, e.player_pos)
@@ -211,7 +213,7 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                     coroutine.fail(f) // Too far! Fallback to next
                 }
                 execute_slam_animation(f, e)
-            }, e, "Melee Slam"),
+            }, e),
 
             // 2. Secondary: Ranged Snipe
             coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
@@ -219,13 +221,13 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                     coroutine.fail(f) // No line of sight! Fallback to next
                 }
                 execute_snipe_animation(f, e)
-            }, e, "Ranged Snipe"),
+            }, e),
 
             // 3. Guaranteed Fallback: Patrol
             coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                 patrol_routine(f, e)
-            }, e, "Patrol"),
-        )
+            }, e),
+        })
 
         coroutine.wait(f, 0.5)
     }
@@ -237,10 +239,10 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
 ## Recipe 5: Damped Smooth Spring Follower (`tween`)
 
 ### Problem
-A camera or floating pet needs to follow a target with juicy, springy overshoot without writing complex custom integration math.
+A camera or floating pet needs to follow a target with juicy, springy overshoot without writing custom integration math.
 
 ### Solution
-Use multi-dimensional `coroutine.tween` with `coroutine.ease_out_back` or `coroutine.ease_out_elastic`.
+Use `coroutine.tween_vector2` with `coroutine.ease_out_back`.
 
 ```odin
 package gameplay
@@ -255,8 +257,7 @@ Camera_Rig :: struct {
 camera_follower_coroutine :: proc(f: ^coroutine.Fiber, cam: ^Camera_Rig) {
     for {
         if cam.pos != cam.target_pos {
-            // Spring tween position towards target with back-overshoot
-            coroutine.tween(f, &cam.pos, cam.pos, cam.target_pos, 0.4, coroutine.ease_out_back)
+            coroutine.tween_vector2(f, &cam.pos, cam.pos, cam.target_pos, 0.4, coroutine.ease_out_back)
         } else {
             coroutine.yield_frame(f)
         }
@@ -269,10 +270,10 @@ camera_follower_coroutine :: proc(f: ^coroutine.Fiber, cam: ^Camera_Rig) {
 ## Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)
 
 ### Problem
-When the player opens the pause menu or hits an in-game freeze frame, gameplay physics and enemy coroutines must halt completely (`sched.is_paused = true`). However, UI transitions, button hover wobbles, and particle effects must continue animating smoothly at 60 FPS in real wall-clock time.
+When the player opens the pause menu, gameplay simulation halts (`sched.is_paused = true`). UI transitions and button hover wobbles must continue animating smoothly in real wall-clock time.
 
 ### Solution
-Use `coroutine.spawn_real` and `coroutine.wait_real` / `coroutine.delta_real`. Real-time fibers are driven by the unscaled Real Clock and never pause when gameplay simulation is frozen.
+Use `coroutine.spawn_real` and `coroutine.wait_real`.
 
 ```odin
 package ui
@@ -281,8 +282,8 @@ import "src/coroutine"
 
 Pause_Menu :: struct {
     is_open:      bool,
-    backdrop_dim: f32, // 0.0 -> 0.75
-    banner_scale: f32, // 0.0 -> 1.0
+    backdrop_dim: f32,
+    banner_scale: f32,
     sched:        ^coroutine.Scheduler,
 }
 
@@ -294,7 +295,6 @@ open_pause_menu :: proc(menu: ^Pause_Menu) {
 
     // 2. Spawn unpausable real-time UI animation fiber
     coroutine.spawn_real(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
-        // Animate backdrop fade and banner popup in real wall-clock time
         elapsed: f32 = 0.0
         duration: f32 = 0.30
 
@@ -313,30 +313,81 @@ open_pause_menu :: proc(menu: ^Pause_Menu) {
         m.banner_scale = 1.0
     }, menu)
 }
+```
 
-close_pause_menu :: proc(menu: ^Pause_Menu) {
-    // Spawn real-time closing transition, then resume gameplay
-    coroutine.spawn_real(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
-        elapsed: f32 = 0.0
-        duration: f32 = 0.20
+---
 
-        for elapsed < duration {
-            dt := coroutine.delta_real(f)
-            elapsed += dt
-            t := min(1.0, elapsed / duration)
+## Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)
 
-            m.backdrop_dim = 0.75 * (1.0 - coroutine.ease_in_quad(t))
-            m.banner_scale = 1.0 - coroutine.ease_in_quad(t)
+### Problem
+Multiplayer fighting games and physics engines require exact deterministic tick progression without floating point accumulation errors.
 
-            coroutine.yield_frame(f)
-        }
+### Solution
+Use integer ticks (`coroutine.wait_ticks` and `coroutine.scheduler_step_ticks`).
 
-        m.is_open = false
-        m.backdrop_dim = 0.0
-        m.banner_scale = 0.0
+```odin
+package physics
 
-        // Unfreeze gameplay simulation clock
-        coroutine.scheduler_set_paused(m.sched, false)
-    }, menu)
+import "src/coroutine"
+
+Physics_Object :: struct {
+    pos: [2]f32,
+    vel: [2]f32,
+}
+
+projectile_sim :: proc(f: ^coroutine.Fiber, obj: ^Physics_Object) {
+    for i := 0; i < 60; i += 1 {
+        // Wait exactly 1 integer tick
+        coroutine.wait_ticks(f, 1)
+
+        obj.pos += obj.vel
+        obj.vel.y += 0.98 // Fixed gravity
+    }
+}
+```
+
+---
+
+## Recipe 8: Multi-Phase Boss AI with `Phase_Director`
+
+### Problem
+A raid boss dynamically shifts behavior across 3 distinct phases (Phase 1: Melee, Phase 2: Bullet Hell, Phase 3: Enrage). Transitioning phases must abort all active phase-1 spell channels cleanly before starting phase 2.
+
+### Solution
+Use `coroutine.Phase_Director` to safely switch states and auto-cancel previous phase fibers:
+
+```odin
+package gameplay
+
+import "src/coroutine"
+
+Boss_Entity :: struct {
+    hp:       int,
+    director: coroutine.Phase_Director,
+}
+
+boss_phase_1 :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+    for {
+        cast_melee_slam(f, b)
+        coroutine.wait(f, 2.0)
+    }
+}
+
+boss_phase_2 :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+    for {
+        cast_radial_bullet_hell(f, b)
+        coroutine.wait(f, 1.0)
+    }
+}
+
+boss_lifecycle_controller :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+    // Start in Phase 1
+    coroutine.phase_switch(&b.director, 1, boss_phase_1, b)
+
+    // Wait until HP drops below 50%
+    coroutine.wait_until(f, proc(b: ^Boss_Entity) -> bool { return b.hp < 50 }, b)
+
+    // Seamlessly cancel Phase 1 and launch Phase 2!
+    coroutine.phase_switch(&b.director, 2, boss_phase_2, b)
 }
 ```
