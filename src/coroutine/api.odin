@@ -838,8 +838,12 @@ await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
 // ============================================================================
 
 chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allocator) {
-    ch.buffer = make([dynamic]T, allocator)
     ch.capacity = max(0, capacity)
+    buf_size := ch.capacity > 0 ? ch.capacity : 1
+    ch.buffer = make([]T, buf_size, allocator)
+    ch.head = 0
+    ch.tail = 0
+    ch.count = 0
     ch.send_waiters = make([dynamic]^Fiber, allocator)
     ch.recv_waiters = make([dynamic]^Fiber, allocator)
     ch.is_closed = false
@@ -847,13 +851,29 @@ chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allo
 }
 
 chan_destroy :: proc(ch: ^Channel($T)) {
-    delete(ch.buffer)
+    delete(ch.buffer, ch.allocator)
     delete(ch.send_waiters)
     delete(ch.recv_waiters)
+    ch.head = 0
+    ch.tail = 0
+    ch.count = 0
+    ch.capacity = 0
+}
+
+chan_count :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
+    return ch != nil ? ch.count : 0
+}
+
+chan_is_empty :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
+    return ch == nil || ch.count == 0
+}
+
+chan_is_full :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
+    return ch != nil && ch.capacity > 0 && ch.count >= ch.capacity
 }
 
 chan_close :: proc(ch: ^Channel($T)) {
-    if ch.is_closed do return
+    if ch == nil || ch.is_closed do return
     ch.is_closed = true
 
     for f in ch.recv_waiters {
@@ -874,13 +894,29 @@ chan_close :: proc(ch: ^Channel($T)) {
 }
 
 chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
-    if ch.is_closed do return false
+    if ch == nil || ch.is_closed do return false
 
-    if ch.capacity > 0 && len(ch.buffer) >= ch.capacity {
+    if ch.capacity == 0 {
+        if len(ch.recv_waiters) > 0 {
+            ch.buffer[0] = value
+            ch.count = 1
+            receiver := pop_front(&ch.recv_waiters)
+            if receiver.status == .Suspended_Join {
+                receiver.status = .Ready
+                append(&receiver.sched.ready_queue, receiver)
+            }
+            return true
+        }
         return false
     }
 
-    append(&ch.buffer, value)
+    if ch.count >= ch.capacity {
+        return false
+    }
+
+    ch.buffer[ch.tail] = value
+    ch.tail = (ch.tail + 1) % len(ch.buffer)
+    ch.count += 1
 
     if len(ch.recv_waiters) > 0 {
         receiver := pop_front(&ch.recv_waiters)
@@ -893,18 +929,20 @@ chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
 }
 
 chan_try_recv :: proc(ch: ^Channel($T)) -> (value: T, ok: bool) {
-    if len(ch.buffer) > 0 {
-        val := pop_front(&ch.buffer)
-        if len(ch.send_waiters) > 0 {
-            sender := pop_front(&ch.send_waiters)
-            if sender.status == .Suspended_Join {
-                sender.status = .Ready
-                append(&sender.sched.ready_queue, sender)
-            }
+    if ch == nil || ch.count == 0 do return {}, false
+
+    val := ch.buffer[ch.head]
+    ch.head = (ch.head + 1) % len(ch.buffer)
+    ch.count -= 1
+
+    if len(ch.send_waiters) > 0 {
+        sender := pop_front(&ch.send_waiters)
+        if sender.status == .Suspended_Join {
+            sender.status = .Ready
+            append(&sender.sched.ready_queue, sender)
         }
-        return val, true
     }
-    return {}, false
+    return val, true
 }
 
 chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
@@ -916,7 +954,8 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
 
         if ch.capacity == 0 {
             if len(ch.recv_waiters) > 0 {
-                append(&ch.buffer, value)
+                ch.buffer[0] = value
+                ch.count = 1
                 receiver := pop_front(&ch.recv_waiters)
                 if receiver.status == .Suspended_Join {
                     receiver.status = .Ready
@@ -924,8 +963,11 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
                 }
                 return true
             }
-        } else if len(ch.buffer) < ch.capacity {
-            append(&ch.buffer, value)
+        } else if ch.count < ch.capacity {
+            ch.buffer[ch.tail] = value
+            ch.tail = (ch.tail + 1) % len(ch.buffer)
+            ch.count += 1
+
             if len(ch.recv_waiters) > 0 {
                 receiver := pop_front(&ch.recv_waiters)
                 if receiver.status == .Suspended_Join {
@@ -948,8 +990,11 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
     if f == nil || ch == nil || f.sched == nil do return {}, false
 
     for {
-        if len(ch.buffer) > 0 {
-            val := pop_front(&ch.buffer)
+        if ch.count > 0 {
+            val := ch.buffer[ch.head]
+            ch.head = (ch.head + 1) % len(ch.buffer)
+            ch.count -= 1
+
             if len(ch.send_waiters) > 0 {
                 sender := pop_front(&ch.send_waiters)
                 if sender.status == .Suspended_Join {
@@ -976,8 +1021,14 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
 // Stateful Pull-Based Generators (Generator(T))
 // ============================================================================
 
-generator_init :: proc(gen: ^Generator($T), entry: proc(f: ^Fiber, g: ^Generator(T)), user_data: rawptr = nil) {
-    scheduler_init(&gen.sched)
+generator_init :: proc(
+    gen: ^Generator($T),
+    entry: proc(f: ^Fiber, g: ^Generator(T)),
+    user_data: rawptr = nil,
+    allocator := context.allocator,
+) {
+    // Allocate 1 single 16KB stack slab rather than 32x32KB (1MB)
+    scheduler_init(&gen.sched, stack_size = 16 * 1024, stacks_per_slab = 1, allocator = allocator)
     gen.current_value = {}
     gen.has_value = false
     gen.is_done = false

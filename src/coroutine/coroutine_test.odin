@@ -2101,3 +2101,83 @@ test_expanded_easing_functions :: proc(t: ^testing.T) {
 
     testing.expect_value(t, out_val, 100.0)
 }
+
+// ============================================================================
+// Test 54: Channel O(1) Circular Ring Buffer High-Throughput Wraparound
+// ============================================================================
+
+@(test)
+test_channel_ring_buffer_wraparound :: proc(t: ^testing.T) {
+    ch: Channel(int)
+    chan_init(&ch, capacity = 4)
+    defer chan_destroy(&ch)
+
+    testing.expect_value(t, chan_is_empty(&ch), true)
+    testing.expect_value(t, chan_is_full(&ch), false)
+    testing.expect_value(t, chan_count(&ch), 0)
+
+    // Push 4 items (fills buffer)
+    for i in 0 ..< 4 {
+        ok := chan_try_send(&ch, (i + 1) * 10)
+        testing.expect_value(t, ok, true)
+    }
+
+    testing.expect_value(t, chan_is_full(&ch), true)
+    testing.expect_value(t, chan_count(&ch), 4)
+
+    // Cannot push into full channel
+    testing.expect_value(t, chan_try_send(&ch, 999), false)
+
+    // Stream 1,000 items continuously through 4-slot ring buffer
+    for i in 4 ..< 1000 {
+        // Pop oldest item
+        val, ok := chan_try_recv(&ch)
+        testing.expect_value(t, ok, true)
+        testing.expect_value(t, val, (i - 3) * 10)
+
+        // Push new item
+        send_ok := chan_try_send(&ch, (i + 1) * 10)
+        testing.expect_value(t, send_ok, true)
+    }
+
+    // Drain final 4 items
+    for i in 996 ..< 1000 {
+        val, ok := chan_try_recv(&ch)
+        testing.expect_value(t, ok, true)
+        testing.expect_value(t, val, (i + 1) * 10)
+    }
+
+    testing.expect_value(t, chan_is_empty(&ch), true)
+    testing.expect_value(t, chan_count(&ch), 0)
+}
+
+// ============================================================================
+// Test 55: Generator 16KB Lightweight Slab Memory Allocation
+// ============================================================================
+
+@(test)
+test_generator_lightweight_memory :: proc(t: ^testing.T) {
+    gen: Generator(int)
+    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
+        for i in 1 ..= 10 {
+            yield_value(f, g, i * 100)
+        }
+    })
+    defer generator_destroy(&gen)
+
+    // Verify lightweight pool parameters (16KB stack, 1 stack per slab)
+    testing.expect_value(t, gen.sched.fiber_pool.stack_size, uint(16 * 1024))
+    testing.expect_value(t, gen.sched.fiber_pool.stacks_per_slab, 1)
+    testing.expect_value(t, len(gen.sched.fiber_pool.slabs), 1)
+
+    // Verify all 10 yielded values
+    for i in 1 ..= 10 {
+        val, ok := generator_next(&gen)
+        testing.expect_value(t, ok, true)
+        testing.expect_value(t, val, i * 100)
+    }
+
+    // Exhausted generator
+    _, ok := generator_next(&gen)
+    testing.expect_value(t, ok, false)
+}

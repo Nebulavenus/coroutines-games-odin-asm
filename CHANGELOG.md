@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Performance & Internal Optimizations] - 2026-08-24
+
+### Added
+- **$O(1)$ Circular Ring Buffer for `Channel(T)`**:
+  - Replaced `pop_front(&ch.buffer)` slice-shifting ($O(N)$) with a fixed slice and circular ring indexing (`head`, `tail`, `count`).
+  - Enqueue and dequeue operations are now pure $O(1)$ with zero element memory copying.
+  - Added `#force_inline` query helpers: `chan_count(ch)`, `chan_is_empty(ch)`, `chan_is_full(ch)`.
+- **Lightweight 16KB Slab Allocation for `Generator(T)`**:
+  - Updated `generator_init` to initialize its internal fiber pool with `stack_size = 16 * 1024` (16 KB) and `stacks_per_slab = 1`.
+  - Reduces memory footprint per generator instance by **64x (from 1 MB down to 16 KB)**.
+- **Unit Tests 54–55 (`src/coroutine/coroutine_test.odin`)**:
+  - Added coverage for high-throughput continuous ring buffer wraparound (1,000 items streamed through a 4-slot ring buffer) and generator lightweight slab memory allocation metrics.
+
 ## [QoL Enhancements 2 & Ergonomic Cleanups] - 2026-08-24
 
 ### Added

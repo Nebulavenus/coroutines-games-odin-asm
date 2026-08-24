@@ -148,12 +148,15 @@ Async_Token :: struct {
 // --- CSP Typed Channels ---
 
 Channel :: struct($T: typeid) {
-    buffer:       [dynamic]T,
-    capacity:     int,
-    send_waiters: [dynamic]^Fiber,
-    recv_waiters: [dynamic]^Fiber,
-    is_closed:    bool,
-    allocator:    mem.Allocator,
+    buffer:       []T,              // Fixed circular ring buffer slice
+    head:         int,              // Pop/read index
+    tail:         int,              // Push/write index
+    count:        int,              // Number of active items in ring buffer
+    capacity:     int,              // Configured capacity (0 for unbuffered rendezvous)
+    send_waiters: [dynamic]^Fiber,  // Fibers blocked on chan_send
+    recv_waiters: [dynamic]^Fiber,  // Fibers blocked on chan_recv
+    is_closed:    bool,             // Closed state flag
+    allocator:    mem.Allocator,    // Backing memory allocator
 }
 
 // --- Stateful Pull Generators ---
