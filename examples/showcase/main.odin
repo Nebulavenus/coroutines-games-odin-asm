@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:math"
 import "core:math/linalg"
 import "core:mem"
+import "core:strings"
 import "core:thread"
 import "core:time"
 import rl "vendor:raylib"
@@ -131,10 +132,11 @@ Lab_Station :: struct {
     scope:          coroutine.Fiber_Scope,
 }
 
-// --- Station 7: The Telemetry Feed (Channel(T)) ---
+// --- Station 7: The Telemetry Feed (Channel(T) & Multi-Channel Select) ---
 Channel_Station :: struct {
     pos:           rl.Vector2,
-    log_channel:   coroutine.Channel(string),
+    user_channel:  coroutine.Channel(string),
+    sys_channel:   coroutine.Channel(string),
     recent_logs:   [dynamic]string,
     items_sent:    int,
     scope:         coroutine.Fiber_Scope,
@@ -191,6 +193,7 @@ Player :: struct {
 Showcase_World :: struct {
     sched:                   coroutine.Scheduler,
     event_hub:               coroutine.Event(Showcase_Event),
+    lockdown_token:          coroutine.Cancel_Token,
     player:                  Player,
     station_ritual:          Ritual_Station,
     station_capture:         Capture_Station,
@@ -343,7 +346,7 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     d.charge_level = 0.0
 }
 
-// --- 4. Alert Beacon (Signal) ---
+// --- 4. Alert Beacon (Signal & Cancel_Token) ---
 
 sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
     for {
@@ -365,6 +368,19 @@ sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
 
         // Return to resting position
         coroutine.tween(f, &s.pos, s.pos, s.home_pos, 0.6, coroutine.ease_in_out_quad)
+    }
+}
+
+sentry_lockdown_watcher_fiber :: proc(f: ^coroutine.Fiber) {
+    // Waits on Cancel_Token across all sentries!
+    coroutine.cancel_token_wait(f, &g_world.lockdown_token)
+
+    // Unblocked by token! Alert all sentries immediately
+    for i in 0 ..< 6 {
+        s := &g_world.station_beacon.sentries[i]
+        s.is_alerted = true
+        s.alert_timer = 5.0
+        s.color = rl.RED
     }
 }
 
@@ -451,18 +467,32 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     s.status_color = rl.RAYWHITE
 }
 
-// --- 7. Telemetry Channel (Channel(T)) ---
+// --- 7. Telemetry Channel (Channel(T) & Multi-Channel Select) ---
 
 channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
+    channels := []^coroutine.Channel(string){&s.user_channel, &s.sys_channel}
+
     for {
-        // Blocks until message arrives on channel
-        msg, ok := coroutine.chan_recv(f, &s.log_channel)
+        // Multi-Channel Select: Awaits message from EITHER user channel or heartbeat channel!
+        ready_idx, msg, ok := coroutine.chan_select_recv(f, channels)
         if !ok do break
 
-        append(&s.recent_logs, msg)
+        tag_prefix := ready_idx == 0 ? "[USER]" : "[SYS]"
+        formatted := fmt.tprintf("%s %s", tag_prefix, msg)
+
+        append(&s.recent_logs, formatted)
         if len(s.recent_logs) > 6 {
             ordered_remove(&s.recent_logs, 0)
         }
+    }
+}
+
+system_heartbeat_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
+    count := 1
+    for {
+        coroutine.wait(f, 3.5)
+        coroutine.chan_send(f, &s.sys_channel, fmt.tprintf("Pulse #%d (Nominal)", count))
+        count += 1
     }
 }
 
@@ -555,6 +585,7 @@ showcase_init :: proc(w: ^Showcase_World) {
     coroutine.scheduler_prewarm(&w.sched, 64)
 
     coroutine.event_init(&w.event_hub)
+    coroutine.cancel_token_init(&w.lockdown_token)
 
     w.player = Player{
         pos    = {SCREEN_WIDTH / 2.0, SCREEN_HEIGHT / 2.0},
@@ -588,7 +619,7 @@ showcase_init :: proc(w: ^Showcase_World) {
         }
     }
 
-    // 4. Beacon Station (Signal)
+    // 4. Beacon Station (Signal & Cancel_Token)
     w.station_beacon.pos = {160, 440}
     coroutine.signal_init(&w.station_beacon.alarm_signal)
     for i in 0 ..< 6 {
@@ -601,6 +632,8 @@ showcase_init :: proc(w: ^Showcase_World) {
         }
         coroutine.spawn(&w.sched, sentry_watch_fiber, &w.station_beacon.sentries[i], scope = &w.station_beacon.scope, name = fmt.tprintf("Sentry #%d", i + 1))
     }
+    // Sentry lockdown token listener fiber
+    coroutine.spawn(&w.sched, sentry_lockdown_watcher_fiber, scope = &w.station_beacon.scope, name = "Sentry Lockdown Token Watcher")
 
     // 5. Forge Station (Generator)
     w.station_forge.pos = {460, 440}
@@ -611,11 +644,13 @@ showcase_init :: proc(w: ^Showcase_World) {
     w.station_lab.status_text = "Press [6] or [E] to launch worker"
     w.station_lab.status_color = rl.RAYWHITE
 
-    // 7. Channel Station (CSP Channel)
+    // 7. Channel Station (CSP Multi-Channel Select)
     w.station_channel.pos = {1060, 160}
     w.station_channel.recent_logs = make([dynamic]string)
-    coroutine.chan_init(&w.station_channel.log_channel, capacity = 10)
-    coroutine.spawn(&w.sched, channel_consumer_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "Log Channel Consumer")
+    coroutine.chan_init(&w.station_channel.user_channel, capacity = 10)
+    coroutine.chan_init(&w.station_channel.sys_channel, capacity = 10)
+    coroutine.spawn(&w.sched, channel_consumer_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "Multi-Channel Select Consumer")
+    coroutine.spawn(&w.sched, system_heartbeat_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "System Heartbeat Producer")
 
     // 8. Gate Station (Fiber_Latch Rendezvous)
     w.station_gate.pos = {1060, 440}
@@ -667,12 +702,13 @@ showcase_destroy :: proc(w: ^Showcase_World) {
 
     coroutine.semaphore_destroy(&w.station_defense.sem)
     coroutine.event_destroy(&w.event_hub)
+    coroutine.cancel_token_destroy(&w.lockdown_token)
     coroutine.mutex_destroy(&w.station_charger.mutex)
     coroutine.signal_destroy(&w.station_beacon.alarm_signal)
     coroutine.generator_destroy(&w.station_forge.loot_gen)
-    coroutine.chan_destroy(&w.station_channel.log_channel)
+    coroutine.chan_destroy(&w.station_channel.user_channel)
+    coroutine.chan_destroy(&w.station_channel.sys_channel)
     delete(w.station_channel.recent_logs)
-
     coroutine.scheduler_destroy(&w.sched)
 }
 
@@ -777,7 +813,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist1 < 80.0 && interact) || trigger_station == 1 {
         if !coroutine.scope_is_busy(&w.station_ritual.scope) {
             coroutine.spawn(&w.sched, ritual_master_fiber, &w.station_ritual, scope = &w.station_ritual.scope, name = "Ritual Master (sync)")
-            coroutine.chan_try_send(&w.station_channel.log_channel, "Ritual [sync] triggered")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "Ritual [sync] triggered")
         }
     }
 
@@ -786,7 +822,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist2 < w.station_capture.radius && interact) || trigger_station == 2 {
         if !coroutine.scope_is_busy(&w.station_capture.scope) {
             coroutine.spawn(&w.sched, capture_contest_fiber, &w.station_capture, scope = &w.station_capture.scope, name = "Capture [race/timeout]")
-            coroutine.chan_try_send(&w.station_channel.log_channel, "Capture Contest [race] started")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "Capture Contest [race] started")
         }
     }
 
@@ -798,16 +834,37 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
                 d := &w.station_charger.drones[i]
                 coroutine.spawn(&w.sched, drone_charge_fiber, d, scope = &w.station_charger.scope, name = fmt.tprintf("Drone #%d (Mutex)", d.id))
             }
-            coroutine.chan_try_send(&w.station_channel.log_channel, "4 Drones dispatched to [Mutex]")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "4 Drones dispatched to [Mutex]")
         }
     }
 
-    // --- Station 4: Beacon Signal (Press [4] or [E] near station) ---
+    // --- Station 4: Beacon Signal & Cancel_Token (Press [4] or [E] near station) ---
     dist4 := linalg.length(w.player.pos - w.station_beacon.pos)
     if (dist4 < 80.0 && interact) || trigger_station == 4 {
         coroutine.signal_emit(&w.sched, &w.station_beacon.alarm_signal)
-        coroutine.chan_try_send(&w.station_channel.log_channel, "Alarm [Signal] broadcast to 6 sentries")
+        coroutine.chan_try_send(&w.station_channel.user_channel, "Alarm [Signal] broadcast to 6 sentries")
         coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"Alarm Tripped", "Signal broadcast woken 6 sentries!", rl.RED})
+    }
+
+    // Emergency Lockdown Token Trigger (Press [K]: Toggle / Arm / Disarm)
+    if rl.IsKeyPressed(.K) {
+        if !coroutine.cancel_token_is_cancelled(&w.lockdown_token) {
+            coroutine.cancel_token_cancel(&w.sched, &w.lockdown_token)
+            coroutine.chan_try_send(&w.station_channel.user_channel, "EMERGENCY LOCKDOWN ACTIVATED [Cancel_Token]")
+            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"LOCKDOWN ACTIVE", "Cancel_Token broadcast unblocked 6 sentries!", rl.RED})
+        } else {
+            // Re-arm / Reset lockdown token
+            coroutine.cancel_token_destroy(&w.lockdown_token)
+            coroutine.cancel_token_init(&w.lockdown_token)
+            for i in 0 ..< 6 {
+                w.station_beacon.sentries[i].color = rl.ORANGE
+                w.station_beacon.sentries[i].is_alerted = false
+                w.station_beacon.sentries[i].alert_timer = 0.0
+            }
+            coroutine.spawn(&w.sched, sentry_lockdown_watcher_fiber, scope = &w.station_beacon.scope, name = "Sentry Lockdown Token Watcher")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "Lockdown Disarmed [Cancel_Token Re-armed]")
+            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"LOCKDOWN DISARMED", "Cancel_Token re-armed; Sentries reset", rl.GREEN})
+        }
     }
 
     // --- Station 5: Loot Forge (Press [5] or [E] near station) ---
@@ -818,7 +875,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
             w.station_forge.current_item = item
             w.station_forge.has_item = true
             w.station_forge.total_forged += 1
-            coroutine.chan_try_send(&w.station_channel.log_channel, fmt.tprintf("Forged %s (%s)", item.name, item.tier))
+            coroutine.chan_try_send(&w.station_channel.user_channel, fmt.tprintf("Forged %s (%s)", item.name, item.tier))
             coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{fmt.tprintf("Forged %s", item.name), fmt.tprintf("Tier: %s | Pwr: %d", item.tier, item.power), item.color})
         }
     }
@@ -828,7 +885,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist6 < 80.0 && interact) || trigger_station == 6 {
         if !coroutine.scope_is_busy(&w.station_lab.scope) {
             coroutine.spawn(&w.sched, lab_research_fiber, &w.station_lab, scope = &w.station_lab.scope, name = "Async Research Lab")
-            coroutine.chan_try_send(&w.station_channel.log_channel, "Dispatched [await_async] background worker")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "Dispatched [await_async] background worker")
         }
     }
 
@@ -837,7 +894,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist8 < 80.0 && interact) || trigger_station == 7 {
         if !coroutine.scope_is_busy(&w.station_gate.scope) {
             coroutine.spawn(&w.sched, gate_master_fiber, &w.station_gate, scope = &w.station_gate.scope, name = "Gate Master (Fiber_Latch)")
-            coroutine.chan_try_send(&w.station_channel.log_channel, "Gate Construction [Fiber_Latch] started")
+            coroutine.chan_try_send(&w.station_channel.user_channel, "Gate Construction [Fiber_Latch] started")
         }
     }
 }
@@ -898,15 +955,27 @@ showcase_render :: proc(w: ^Showcase_World) {
         }
     }
 
-    // --- Station 4: Alert Beacon (Signal) ---
-    rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 28.0, rl.ORANGE)
-    rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 52, i32(w.station_beacon.pos.y) - 60, 13, rl.ORANGE)
-    rl.DrawText("[Signal Broadcast]", i32(w.station_beacon.pos.x) - 50, i32(w.station_beacon.pos.y) - 48, 11, rl.GRAY)
+    // --- Station 4: Alert Beacon (Signal & Cancel_Token) ---
+    is_locked_down := coroutine.cancel_token_is_cancelled(&w.lockdown_token)
+    beacon_color := is_locked_down ? rl.RED : rl.ORANGE
+    rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 28.0, beacon_color)
+    rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 52, i32(w.station_beacon.pos.y) - 60, 13, beacon_color)
+    subtext := is_locked_down ? "[LOCKDOWN: K to Reset]" : "[Signal & Cancel_Token: K]"
+    rl.DrawText(fmt.ctprintf(subtext), i32(w.station_beacon.pos.x) - 65, i32(w.station_beacon.pos.y) - 48, 10, is_locked_down ? rl.RED : rl.GRAY)
+
+    if is_locked_down {
+        pulse_r := 65.0 + 8.0 * math.sin(w.global_time * 8.0)
+        rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), pulse_r, rl.Fade(rl.RED, 0.6))
+    }
 
     for s in w.station_beacon.sentries {
         rl.DrawCircleV(s.pos, 8.0, s.is_alerted ? rl.RED : s.color)
         if s.is_alerted {
             rl.DrawText("!", i32(s.pos.x) - 3, i32(s.pos.y) - 16, 13, rl.RED)
+            if is_locked_down {
+                dir := linalg.normalize(s.pos - w.station_beacon.pos)
+                rl.DrawLineEx(s.pos, s.pos + dir * 18.0, 2.0, rl.Fade(rl.RED, 0.8))
+            }
         }
     }
 
@@ -934,19 +1003,20 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawCircleLines(i32(w.station_lab.drone_pos.x), i32(w.station_lab.drone_pos.y), 10.0, rl.WHITE)
     }
 
-    // --- Station 7: Telemetry Log Feed (Channel(T)) ---
+    // --- Station 7: Telemetry Log Feed (Channel(T) & Multi-Channel Select) ---
     panel_x: i32 = 980
     panel_y: i32 = 60
     panel_w: i32 = 280
     panel_h: i32 = 170
     rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 16, 24, 220})
     rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {60, 100, 150, 255})
-    rl.DrawText("7. CSP CHANNEL LOGS", panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
+    rl.DrawText("7. MULTI-CHANNEL SELECT", panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
     rl.DrawLine(panel_x + 10, panel_y + 24, panel_x + panel_w - 10, panel_y + 24, {50, 70, 100, 255})
 
     log_y := panel_y + 30
     for msg in w.station_channel.recent_logs {
-        rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, rl.LIGHTGRAY)
+        color := strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY
+        rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, color)
         log_y += 18
     }
 
@@ -1002,7 +1072,7 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawText(step_text, 30, SCREEN_HEIGHT - 30, 14, flash_col)
     } else {
         rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {12, 14, 20, 220})
-        rl.DrawText("WASD: Move | [1-7] or [E]: Trigger Station | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
+        rl.DrawText("WASD: Move | [1-7]/[E]: Trigger | K: Lockdown Token | F1: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
     }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---

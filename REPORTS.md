@@ -134,6 +134,17 @@ Finished 81 tests in ~307ms. All tests were successful.
 80. `test_handle_introspection_and_status`: Verifies `fiber_is_alive` and `fiber_status` diagnostics across live and historical fibers.
 81. `test_scheduler_pool_stats`: Verifies `scheduler_pool_stats` accurately tracks active fibers, free stacks, and memory KB.
 
+#### Suite 13: Pure Systems Enhancements (Tests 82–90)
+82. `test_chan_try_select_recv`: Non-blocking selection across multiple channels returning ready channel index.
+83. `test_chan_select_recv_blocking`: Blocking selection suspending calling fiber until a channel receives data.
+84. `test_chan_select_closed_channel`: Multi-channel select handles closed channels gracefully (`ok == false`).
+85. `test_cancel_token_immediate_check`: Validates `cancel_token_is_cancelled` state before and after cancellation.
+86. `test_cancel_token_wait_and_broadcast`: Multiple fibers unblocked when token is cancelled.
+87. `test_cancel_token_already_cancelled`: Calling `cancel_token_wait` on already-cancelled token returns immediately.
+88. `test_fiber_user_tag_assignment`: Verifies `user_tag` is assigned to fiber upon spawn.
+89. `test_scheduler_cancel_by_tag`: Mass cancels fibers matching a specific tag while untagged fibers continue.
+90. `test_scheduler_count_by_tag`: Accurately counts active fibers belonging to a category tag.
+
 ---
 
 ## 3. LLVM Optimization & Architecture Matrix Validation
@@ -142,9 +153,9 @@ All 11 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none` | `x86-64-v1` | Headless Test Runner | **PASS** (81/81) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (81/81) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (81/81) |
+| `test_debug` | `-o:none` | `x86-64-v1` | Headless Test Runner | **PASS** (90/90) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (90/90) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (90/90) |
 | `boss_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
 | `quest_ai_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |

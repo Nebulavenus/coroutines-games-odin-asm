@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Pure Systems Enhancements & POSIX Parity] - 2026-08-24
+
+### Added
+- **Multi-Channel Select (`chan_select_recv` / `chan_try_select_recv`)**:
+  - Go-style CSP multiplexer allowing fibers to await whichever channel has a message available first (`chan_select_recv`) or inspect channels non-blockingly (`chan_try_select_recv`).
+- **Explicit Cancellation Token (`Cancel_Token`)**:
+  - Decoupled, lightweight cancellation handle (`cancel_token_init`, `cancel_token_destroy`, `cancel_token_cancel`, `cancel_token_is_cancelled`, `cancel_token_wait`).
+  - Allows multiple independent fibers across different entity scopes to coordinate cancellation without sharing an intrusive `Fiber_Scope`.
+- **Category User Tags & Mass Cancellation (`user_tag`, `scheduler_cancel_by_tag`, `scheduler_count_by_tag`)**:
+  - Added 4-byte `user_tag: u32` to `Fiber` and `tag: u32 = 0` to all `spawn` procedures.
+  - Added `scheduler_cancel_by_tag(sched, tag)` and `scheduler_count_by_tag(sched, tag)` for category mass cancellations (e.g. aborting all combat AI upon EMP).
+- **POSIX Hardware Guard Page Parity (`mmap` + `mprotect(PROT_NONE)`)**:
+  - `pool.odin` now implements hardware MMU crash trapping on Linux, macOS, and BSD systems via `posix.mmap` and `posix.mprotect(PROT_NONE)`.
+- **Unit Tests 82–90 (`src/coroutine/coroutine_test.odin`)**:
+  - 9 new unit tests covering multi-channel select, closed channel select handling, cancellation tokens, user tags, and tagged mass cancellations.
+  - Test suite expanded to **90 / 90 unit tests passing** (100%).
+
 ## [Pure Concurrency Primitives & Telemetry] - 2026-08-24
 
 ### Added

@@ -15,10 +15,12 @@ spawn_ptr :: proc(
     data: ^T,
     scope: ^Fiber_Scope = nil,
     name: string = "",
+    tag: u32 = 0,
 ) -> Fiber_Handle {
     fiber := fiber_pool_acquire(&sched.fiber_pool)
     fiber.sched = sched
     fiber.debug_name = name
+    fiber.user_tag = tag
     fiber.stored_context = context
     fiber.start_time = sched.current_time
     fiber.user_data = rawptr(data)
@@ -42,6 +44,7 @@ spawn_val :: proc(
     data: T,
     scope: ^Fiber_Scope = nil,
     name: string = "",
+    tag: u32 = 0,
 ) -> Fiber_Handle where !intrinsics.type_is_pointer(T) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "spawn_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
 
@@ -56,6 +59,7 @@ spawn_val :: proc(
     fiber := fiber_pool_acquire(&sched.fiber_pool)
     fiber.sched = sched
     fiber.debug_name = name
+    fiber.user_tag = tag
     fiber.stored_context = context
     fiber.start_time = sched.current_time
 
@@ -79,6 +83,7 @@ spawn_nil :: proc(
     entry: proc(f: ^Fiber),
     scope: ^Fiber_Scope = nil,
     name: string = "",
+    tag: u32 = 0,
 ) -> Fiber_Handle {
     wrapper := proc(f: ^Fiber, user_data: rawptr) {
         real_entry := cast(proc(f: ^Fiber))user_data
@@ -90,6 +95,7 @@ spawn_nil :: proc(
     fiber := fiber_pool_acquire(&sched.fiber_pool)
     fiber.sched = sched
     fiber.debug_name = name
+    fiber.user_tag = tag
     fiber.stored_context = context
     fiber.start_time = sched.current_time
     fiber.user_data = rawptr(entry)
@@ -113,8 +119,9 @@ spawn_real_nil :: proc(
     entry: proc(f: ^Fiber),
     scope: ^Fiber_Scope = nil,
     name: string = "",
+    tag: u32 = 0,
 ) -> Fiber_Handle {
-    h := spawn_nil(sched, entry, scope, name)
+    h := spawn_nil(sched, entry, scope, name, tag)
     if f := fiber_find_by_handle(sched, h); f != nil {
         f.wake_clock = .Real_Time
     }
@@ -127,8 +134,9 @@ spawn_real_ptr :: proc(
     data: ^T,
     scope: ^Fiber_Scope = nil,
     name: string = "",
+    tag: u32 = 0,
 ) -> Fiber_Handle {
-    h := spawn_ptr(sched, entry, data, scope, name)
+    h := spawn_ptr(sched, entry, data, scope, name, tag)
     if f := fiber_find_by_handle(sched, h); f != nil {
         f.wake_clock = .Real_Time
     }
@@ -136,6 +144,38 @@ spawn_real_ptr :: proc(
 }
 
 spawn_real :: proc{spawn_real_ptr, spawn_real_nil}
+
+// --- Category Tag Filtering & Mass Cancellation ---
+
+scheduler_cancel_by_tag :: proc(sched: ^Scheduler, tag: u32) -> (cancelled_count: int) {
+    if sched == nil || tag == 0 do return 0
+
+    handles_to_cancel: [dynamic]Fiber_Handle
+    defer delete(handles_to_cancel)
+
+    for f in sched.fiber_pool.all_fibers {
+        if f.status != .Unused && f.user_tag == tag && f.handle != 0 {
+            append(&handles_to_cancel, f.handle)
+        }
+    }
+
+    for h in handles_to_cancel {
+        fiber_cancel(sched, h)
+        cancelled_count += 1
+    }
+    return cancelled_count
+}
+
+scheduler_count_by_tag :: proc(sched: ^Scheduler, tag: u32) -> int {
+    if sched == nil || tag == 0 do return 0
+    count := 0
+    for f in sched.fiber_pool.all_fibers {
+        if f.status != .Unused && f.user_tag == tag {
+            count += 1
+        }
+    }
+    return count
+}
 
 // ============================================================================
 // Suspension & Waiting Primitives
@@ -306,6 +346,14 @@ yield_frame :: proc(f: ^Fiber) {
     wait_frames(f, 1)
 }
 
+fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
+    if f == nil do return
+    f.cleanup_proc = cleanup_proc
+    if user_data != nil {
+        f.user_data = user_data
+    }
+}
+
 wait_until_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     if f == nil || f.sched == nil do return
 
@@ -462,12 +510,14 @@ branch_ptr :: proc(
     entry: proc(f: ^Fiber, data: ^$T),
     data: ^T,
     name: string = "",
+    tag: u32 = 0,
 ) -> Branch_Desc {
     return Branch_Desc{
         entry_proc  = cast(proc(f: ^Fiber, user_data: rawptr))entry,
         user_data   = rawptr(data),
         user_fn     = rawptr(entry),
         has_payload = false,
+        tag         = tag,
         name        = name,
     }
 }
@@ -478,6 +528,7 @@ branch_val :: proc(
     entry: proc(f: ^Fiber, data: $T),
     data: T,
     name: string = "",
+    tag: u32 = 0,
 ) -> Branch_Desc where !intrinsics.type_is_pointer(T) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "branch_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
 
@@ -493,6 +544,7 @@ branch_val :: proc(
         entry_proc  = wrapper,
         user_fn     = rawptr(entry),
         has_payload = true,
+        tag         = tag,
         name        = name,
     }
     data_copy := data
@@ -500,7 +552,7 @@ branch_val :: proc(
     return desc
 }
 
-branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
+branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "", tag: u32 = 0) -> Branch_Desc {
     wrapper := proc(f: ^Fiber, user_data: rawptr) {
         real_entry := cast(proc(f: ^Fiber))user_data
         if real_entry != nil {
@@ -512,6 +564,7 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc {
         user_data   = rawptr(entry),
         user_fn     = rawptr(entry),
         has_payload = false,
+        tag         = tag,
         name        = name,
     }
 }
@@ -537,6 +590,7 @@ sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
         child := fiber_pool_acquire(&f.sched.fiber_pool)
         child.sched = f.sched
         child.debug_name = b.name
+        child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
         child.start_time = f.sched.current_time
         if b.has_payload {
@@ -580,6 +634,7 @@ race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
         child := fiber_pool_acquire(&f.sched.fiber_pool)
         child.sched = f.sched
         child.debug_name = b.name
+        child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
         child.start_time = f.sched.current_time
         if b.has_payload {
@@ -623,6 +678,7 @@ rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
         child := fiber_pool_acquire(&f.sched.fiber_pool)
         child.sched = f.sched
         child.debug_name = b.name
+        child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
         child.start_time = f.sched.current_time
         if b.has_payload {
@@ -975,15 +1031,16 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
 mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     if sched == nil || m == nil do return
 
-    if len(m.waiters) > 0 {
+    for len(m.waiters) > 0 {
         next_fiber := pop_front(&m.waiters)
         if next_fiber.status == .Suspended_Join {
             next_fiber.status = .Ready
             append(&sched.ready_queue, next_fiber)
+            return
         }
-    } else {
-        m.locked = false
     }
+
+    m.locked = false
 }
 
 // ============================================================================
@@ -1142,6 +1199,51 @@ latch_get_count :: #force_inline proc(latch: ^Fiber_Latch) -> int {
 
 latch_is_ready :: #force_inline proc(latch: ^Fiber_Latch) -> bool {
     return latch != nil && latch.count <= 0
+}
+
+// ============================================================================
+// Explicit Cancellation Token (Cancel_Token)
+// ============================================================================
+
+cancel_token_init :: proc(tok: ^Cancel_Token, allocator := context.allocator) {
+    if tok == nil do return
+    tok.is_cancelled = false
+    tok.waiters = make([dynamic]^Fiber, allocator)
+    tok.allocator = allocator
+}
+
+cancel_token_destroy :: proc(tok: ^Cancel_Token) {
+    if tok == nil do return
+    delete(tok.waiters)
+}
+
+cancel_token_is_cancelled :: #force_inline proc(tok: ^Cancel_Token) -> bool {
+    return tok != nil && tok.is_cancelled
+}
+
+cancel_token_cancel :: proc(sched: ^Scheduler, tok: ^Cancel_Token) {
+    if tok == nil || tok.is_cancelled do return
+    tok.is_cancelled = true
+    if sched != nil {
+        for f in tok.waiters {
+            if f.status == .Suspended_Join {
+                f.status = .Ready
+                append(&sched.ready_queue, f)
+            }
+        }
+    }
+    clear(&tok.waiters)
+}
+
+cancel_token_wait :: proc(f: ^Fiber, tok: ^Cancel_Token) {
+    if f == nil || tok == nil || f.sched == nil do return
+    if tok.is_cancelled do return
+
+    append(&tok.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
 }
 
 // ============================================================================
@@ -1361,6 +1463,42 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
         f.stored_context = context
         fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
         context = f.stored_context
+    }
+}
+
+// --- Multi-Channel Select (CSP Multiplexer) ---
+
+chan_try_select_recv :: proc(channels: []^Channel($T)) -> (ready_index: int, value: T, ok: bool) {
+    for ch, i in channels {
+        if ch != nil {
+            val, popped := chan_try_recv(ch)
+            if popped {
+                return i, val, true
+            }
+        }
+    }
+    return -1, {}, false
+}
+
+chan_select_recv :: proc(f: ^Fiber, channels: []^Channel($T)) -> (ready_index: int, value: T, ok: bool) {
+    if f == nil || f.sched == nil || len(channels) == 0 do return -1, {}, false
+
+    for {
+        // 1. Check if any channel has a message or is closed
+        for ch, i in channels {
+            if ch != nil {
+                val, popped := chan_try_recv(ch)
+                if popped {
+                    return i, val, true
+                }
+                if ch.is_closed {
+                    return i, {}, false
+                }
+            }
+        }
+
+        // 2. Yield frame to wait for messages
+        yield_frame(f)
     }
 }
 

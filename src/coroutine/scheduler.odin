@@ -504,7 +504,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
         coord.active_branches -= 1
 
         if coord.kind == .Race {
-            if !coord.completed {
+            if fiber.status != .Aborted && !coord.completed {
                 coord.completed = true
                 coord.winner = fiber
                 coord.winner_index = fiber.branch_index
@@ -522,6 +522,15 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     }
 
                     // Wake up parent
+                    parent.status = .Ready
+                    append(&fiber.sched.ready_queue, parent)
+                }
+            } else if coord.active_branches <= 0 && !coord.completed {
+                coord.completed = true
+                coord.winner = nil
+                coord.winner_index = -1
+                parent := coord.parent
+                if parent != nil {
                     parent.status = .Ready
                     append(&fiber.sched.ready_queue, parent)
                 }
@@ -561,7 +570,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 }
             }
         } else if coord.kind == .Sync {
-            if fiber.status == .Failed do coord.has_failed = true
+            if fiber.status == .Failed || fiber.status == .Aborted do coord.has_failed = true
             if coord.active_branches <= 0 && !coord.completed {
                 coord.completed = true
                 parent := coord.parent
@@ -661,6 +670,7 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     }
 
     root.status = .Aborted
+    fiber_on_finish(root)
     fiber_cleanup_and_recycle(sched, root)
 }
 

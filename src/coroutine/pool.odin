@@ -3,6 +3,7 @@ package coroutine
 import "base:runtime"
 import "core:mem"
 import win32 "core:sys/windows"
+import "core:sys/posix"
 
 // ============================================================================
 // Stack & Fiber Pool Implementation
@@ -53,6 +54,11 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         when ODIN_OS == .Windows {
             for slab in pool.slabs {
                 win32.VirtualFree(slab, 0, win32.MEM_RELEASE)
+            }
+        } else when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .FreeBSD {
+            slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
+            for slab in pool.slabs {
+                posix.munmap(slab, slab_size)
             }
         } else {
             for slab in pool.slabs {
@@ -112,6 +118,31 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 // Protect lowest 4KB page as PAGE_GUARD
                 old_protect: win32.DWORD
                 win32.VirtualProtect(raw_base, 4096, win32.PAGE_GUARD | win32.PAGE_READWRITE, &old_protect)
+
+                fiber := new(Fiber, allocator)
+                fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
+                fiber.stack_size = pool.stack_size - 4096
+                fiber.status = .Unused
+                fiber.heap_index = -1
+                fiber_watermark_stack(fiber)
+                fiber_init_canary(fiber)
+
+                append(&pool.all_fibers, fiber)
+                append(&pool.free_fibers, fiber)
+            }
+            return
+        } else when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .FreeBSD {
+            slab_addr := posix.mmap(nil, uint(slab_size), posix.PROT_READ | posix.PROT_WRITE, posix.MAP_PRIVATE | posix.MAP_ANONYMOUS, -1, 0)
+            if slab_addr == posix.MAP_FAILED {
+                panic("Failed to allocate mmap virtual memory slab for fiber pool")
+            }
+            slab := rawptr(slab_addr)
+            append(&pool.slabs, slab)
+
+            for i in 0 ..< pool.stacks_per_slab {
+                raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
+                // Protect lowest 4KB page as PROT_NONE (Guard Page)
+                posix.mprotect(raw_base, 4096, posix.PROT_NONE)
 
                 fiber := new(Fiber, allocator)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)

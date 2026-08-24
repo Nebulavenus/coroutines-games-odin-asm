@@ -97,6 +97,7 @@ Branch_Desc :: struct {
     user_fn:         rawptr,
     payload_storage: [FIBER_PAYLOAD_SIZE]byte,
     has_payload:     bool,
+    tag:             u32,
     name:            string,
 }
 
@@ -145,6 +146,7 @@ Fiber :: struct {
     user_fn:          rawptr,          // Function pointer for generic/value entry thunks
     payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
     cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
+    user_tag:         u32,             // User-assigned category tag for mass cancellation / filtering
 
     // --- Isolated Temporary Allocator ---
     temp_arena:        mem.Arena,
@@ -229,6 +231,14 @@ Channel :: struct($T: typeid) {
     recv_waiters: [dynamic]^Fiber,  // Fibers blocked on chan_recv
     is_closed:    bool,             // Closed state flag
     allocator:    mem.Allocator,    // Backing memory allocator
+}
+
+// --- Explicit Cancellation Token ---
+
+Cancel_Token :: struct {
+    is_cancelled: bool,
+    waiters:      [dynamic]^Fiber,
+    allocator:    mem.Allocator,
 }
 
 // --- Stateful Pull Generators ---

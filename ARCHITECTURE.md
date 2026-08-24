@@ -1150,4 +1150,12 @@ The engine provides three distinct temporal domains:
 
 ### G. Loading-Screen Pre-Warming & Diagnostics (`scheduler_prewarm`, `Pool_Stats`)
 - **`scheduler_prewarm(sched, count)`**: Pre-allocates slab capacity during loading screens or boot, guaranteeing zero mid-game allocation spikes.
-- **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ circular handle history queries (`fiber_is_alive`, `fiber_status`).
+- **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ circular handle history queries (`fiber_is_alive`, `fiber_status`).
+
+### H. Multi-Channel Select & Explicit Cancellation Tokens (`chan_select_recv`, `Cancel_Token`)
+- **Multi-Channel Select (`chan_select_recv`, `chan_try_select_recv`)**: Go-style CSP multiplexer that checks an arbitrary slice of typed channels (`[]^Channel(T)`) and suspends the calling fiber until any channel has a message available or is closed.
+- **Explicit Cancellation Token (`Cancel_Token`)**: Decoupled, lightweight cancellation handle (`cancel_token_cancel`, `cancel_token_wait`, `cancel_token_is_cancelled`). Multiple unrelated fibers can await cancellation or check state without sharing an intrusive `Fiber_Scope`.
+
+### I. Category User Tags & POSIX Guard Page Parity (`user_tag`, `scheduler_cancel_by_tag`, `mprotect`)
+- **Category User Tags (`user_tag: u32`, `scheduler_cancel_by_tag`)**: 4-byte category tag embedded in `Fiber` allowing games to perform mass cancellations across entire subsystems (e.g. aborting all combat AI upon EMP while retaining navigation).
+- **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_GUARD`.

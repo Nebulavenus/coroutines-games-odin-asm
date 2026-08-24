@@ -79,3 +79,33 @@ When a branch is cancelled (via `race` preemption, `fiber_cancel`, `with_timeout
 3. **State Transition:** Fiber state transitions to `.Aborted` or `.Cancelled`.
 4. **Stack & Resource Recycling:** Fiber stacks are recycled back into the slab free list in $O(1)$ time, and parent child counters are decremented.
 5. **Native Odin `defer` Execution:** When the cancelled fiber resumes for cleanup, its stack unwinds cleanly through native `defer` blocks.
+
+---
+
+## 4. The Three Dimensions of Cancellation
+
+The engine provides 3 orthogonal cancellation models tailored to different gameplay architectures:
+
+```
+┌───────────────────────────┬───────────────────────────┬───────────────────────────┐
+│ 1. STRUCTURAL (Hierarchical)│ 2. CATEGORY (Orthogonal) │ 3. EXPLICIT (Decoupled)   │
+├───────────────────────────┼───────────────────────────┼───────────────────────────┤
+│ `Fiber_Scope` / Tree      │ `user_tag: u32`           │ `Cancel_Token`            │
+│ Bounded to entity lifetime│ Bounded to gameplay class │ Bounded to broadcast event│
+│ e.g. Entity death         │ e.g. EMP / Silence blast  │ e.g. Game over / Cutscene │
+└───────────────────────────┴───────────────────────────┴───────────────────────────┘
+```
+
+### Dimension 1: Structural Scopes (`Fiber_Scope`)
+- Attached directly to game entities (e.g. `monster.scope`).
+- All fibers spawned with `scope = &monster.scope` are tracked in `scope.handles`.
+- When the monster dies, calling `scope_cancel(sched, &monster.scope)` cancels every coroutine attached to that monster in one call.
+
+### Dimension 2: Category Tags (`user_tag` & `scheduler_cancel_by_tag`)
+- Assigned on spawn: `spawn(sched, proc, tag = u32(Tag.Combat_AI))`.
+- Bypasses entity hierarchy to cancel an entire category of behaviors across the whole world (e.g. cancelling all combat AI and shields on EMP detonation).
+
+### Dimension 3: Explicit Tokens (`Cancel_Token`)
+- Decoupled token handle passed to arbitrary fibers across different systems.
+- Unrelated fibers await cancellation with `cancel_token_wait(f, &tok)`.
+- Calling `cancel_token_cancel(sched, &tok)` awakens and unblocks all listeners simultaneously.

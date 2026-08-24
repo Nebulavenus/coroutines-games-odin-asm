@@ -14,6 +14,9 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 7. [Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)](#recipe-7-lockstep-fixed-tick-physics--rollback-netcode-wait_ticks)
 8. [Recipe 8: Multi-Phase Boss AI with `Phase_Director`](#recipe-8-multi-phase-boss-ai-with-phase_director)
 9. [Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints](#recipe-9-rts-unit-action-queue-with-command-preemption--waypoints)
+10. [Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)](#recipe-10-multi-channel-network--input-multiplexer-chan_select_recv)
+11. [Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)](#recipe-11-decoupled-stage-transition-cancellation-token-cancel_token)
+12. [Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)](#recipe-12-category-mass-cancellation--emp-disruption-user_tag--scheduler_cancel_by_tag)
 
 ---
 
@@ -464,4 +467,143 @@ unit_action_processor :: proc(f: ^coroutine.Fiber, unit: ^RTS_Unit) {
         }
     }
 }
+
+---
+
+## Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)
+
+### Problem
+A multiplayer game client needs a single unified actor processing loop that consumes commands arriving from multiple decoupled streams: local player keypresses, authoritative server network packets, and background pathfinder solutions.
+
+### Solution
+Use `coroutine.chan_select_recv` to suspend until *any* channel produces an event:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+Command_Packet :: struct {
+    sender_id: u32,
+    action:    string,
+}
+
+actor_input_multiplexer :: proc(
+    f: ^coroutine.Fiber,
+    local_input_chan: ^coroutine.Channel(Command_Packet),
+    network_recv_chan: ^coroutine.Channel(Command_Packet),
+) {
+    channels := []^coroutine.Channel(Command_Packet){local_input_chan, network_recv_chan}
+
+    for {
+        // Suspends until either local input or server packet arrives:
+        ready_idx, packet, ok := coroutine.chan_select_recv(f, channels)
+        if !ok do break
+
+        switch ready_idx {
+        case 0:
+            fmt.printf("[Local Input] Executing client-predicted action: %s\n", packet.action)
+        case 1:
+            fmt.printf("[Server Network] Reconciling server state: %s from sender %d\n", packet.action, packet.sender_id)
+        }
+    }
+}
+```
+
+---
+
+## Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)
+
+### Problem
+When a cutscene triggers or the player dies, dozens of independent entities across completely different systems (background particle spawners, ambient wildlife AI, combat encounter scripts) must cancel immediately without needing to share a single monolithic `Fiber_Scope`.
+
+### Solution
+Use `coroutine.Cancel_Token` as a lightweight, broadcastable abort handle:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+Game_Session :: struct {
+    sched:           coroutine.Scheduler,
+    game_active_tok: coroutine.Cancel_Token,
+}
+
+// Any entity can listen on the cancellation token:
+wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
+    // 1. Run until token is cancelled:
+    coroutine.spawn_ptr(f.sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
+        coroutine.cancel_token_wait(f, tok) // Awaits token cancellation!
+        fmt.Println("[Wildlife AI] Game session ended; despawning animals.")
+    }, tok)
+}
+
+// When level completes or player dies:
+session_end_game :: proc(session: ^Game_Session) {
+    // Aborts all token waiters instantly in one call:
+    coroutine.cancel_token_cancel(&session.sched, &session.game_active_tok)
+}
+```
+
+---
+
+## Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)
+
+### Problem
+An in-game EMP bomb detonates. It must immediately disrupt and cancel all `Combat_AI` and `Energy_Shield` coroutines across all enemies on screen, while leaving entity `Movement`, `Gravity_Physics`, and `Audio_Voice` coroutines running unaffected.
+
+### Solution
+Assign `tag: u32` when spawning coroutines and use `coroutine.scheduler_cancel_by_tag`:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+Tag :: enum u32 {
+    Default       = 0,
+    Combat_AI     = 1,
+    Energy_Shield = 2,
+    Movement      = 3,
+}
+
+spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, enemy_id: int) {
+    // Combat loop (Tagged: Combat_AI)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
+        for {
+            fmt.Println("Drone firing lasers!")
+            coroutine.wait(f, 0.5)
+        }
+    }, tag = u32(Tag.Combat_AI))
+
+    // Shield shimmer loop (Tagged: Energy_Shield)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
+        for {
+            coroutine.wait(f, 0.1)
+        }
+    }, tag = u32(Tag.Energy_Shield))
+
+    // Movement patrol loop (Tagged: Movement - Immune to EMP!)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
+        for {
+            fmt.Println("Drone drifting forward with inertial thrusters...")
+            coroutine.wait(f, 1.0)
+        }
+    }, tag = u32(Tag.Movement))
+}
+
+// EMP Detonation Event:
+detonate_emp_blast :: proc(sched: ^coroutine.Scheduler) {
+    // Aborts all Combat AI and Shields instantly in O(N) pool scan:
+    cancelled_combat := coroutine.scheduler_cancel_by_tag(sched, u32(Tag.Combat_AI))
+    cancelled_shields := coroutine.scheduler_cancel_by_tag(sched, u32(Tag.Energy_Shield))
+
+    fmt.printf("EMP DISRUPTION: Disabled %d combat loops and %d shield loops!\n",
+        cancelled_combat, cancelled_shields)
+}
+```
 ```

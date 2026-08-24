@@ -253,5 +253,115 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cutscene: coroutine.Fiber_Hand
 
 ---
 
+## 8. Multi-Channel Multiplexing with `chan_select_recv`
+
+When a consumer fiber needs to receive messages from whichever channel has data available first (similar to Go's `select` or CSP multiplexing), use `chan_select_recv`:
+
+```odin
+package main
+
+import "core:fmt"
+import "coroutine"
+
+Command :: struct {
+    type_id: int,
+    payload: string,
+}
+
+main :: proc() {
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    combat_chan, network_chan: coroutine.Channel(Command)
+    coroutine.chan_init(&combat_chan, capacity = 4)
+    coroutine.chan_init(&network_chan, capacity = 4)
+    defer {
+        coroutine.chan_destroy(&combat_chan)
+        coroutine.chan_destroy(&network_chan)
+    }
+
+    // Unified consumer multiplexer fiber
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, env: ^Channels_Env) {
+        channels := []^coroutine.Channel(Command){env.combat, env.network}
+
+        for {
+            // Suspends until ANY channel receives a message:
+            ready_idx, cmd, ok := coroutine.chan_select_recv(f, channels)
+            if !ok do break // Channel closed
+
+            switch ready_idx {
+            case 0:
+                fmt.printf("[Combat Channel #0] Processed action: %s\n", cmd.payload)
+            case 1:
+                fmt.printf("[Network Channel #1] Received packet: %s\n", cmd.payload)
+            }
+        }
+    }, &Channels_Env{&combat_chan, &network_chan})
+}
+
+Channels_Env :: struct {
+    combat:  ^coroutine.Channel(Command),
+    network: ^coroutine.Channel(Command),
+}
+```
+
+### Non-Blocking Polling with `chan_try_select_recv`
+If you need to check multiple channels immediately without suspending:
+
+```odin
+ready_idx, cmd, ok := coroutine.chan_try_select_recv(channels)
+if ok {
+    // Process command immediately
+}
+```
+
+---
+
+## 9. Decoupled Cancellation with `Cancel_Token`
+
+While `Fiber_Scope` provides structural, parent-child cancellations for entities, `Cancel_Token` provides a lightweight, explicit cancellation handle for cross-subsystem coordination:
+
+```odin
+package main
+
+import "core:fmt"
+import "coroutine"
+
+main :: proc() {
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    // 1. Initialize cancellation token
+    game_over_tok: coroutine.Cancel_Token
+    coroutine.cancel_token_init(&game_over_tok)
+    defer coroutine.cancel_token_destroy(&game_over_tok)
+
+    // 2. Multiple unrelated fibers await cancellation:
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
+        fmt.Println("[Audio Subsystem] Music playing...")
+        coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
+        fmt.Println("[Audio Subsystem] Game Over received! Fading out music.")
+    }, &game_over_tok)
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
+        fmt.Println("[Physics Subsystem] Simulating world...")
+        coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
+        fmt.Println("[Physics Subsystem] Game Over received! Freezing ragdolls.")
+    }, &game_over_tok)
+
+    coroutine.scheduler_step(&sched, 0.1)
+
+    // 3. Trigger cancellation across all listeners simultaneously:
+    fmt.Println("\n>>> PLAYER DIES: Triggering Game Over Token! <<<")
+    coroutine.cancel_token_cancel(&sched, &game_over_tok)
+
+    coroutine.scheduler_step(&sched, 0.1)
+}
+```
+
+---
+
 ## Next Steps
 In [Tutorial 6: Offloading Heavy Compute](06_async_background_jobs.md), you will learn how to bridge OS background worker threads to coroutines with `await_async`.

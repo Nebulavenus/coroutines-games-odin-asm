@@ -3217,3 +3217,1271 @@ test_scheduler_pool_stats :: proc(t: ^testing.T) {
     testing.expect_value(t, stats.slabs_count, 1)
     testing.expect(t, stats.total_memory_kb > 0)
 }
+
+// ============================================================================
+// SUITE 13: PURE SYSTEMS ENHANCEMENTS (Tests 82-90)
+// ============================================================================
+
+// ============================================================================
+// Test 82: Non-Blocking Multi-Channel Select (chan_try_select_recv)
+// ============================================================================
+
+@(test)
+test_chan_try_select_recv :: proc(t: ^testing.T) {
+    ch1, ch2, ch3: Channel(int)
+    chan_init(&ch1, capacity = 4)
+    chan_init(&ch2, capacity = 4)
+    chan_init(&ch3, capacity = 4)
+    defer {
+        chan_destroy(&ch1)
+        chan_destroy(&ch2)
+        chan_destroy(&ch3)
+    }
+
+    ch_list := []^Channel(int){&ch1, &ch2, &ch3}
+
+    // All empty -> returns ok = false, ready_index = -1
+    idx, val, ok := chan_try_select_recv(ch_list)
+    testing.expect(t, !ok)
+    testing.expect_value(t, idx, -1)
+
+    // Send item to ch2
+    chan_try_send(&ch2, 42)
+
+    idx, val, ok = chan_try_select_recv(ch_list)
+    testing.expect(t, ok)
+    testing.expect_value(t, idx, 1)
+    testing.expect_value(t, val, 42)
+
+    // Now empty again
+    idx, val, ok = chan_try_select_recv(ch_list)
+    testing.expect(t, !ok)
+}
+
+// ============================================================================
+// Test 83: Blocking Multi-Channel Select (chan_select_recv)
+// ============================================================================
+
+@(test)
+test_chan_select_recv_blocking :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch_a, ch_b: Channel(string)
+    chan_init(&ch_a, capacity = 4)
+    chan_init(&ch_b, capacity = 4)
+    defer {
+        chan_destroy(&ch_a)
+        chan_destroy(&ch_b)
+    }
+
+    received_idx := -1
+    received_val := ""
+    received_ok := false
+
+    Select_Env :: struct {
+        ch_a: ^Channel(string),
+        ch_b: ^Channel(string),
+        out_idx: ^int,
+        out_val: ^string,
+        out_ok:  ^bool,
+    }
+
+    env := Select_Env{
+        ch_a = &ch_a,
+        ch_b = &ch_b,
+        out_idx = &received_idx,
+        out_val = &received_val,
+        out_ok  = &received_ok,
+    }
+
+    // Consumer fiber waits on select
+    spawn_val(&sched, proc(f: ^Fiber, env: Select_Env) {
+        idx, val, ok := chan_select_recv(f, []^Channel(string){env.ch_a, env.ch_b})
+        env.out_idx^ = idx
+        env.out_val^ = val
+        env.out_ok^  = ok
+    }, env)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !received_ok)
+
+    // Send to ch_b from another fiber
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(string)) {
+        wait(f, 0.05)
+        chan_send(f, ch, "hello from channel B")
+    }, &ch_b)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, received_ok)
+    testing.expect_value(t, received_idx, 1)
+    testing.expect_value(t, received_val, "hello from channel B")
+}
+
+// ============================================================================
+// Test 84: Multi-Channel Select on Closed Channel
+// ============================================================================
+
+@(test)
+test_chan_select_closed_channel :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch1, ch2: Channel(int)
+    chan_init(&ch1, capacity = 4)
+    chan_init(&ch2, capacity = 4)
+    defer {
+        chan_destroy(&ch1)
+        chan_destroy(&ch2)
+    }
+
+    received_idx := -1
+    received_ok := true
+
+    Select_Close_Env :: struct {
+        ch1: ^Channel(int),
+        ch2: ^Channel(int),
+        out_idx: ^int,
+        out_ok:  ^bool,
+    }
+
+    env := Select_Close_Env{
+        ch1 = &ch1,
+        ch2 = &ch2,
+        out_idx = &received_idx,
+        out_ok  = &received_ok,
+    }
+
+    spawn_val(&sched, proc(f: ^Fiber, env: Select_Close_Env) {
+        idx, _, ok := chan_select_recv(f, []^Channel(int){env.ch1, env.ch2})
+        env.out_idx^ = idx
+        env.out_ok^  = ok
+    }, env)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, received_idx, -1)
+
+    // Close ch2
+    chan_close(&ch2)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, received_idx, 1)
+    testing.expect(t, !received_ok)
+}
+
+// ============================================================================
+// Test 85: Cancel_Token Immediate Status Check
+// ============================================================================
+
+@(test)
+test_cancel_token_immediate_check :: proc(t: ^testing.T) {
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    testing.expect(t, !cancel_token_is_cancelled(&tok))
+
+    cancel_token_cancel(nil, &tok)
+    testing.expect(t, cancel_token_is_cancelled(&tok))
+}
+
+// ============================================================================
+// Test 86: Cancel_Token Multicast Wait and Cancellation Broadcast
+// ============================================================================
+
+@(test)
+test_cancel_token_wait_and_broadcast :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    w1_done := false
+    w2_done := false
+    w3_done := false
+
+    Token_Env :: struct {
+        tok:  ^Cancel_Token,
+        done: ^bool,
+    }
+
+    spawn_val(&sched, proc(f: ^Fiber, env: Token_Env) {
+        cancel_token_wait(f, env.tok)
+        env.done^ = true
+    }, Token_Env{&tok, &w1_done})
+
+    spawn_val(&sched, proc(f: ^Fiber, env: Token_Env) {
+        cancel_token_wait(f, env.tok)
+        env.done^ = true
+    }, Token_Env{&tok, &w2_done})
+
+    spawn_val(&sched, proc(f: ^Fiber, env: Token_Env) {
+        cancel_token_wait(f, env.tok)
+        env.done^ = true
+    }, Token_Env{&tok, &w3_done})
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !w1_done)
+    testing.expect(t, !w2_done)
+    testing.expect(t, !w3_done)
+    testing.expect_value(t, len(tok.waiters), 3)
+
+    // Cancel token
+    cancel_token_cancel(&sched, &tok)
+    testing.expect(t, cancel_token_is_cancelled(&tok))
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, w1_done)
+    testing.expect(t, w2_done)
+    testing.expect(t, w3_done)
+}
+
+// ============================================================================
+// Test 87: Cancel_Token Waiting on Already Cancelled Token
+// ============================================================================
+
+@(test)
+test_cancel_token_already_cancelled :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    cancel_token_cancel(&sched, &tok)
+
+    completed_immediately := false
+    spawn_ptr(&sched, proc(f: ^Fiber, done: ^bool) {
+        // tok is already cancelled; should not suspend!
+        tok_ptr := cast(^Cancel_Token)f.user_fn // or test context
+        cancel_token_wait(f, tok_ptr)
+        done^ = true
+    }, &completed_immediately)
+
+    // Assign tok_ptr
+    if f := sched.ready_queue[0]; f != nil {
+        f.user_fn = &tok
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, completed_immediately)
+}
+
+// ============================================================================
+// Test 88: Fiber Category Tag Assignment
+// ============================================================================
+
+@(test)
+test_fiber_user_tag_assignment :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_AI :: 101
+    h := spawn(&sched, proc(f: ^Fiber) {}, tag = TAG_AI)
+
+    f := fiber_find_by_handle(&sched, h)
+    testing.expect(t, f != nil)
+    testing.expect_value(t, f.user_tag, u32(TAG_AI))
+}
+
+// ============================================================================
+// Test 89: Scheduler Mass Cancellation by Tag (scheduler_cancel_by_tag)
+// ============================================================================
+
+@(test)
+test_scheduler_cancel_by_tag :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_COMBAT :: 1
+    TAG_MOVEMENT :: 2
+
+    combat_1_done := false
+    combat_2_done := false
+    movement_done := false
+
+    spawn_ptr(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.1)
+        done^ = true
+    }, &combat_1_done, tag = TAG_COMBAT)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.1)
+        done^ = true
+    }, &combat_2_done, tag = TAG_COMBAT)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.05)
+        done^ = true
+    }, &movement_done, tag = TAG_MOVEMENT)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_COMBAT), 2)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_MOVEMENT), 1)
+
+    // Cancel all TAG_COMBAT fibers
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_COMBAT)
+    testing.expect_value(t, cancelled, 2)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_COMBAT), 0)
+
+    // Advance time
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    // Movement fiber finished normally; combat fibers were cancelled and never finished!
+    testing.expect(t, movement_done)
+    testing.expect(t, !combat_1_done)
+    testing.expect(t, !combat_2_done)
+}
+
+// ============================================================================
+// Test 90: Scheduler Count by Tag (scheduler_count_by_tag)
+// ============================================================================
+
+@(test)
+test_scheduler_count_by_tag :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_PARTICLE :: 77
+
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_PARTICLE), 0)
+
+    h1 := spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) }, tag = TAG_PARTICLE)
+    h2 := spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) }, tag = TAG_PARTICLE)
+    h3 := spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) }, tag = TAG_PARTICLE)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_PARTICLE), 3)
+
+    fiber_cancel(&sched, h1)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_PARTICLE), 2)
+
+    fiber_cancel(&sched, h2)
+    fiber_cancel(&sched, h3)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_PARTICLE), 0)
+}
+
+// ============================================================================
+// SUITE 14: SYNCHRONIZATION INTEGRATION & CANCELLATION ROBUSTNESS (Tests 91-100)
+// ============================================================================
+
+// ============================================================================
+// Test 91: Cancel Fiber Waiting on Semaphore (semaphore_acquire)
+// ============================================================================
+
+@(test)
+test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, initial_permits = 0, max_permits = 2)
+    defer semaphore_destroy(&sem)
+
+    acquired := false
+    h := spawn_ptr(&sched, proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
+        semaphore_acquire(f, sem)
+    }, &sem)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(sem.waiters), 1)
+
+    // Abort the waiting fiber
+    fiber_cancel(&sched, h)
+
+    // Releasing permit should skip the aborted fiber and retain available permits
+    semaphore_release(&sched, &sem, 1)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+// ============================================================================
+// Test 92: Cancel Fiber Holding Semaphore with Cleanup (fiber_set_cleanup)
+// ============================================================================
+
+Sem_Cleanup_Ctx :: struct {
+    sched: ^Scheduler,
+    sem:   ^Fiber_Semaphore,
+}
+
+@(test)
+test_cancel_fiber_holding_semaphore_with_cleanup :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, initial_permits = 1, max_permits = 1)
+    defer semaphore_destroy(&sem)
+
+    ctx := Sem_Cleanup_Ctx{sched = &sched, sem = &sem}
+
+    h := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Sem_Cleanup_Ctx) {
+        semaphore_acquire(f, ctx.sem)
+        fiber_set_cleanup(f, proc(user_data: rawptr) {
+            c := (^Sem_Cleanup_Ctx)(user_data)
+            semaphore_release(c.sched, c.sem)
+        }, ctx)
+        wait(f, 5.0)
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, semaphore_available_permits(&sem), 0)
+
+    // Abort the fiber while holding the permit -> cleanup_proc runs and restores permit!
+    fiber_cancel(&sched, h)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+// ============================================================================
+// Test 93: Cancel Fiber Waiting on Mutex (mutex_lock)
+// ============================================================================
+
+@(test)
+test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    // Holder locks the mutex
+    holder := spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
+        mutex_lock(f, m)
+        wait(f, 1.0)
+        mutex_unlock(f.sched, m)
+    }, &m)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, m.locked)
+
+    // Waiter queues on the mutex
+    waiter := spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
+        mutex_lock(f, m)
+        wait(f, 0.1)
+        mutex_unlock(f.sched, m)
+    }, &m)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(m.waiters), 1)
+
+    // Cancel the waiter
+    fiber_cancel(&sched, waiter)
+
+    // Unlock by holder -> should not panic or wake cancelled fiber
+    mutex_unlock(&sched, &m)
+    testing.expect(t, !m.locked)
+}
+
+// ============================================================================
+// Test 94: Cancel Fiber Waiting on Latch (latch_wait)
+// ============================================================================
+
+@(test)
+test_cancel_fiber_waiting_on_latch :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    latch: Fiber_Latch
+    latch_init(&latch, initial_count = 2)
+    defer latch_destroy(&latch)
+
+    Latch_Task_Ctx :: struct {
+        latch: ^Fiber_Latch,
+        done:  bool,
+    }
+
+    ctx1 := Latch_Task_Ctx{latch = &latch, done = false}
+    ctx2 := Latch_Task_Ctx{latch = &latch, done = false}
+
+    h1 := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Latch_Task_Ctx) {
+        latch_wait(f, ctx.latch)
+        ctx.done = true
+    }, &ctx1)
+
+    h2 := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Latch_Task_Ctx) {
+        latch_wait(f, ctx.latch)
+        ctx.done = true
+    }, &ctx2)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(latch.waiters), 2)
+
+    // Cancel h1
+    fiber_cancel(&sched, h1)
+
+    // Count down latch to 0
+    latch_count_down(&sched, &latch, 2)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect(t, !ctx1.done)
+    testing.expect(t, ctx2.done)
+}
+
+// ============================================================================
+// Test 95: Cancel Fiber Waiting on Cancel_Token (cancel_token_wait)
+// ============================================================================
+
+@(test)
+test_cancel_fiber_waiting_on_cancel_token :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    woken := false
+    h := spawn_ptr(&sched, proc(f: ^Fiber, tok: ^Cancel_Token) {
+        cancel_token_wait(f, tok)
+    }, &tok)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(tok.waiters), 1)
+
+    // Cancel the waiting fiber
+    fiber_cancel(&sched, h)
+
+    // Now cancel the token -> should execute cleanly without error
+    cancel_token_cancel(&sched, &tok)
+    testing.expect(t, cancel_token_is_cancelled(&tok))
+}
+
+// ============================================================================
+// Test 96: Cancel Fiber Waiting on Event (event_wait)
+// ============================================================================
+
+@(test)
+test_cancel_fiber_waiting_on_event :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ev: Event(int)
+    event_init(&ev)
+    defer event_destroy(&ev)
+
+    received := 0
+    h := spawn_ptr(&sched, proc(f: ^Fiber, ev: ^Event(int)) {
+        val, ok := event_wait(f, ev)
+        if ok do f.user_tag = u32(val)
+    }, &ev)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(ev.waiters), 1)
+
+    // Cancel the listener fiber
+    fiber_cancel(&sched, h)
+
+    // Emit event -> should cleanly ignore cancelled fiber
+    event_emit(&sched, &ev, 999)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect_value(t, event_waiter_count(&ev), 0)
+}
+
+// ============================================================================
+// Test 97: Cancel by Tag Inside Nested Sync Branches
+// ============================================================================
+
+@(test)
+test_cancel_by_tag_inside_nested_sync :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_WORKER :: 10
+
+    sync_completed := false
+    branch1_done := false
+    branch2_done := false
+
+    spawn_ptr(&sched, proc(f: ^Fiber, done: ^bool) {
+        sync(f,
+            branch(proc(f: ^Fiber, d: ^bool) {
+                wait(f, 0.5)
+                d^ = true
+            }, (^bool)(f.user_data), name = "Tagged Branch 1", tag = TAG_WORKER),
+            branch(proc(f: ^Fiber, d: ^bool) {
+                wait(f, 0.5)
+                d^ = true
+            }, (^bool)(f.user_data), name = "Tagged Branch 2", tag = TAG_WORKER),
+        )
+        done^ = true
+    }, &sync_completed)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_WORKER), 2)
+
+    // Cancel all tagged workers
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_WORKER)
+    testing.expect_value(t, cancelled, 2)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    testing.expect(t, !branch1_done)
+    testing.expect(t, !branch2_done)
+}
+
+// ============================================================================
+// Test 98: Cancel by Tag Inside Nested Race Branches
+// ============================================================================
+
+@(test)
+test_cancel_by_tag_inside_nested_race :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_RACE_SUB :: 20
+
+    winner_idx := -99
+
+    spawn_ptr(&sched, proc(f: ^Fiber, win: ^int) {
+        idx := race(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.5) }, name = "Sub 1", tag = TAG_RACE_SUB),
+            branch(proc(f: ^Fiber) { wait(f, 0.5) }, name = "Sub 2", tag = TAG_RACE_SUB),
+        )
+        win^ = idx
+    }, &winner_idx)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_RACE_SUB), 2)
+
+    // Cancel race sub branches
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_RACE_SUB)
+    testing.expect_value(t, cancelled, 2)
+}
+
+// ============================================================================
+// Test 99: Fallback Resilience After Tag Cancellation
+// ============================================================================
+
+@(test)
+test_fallback_resilience_after_tag_cancellation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_FALLBACK_TASK :: 30
+
+    runs := 0
+    fb_proc :: proc(f: ^Fiber, r: ^int) {
+        for {
+            succeeded, idx := fallback(f,
+                branch(proc(f: ^Fiber) {
+                    fail(f)
+                }, name = "Option A"),
+                branch(proc(f: ^Fiber, r: ^int) {
+                    r^ += 1
+                    wait(f, 0.05)
+                }, r, name = "Option B"),
+            )
+            wait(f, 0.05)
+        }
+    }
+
+    h := spawn_ptr(&sched, fb_proc, &runs, tag = TAG_FALLBACK_TASK)
+    scheduler_step(&sched, 0.06)
+    testing.expect(t, runs >= 1)
+
+    // Cancel and restart (cancels both parent and active child branch)
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_FALLBACK_TASK)
+    testing.expect(t, cancelled >= 1)
+
+    // Respawn
+    spawn_ptr(&sched, fb_proc, &runs, tag = TAG_FALLBACK_TASK)
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.06)
+    }
+
+    testing.expect(t, runs >= 2)
+}
+
+// ============================================================================
+// Test 100: Branch Tag Explicit Parameter and Inheritance
+// ============================================================================
+
+Tag_Test_Result :: struct {
+    inherited_tag:  u32,
+    overridden_tag: u32,
+}
+
+@(test)
+test_branch_tag_explicit_and_inheritance :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_PARENT   :: 100
+    TAG_OVERRIDE :: 200
+
+    results := Tag_Test_Result{}
+
+    parent_handle := spawn_ptr(&sched, proc(f: ^Fiber, res: ^Tag_Test_Result) {
+        sync(f,
+            branch(proc(f: ^Fiber, res: ^Tag_Test_Result) {
+                res.inherited_tag = f.user_tag
+                wait(f, 0.1)
+            }, res, name = "Inherited Branch"),
+            branch(proc(f: ^Fiber, res: ^Tag_Test_Result) {
+                res.overridden_tag = f.user_tag
+                wait(f, 0.1)
+            }, res, name = "Overridden Branch", tag = TAG_OVERRIDE),
+        )
+    }, &results, tag = TAG_PARENT)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_PARENT), 2) // Parent + Inherited Branch
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_OVERRIDE), 1) // Overridden Branch
+    testing.expect_value(t, results.inherited_tag, TAG_PARENT)
+    testing.expect_value(t, results.overridden_tag, TAG_OVERRIDE)
+}
+
+// ============================================================================
+// SUITE 15: HIGH-STRESS RESILIENCE & COMPOSITE INTEGRATION (Tests 101-110)
+// ============================================================================
+
+// ============================================================================
+// Test 101: Multi-Channel Select Stress with Producer Tag Cancellation
+// ============================================================================
+
+@(test)
+test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_PRODUCER_A :: 11
+    TAG_PRODUCER_B :: 12
+
+    ch_a, ch_b: Channel(int)
+    chan_init(&ch_a, capacity = 10)
+    chan_init(&ch_b, capacity = 10)
+    defer {
+        chan_destroy(&ch_a)
+        chan_destroy(&ch_b)
+    }
+
+    // Producer A: sends 1, 2, 3...
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        for i := 1; i <= 20; i += 1 {
+            chan_send(f, ch, i)
+            wait(f, 0.02)
+        }
+    }, &ch_a, tag = TAG_PRODUCER_A)
+
+    // Producer B: sends 100, 200, 300...
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        for i := 1; i <= 20; i += 1 {
+            chan_send(f, ch, i * 100)
+            wait(f, 0.02)
+        }
+    }, &ch_b, tag = TAG_PRODUCER_B)
+
+    Select_Consumer_Ctx :: struct {
+        chans:        []^Channel(int),
+        items_recv:   int,
+        last_val:     int,
+    }
+
+    ctx := Select_Consumer_Ctx{
+        chans = []^Channel(int){&ch_a, &ch_b},
+        items_recv = 0,
+        last_val = 0,
+    }
+
+    // Consumer fiber selects from both
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Consumer_Ctx) {
+        for {
+            idx, val, ok := chan_select_recv(f, c.chans)
+            if ok {
+                c.items_recv += 1
+                c.last_val = val
+            }
+        }
+    }, &ctx)
+
+    // Step a few frames
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.02)
+    }
+    testing.expect(t, ctx.items_recv >= 2)
+
+    // Cancel Producer A
+    cancelled_a := scheduler_cancel_by_tag(&sched, TAG_PRODUCER_A)
+    testing.expect_value(t, cancelled_a, 1)
+
+    // Consumer should continue receiving from Producer B
+    prev_count := ctx.items_recv
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.02)
+    }
+    testing.expect(t, ctx.items_recv > prev_count)
+}
+
+// ============================================================================
+// Test 102: Cancel Token Multicast Cascade with Pruned Waiters
+// ============================================================================
+
+@(test)
+test_cancel_token_multicast_cascade_with_dynamic_waiters :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    Token_Cascade_Ctx :: struct {
+        tok:   ^Cancel_Token,
+        count: ^int,
+    }
+
+    woken_count := 0
+    ctxs: [8]Token_Cascade_Ctx
+    handles: [8]Fiber_Handle
+
+    for i in 0 ..< 8 {
+        ctxs[i] = Token_Cascade_Ctx{tok = &tok, count = &woken_count}
+        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Token_Cascade_Ctx) {
+            cancel_token_wait(f, c.tok)
+            c.count^ += 1
+        }, &ctxs[i])
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(tok.waiters), 8)
+
+    // Abort 3 waiters before token cancellation
+    fiber_cancel(&sched, handles[1])
+    fiber_cancel(&sched, handles[3])
+    fiber_cancel(&sched, handles[5])
+
+    // Cancel the token -> remaining 5 fibers should wake cleanly
+    cancel_token_cancel(&sched, &tok)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect_value(t, woken_count, 5)
+    testing.expect(t, cancel_token_is_cancelled(&tok))
+}
+
+// ============================================================================
+// Test 103: Bottom-Up Guaranteed Cleanup on Deep Hierarchy Abort
+// ============================================================================
+
+Cleanup_Tracker :: struct {
+    parent_cleaned:      bool,
+    child_cleaned:       bool,
+    grandchild_cleaned:  bool,
+}
+
+@(test)
+test_fiber_set_cleanup_deep_hierarchy_abort :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tracker := Cleanup_Tracker{}
+
+    parent_h := spawn_ptr(&sched, proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
+        fiber_set_cleanup(f, proc(user_data: rawptr) {
+            t := (^Cleanup_Tracker)(user_data)
+            t.parent_cleaned = true
+        }, tr)
+
+        sync(f,
+            branch(proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
+                fiber_set_cleanup(f, proc(user_data: rawptr) {
+                    t := (^Cleanup_Tracker)(user_data)
+                    t.child_cleaned = true
+                }, tr)
+
+                sync(f,
+                    branch(proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
+                        fiber_set_cleanup(f, proc(user_data: rawptr) {
+                            t := (^Cleanup_Tracker)(user_data)
+                            t.grandchild_cleaned = true
+                        }, tr)
+                        wait(f, 10.0)
+                    }, tr, name = "Grandchild"),
+                )
+            }, tr, name = "Child"),
+        )
+    }, &tracker)
+
+    scheduler_step(&sched, 0.01)
+
+    // Abort the top-level parent -> cleans up grandchild, child, and parent
+    fiber_cancel(&sched, parent_h)
+
+    testing.expect(t, tracker.grandchild_cleaned)
+    testing.expect(t, tracker.child_cleaned)
+    testing.expect(t, tracker.parent_cleaned)
+}
+
+// ============================================================================
+// Test 104: Semaphore Contention with Random Waiter Cancellations
+// ============================================================================
+
+@(test)
+test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, initial_permits = 3, max_permits = 3)
+    defer semaphore_destroy(&sem)
+
+    completed := 0
+    handles: [12]Fiber_Handle
+
+    Sem_Worker_Ctx :: struct {
+        sem:       ^Fiber_Semaphore,
+        completed: ^int,
+        sched:     ^Scheduler,
+    }
+
+    ctx := Sem_Worker_Ctx{sem = &sem, completed = &completed, sched = &sched}
+
+    for i in 0 ..< 12 {
+        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Worker_Ctx) {
+            semaphore_acquire(f, c.sem)
+            fiber_set_cleanup(f, proc(user_data: rawptr) {
+                ctx := (^Sem_Worker_Ctx)(user_data)
+                semaphore_release(ctx.sched, ctx.sem)
+            }, c)
+            wait(f, 0.05)
+            semaphore_release(c.sched, c.sem)
+            f.cleanup_proc = nil // Clear cleanup since released normally
+            c.completed^ += 1
+        }, &ctx)
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, semaphore_available_permits(&sem), 0)
+
+    // Cancel 4 queued/active fibers
+    fiber_cancel(&sched, handles[2])
+    fiber_cancel(&sched, handles[5])
+    fiber_cancel(&sched, handles[7])
+    fiber_cancel(&sched, handles[9])
+
+    // Step until all remaining fibers finish
+    for _ in 0 ..< 25 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    testing.expect_value(t, completed, 8)
+    testing.expect_value(t, semaphore_available_permits(&sem), 3)
+}
+
+// ============================================================================
+// Test 105: Mutex Contention Churn with Intermediate Waiter Cancellations
+// ============================================================================
+
+@(test)
+test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    completed := 0
+    handles: [10]Fiber_Handle
+
+    Mutex_Worker_Ctx :: struct {
+        m:         ^Fiber_Mutex,
+        completed: ^int,
+        sched:     ^Scheduler,
+    }
+
+    ctx := Mutex_Worker_Ctx{m = &m, completed = &completed, sched = &sched}
+
+    for i in 0 ..< 10 {
+        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Mutex_Worker_Ctx) {
+            mutex_lock(f, c.m)
+            fiber_set_cleanup(f, proc(user_data: rawptr) {
+                ctx := (^Mutex_Worker_Ctx)(user_data)
+                mutex_unlock(ctx.sched, ctx.m)
+            }, c)
+            wait(f, 0.03)
+            mutex_unlock(c.sched, c.m)
+            f.cleanup_proc = nil
+            c.completed^ += 1
+        }, &ctx)
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, m.locked)
+
+    // Cancel 3 queued waiters
+    fiber_cancel(&sched, handles[3])
+    fiber_cancel(&sched, handles[6])
+    fiber_cancel(&sched, handles[8])
+
+    for _ in 0 ..< 30 {
+        scheduler_step(&sched, 0.03)
+    }
+
+    testing.expect_value(t, completed, 7)
+    testing.expect(t, !m.locked)
+}
+
+// ============================================================================
+// Test 106: Event Multicast with Dead Listener Pruning
+// ============================================================================
+
+@(test)
+test_event_multicast_dynamic_subscribe_during_emit :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ev: Event(string)
+    event_init(&ev)
+    defer event_destroy(&ev)
+
+    Event_Multi_Ctx :: struct {
+        ev:    ^Event(string),
+        count: ^int,
+    }
+
+    received_count := 0
+    ctxs: [6]Event_Multi_Ctx
+    handles: [6]Fiber_Handle
+
+    for i in 0 ..< 6 {
+        ctxs[i] = Event_Multi_Ctx{ev = &ev, count = &received_count}
+        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Event_Multi_Ctx) {
+            msg, ok := event_wait(f, c.ev)
+            if ok && msg == "PULSE" {
+                c.count^ += 1
+            }
+        }, &ctxs[i])
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, event_waiter_count(&ev), 6)
+
+    // Cancel 2 listeners
+    fiber_cancel(&sched, handles[0])
+    fiber_cancel(&sched, handles[4])
+
+    // Emit event
+    event_emit(&sched, &ev, "PULSE")
+    scheduler_step(&sched, 0.01)
+
+    testing.expect_value(t, received_count, 4)
+    testing.expect_value(t, event_waiter_count(&ev), 0)
+}
+
+// ============================================================================
+// Test 107: Latch Countdown with Interleaved Waiter Aborts
+// ============================================================================
+
+@(test)
+test_latch_partial_countdown_with_waiter_cancellations :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    latch: Fiber_Latch
+    latch_init(&latch, initial_count = 4)
+    defer latch_destroy(&latch)
+
+    Latch_Multi_Ctx :: struct {
+        latch: ^Fiber_Latch,
+        woken: ^int,
+    }
+
+    woken := 0
+    ctxs: [4]Latch_Multi_Ctx
+    handles: [4]Fiber_Handle
+
+    for i in 0 ..< 4 {
+        ctxs[i] = Latch_Multi_Ctx{latch = &latch, woken = &woken}
+        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Latch_Multi_Ctx) {
+            latch_wait(f, c.latch)
+            c.woken^ += 1
+        }, &ctxs[i])
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(latch.waiters), 4)
+
+    // Countdown 2
+    latch_count_down(&sched, &latch, 2)
+    testing.expect_value(t, latch_get_count(&latch), 2)
+    testing.expect_value(t, woken, 0)
+
+    // Abort waiter 1
+    fiber_cancel(&sched, handles[1])
+
+    // Final countdown of 2 -> reaches 0
+    latch_count_down(&sched, &latch, 2)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect(t, latch_is_ready(&latch))
+    testing.expect_value(t, woken, 3)
+}
+
+// ============================================================================
+// Test 108: Category Tag Mass Cancellation Across Mixed Scheduler Queues
+// ============================================================================
+
+@(test)
+test_category_tag_mass_cancel_mixed_states :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_MIXED :: 55
+
+    // Fiber 1: Sleeping_Time
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 5.0) }, tag = TAG_MIXED)
+
+    // Fiber 2: Sleeping_Real_Time
+    spawn(&sched, proc(f: ^Fiber) { wait_real(f, 5.0) }, tag = TAG_MIXED)
+
+    // Fiber 3: Sleeping_Frames
+    spawn(&sched, proc(f: ^Fiber) { wait_frames(f, 100) }, tag = TAG_MIXED)
+
+    // Fiber 4: Sleeping_Ticks
+    spawn(&sched, proc(f: ^Fiber) { wait_ticks(f, 100) }, tag = TAG_MIXED)
+
+    // Fiber 5: Waiting_Condition
+    flag := false
+    spawn_ptr(&sched, proc(f: ^Fiber, fl: ^bool) {
+        wait_while(f, proc(data: ^bool) -> bool { return !data^ }, fl)
+    }, &flag, tag = TAG_MIXED)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_MIXED), 5)
+
+    // Cancel all 5 in various sleeping queues
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_MIXED)
+    testing.expect_value(t, cancelled, 5)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_MIXED), 0)
+}
+
+// ============================================================================
+// Test 109: Prewarm Slab Allocation and Dynamic Slab Recycling Invariants
+// ============================================================================
+
+@(test)
+test_scheduler_prewarm_slab_expansion_under_load :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Pre-warm 32 fibers
+    scheduler_prewarm(&sched, 32)
+    stats1 := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats1.total_stacks, 32)
+    testing.expect_value(t, stats1.active_fibers, 0)
+    testing.expect_value(t, stats1.free_fibers, 32)
+
+    // Spawn 40 fibers (exceeds 32 -> triggers dynamic 2nd slab allocation)
+    for _ in 0 ..< 40 {
+        spawn(&sched, proc(f: ^Fiber) {
+            wait(f, 0.02)
+        })
+    }
+
+    scheduler_step(&sched, 0.005)
+    stats2 := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats2.total_stacks, 64)
+    testing.expect_value(t, stats2.active_fibers, 40)
+    testing.expect_value(t, stats2.slabs_count, 2)
+
+    // Let all 40 finish
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    stats3 := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats3.active_fibers, 0)
+    testing.expect_value(t, stats3.free_fibers, 64)
+}
+
+// ============================================================================
+// Test 110: Composite Fallback & Rush Coordination with Branch Timeouts
+// ============================================================================
+
+@(test)
+test_rush_and_fallback_combined_with_timeout_and_tag_cancellation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    TAG_INTERRUPTIBLE :: 88
+
+    outcome := "INITIAL"
+
+    spawn_ptr(&sched, proc(f: ^Fiber, out: ^string) {
+        // Fallback strategy: try fast rush first; if aborted or failed, fallback to safe patrol
+        succeeded, fb_idx := fallback(f,
+            // Option 1: Rush between two fast paths
+            branch(proc(f: ^Fiber, out: ^string) {
+                winner := rush(f,
+                    branch(proc(f: ^Fiber) { wait(f, 0.5) }, name = "Slow path 1", tag = TAG_INTERRUPTIBLE),
+                    branch(proc(f: ^Fiber) { wait(f, 0.5) }, name = "Slow path 2", tag = TAG_INTERRUPTIBLE),
+                )
+                if winner >= 0 {
+                    out^ = "RUSH_WON"
+                } else {
+                    fail(f)
+                }
+            }, out, name = "Composite Rush"),
+
+            // Option 2: Fallback safe recovery
+            branch(proc(f: ^Fiber, out: ^string) {
+                out^ = "FALLBACK_RECOVERY"
+            }, out, name = "Safe Recovery"),
+        )
+    }, &outcome)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scheduler_count_by_tag(&sched, TAG_INTERRUPTIBLE), 2)
+
+    // Abort the rush sub-branches mid-execution
+    cancelled := scheduler_cancel_by_tag(&sched, TAG_INTERRUPTIBLE)
+    testing.expect_value(t, cancelled, 2)
+
+    // Step scheduler to allow fallback recovery
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, outcome, "FALLBACK_RECOVERY")
+}
+
+
+

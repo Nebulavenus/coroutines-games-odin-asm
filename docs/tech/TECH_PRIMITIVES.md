@@ -140,3 +140,44 @@ ok := coroutine.fiber_join(f, target_handle)
 - If target fiber is already completed/recycled, returns immediately.
 - Suspends calling fiber until target terminates. Returns `true` if target completed with `.Completed`, and `false` if target was aborted or failed.
 
+---
+
+## 8. Multi-Channel Select (`chan_select_recv` & `chan_try_select_recv`)
+
+Provides classic Go-style CSP multi-channel multiplexing across an arbitrary slice of channels:
+
+```odin
+// Non-blocking select check
+ready_idx, val, ok := coroutine.chan_try_select_recv([]^coroutine.Channel(int){&ch_a, &ch_b})
+
+// Blocking fiber select suspension
+ready_idx, val, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(string){&ch_net, &ch_input})
+```
+
+- **Semantics:** Iterates the channel slice. If any channel has a message available or is closed, it consumes the item and returns immediately with `(ready_index, value, ok)`.
+- If all channels are empty, `chan_select_recv` suspends the calling fiber until any channel receives data or is closed.
+
+---
+
+## 9. Explicit Cancellation Token (`Cancel_Token`)
+
+A lightweight, decoupled cancellation primitive for cross-subsystem coordination:
+
+```odin
+Cancel_Token :: struct {
+    is_cancelled: bool,
+    waiters:      [dynamic]^Fiber,
+    allocator:    mem.Allocator,
+}
+
+// Lifecycle & Control
+cancel_token_init(&tok)
+cancel_token_destroy(&tok)
+cancel_token_cancel(&sched, &tok)
+cancel_token_wait(f, &tok)
+is_cancelled := cancel_token_is_cancelled(&tok)
+```
+
+- Enables multiple independent fibers across different entity scopes to coordinate abort signals without sharing a `Fiber_Scope`.
+- Calling `cancel_token_wait` on an already-cancelled token returns immediately without suspension.
+

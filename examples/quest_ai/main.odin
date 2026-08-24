@@ -28,6 +28,13 @@ Player :: struct {
     scope:  coroutine.Fiber_Scope,
 }
 
+// ============================================================================
+// Coroutine Category Tags
+// ============================================================================
+
+TAG_DEFAULT       :: 0
+TAG_KNIGHT_ACTION :: 1
+
 // --- Zone 1: Knight AI (fallback & semaphore) ---
 Knight_AI :: struct {
     pos:            rl.Vector2,
@@ -123,8 +130,10 @@ knight_decision_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 if dist > 70.0 {
                     coroutine.fail(f) // Too far!
                 }
-                // Acquire combat permit from semaphore
-                coroutine.semaphore_acquire(f, &g_world.combat_sem)
+                // Non-blocking permit check from semaphore
+                if !coroutine.semaphore_try_acquire(&g_world.combat_sem) {
+                    coroutine.fail(f) // Semaphore permit unavailable!
+                }
                 defer coroutine.semaphore_release(f.sched, &g_world.combat_sem)
 
                 k.current_action = "Melee Heavy Slam! (Priority A, Token Acquired)"
@@ -374,8 +383,8 @@ world_init :: proc(w: ^World) {
     coroutine.phase_director_init(&w.sentinel.director, &w.sched)
     coroutine.phase_switch(&w.sentinel.director, 1, sentinel_phase1_fiber, &w.sentinel, name = "Phase 1: Laser Patrol")
 
-    // Start Knight AI decision loop
-    coroutine.spawn(&w.sched, knight_decision_fiber, &w.knight, scope = &w.knight.scope, name = "Knight AI (fallback)")
+    // Start Knight AI decision loop with category tag
+    coroutine.spawn(&w.sched, knight_decision_fiber, &w.knight, scope = &w.knight.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
 }
 
 world_destroy :: proc(w: ^World) {
@@ -504,6 +513,22 @@ world_update :: proc(w: ^World, dt: f32) {
     if do_bench {
         run_simulation_benchmark(w)
     }
+
+    // --- Category Tag Interrupt Trigger (Press [X]): Cancels Knight AI by tag ---
+    if rl.IsKeyPressed(.X) {
+        cancelled := coroutine.scheduler_cancel_by_tag(&w.sched, TAG_KNIGHT_ACTION)
+        // Ensure combat semaphore is restored if interrupted mid-action
+        if coroutine.semaphore_available_permits(&w.combat_sem) < w.combat_sem.max_permits {
+            coroutine.semaphore_release(&w.sched, &w.combat_sem, w.combat_sem.max_permits - coroutine.semaphore_available_permits(&w.combat_sem))
+        }
+        w.knight.current_action = fmt.tprintf("STUNNED via Category Tag #1 (Cancelled %d)", cancelled)
+        w.knight.action_color = rl.GOLD
+        // Respawn Knight decision fiber after 1.2s stun
+        coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+            coroutine.wait(f, 1.2)
+            coroutine.spawn(f.sched, knight_decision_fiber, k, scope = &k.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
+        }, &w.knight)
+    }
 }
 
 world_render :: proc(w: ^World) {
@@ -604,7 +629,7 @@ world_render :: proc(w: ^World) {
         rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 850, 24, flash_col)
         rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
     } else {
-        rl.DrawText("WASD: Move | [2]: Rush Quest | [3]: Phase | [T]: Bench | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+        rl.DrawText("WASD: Move | [2]: Quest | [3]: Phase | [X]: Stun Tag | [T]: Bench | F1: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
     }
 
     // --- Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---

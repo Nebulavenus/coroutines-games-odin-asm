@@ -102,5 +102,56 @@ coroutine.scheduler_step_ticks(&sched, 1)
 
 ---
 
+## 4. Category User Tags & Mass Cancellation (`user_tag`)
+
+In addition to entity-scoped cancellations, you can tag fibers by category (e.g. `TAG_COMBAT_AI`, `TAG_PARTICLE_FX`, `TAG_AMBIENT_AUDIO`) to perform selective mass cancellations:
+
+```odin
+package main
+
+import "core:fmt"
+import "coroutine"
+
+Behavior_Tag :: enum u32 {
+    Unspecified = 0,
+    Combat_AI   = 1,
+    Movement    = 2,
+    Particles   = 3,
+}
+
+main :: proc() {
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    // Spawn combat AI fibers with Combat_AI tag
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+        fmt.Println("[Combat AI] Charging laser cannon...")
+        coroutine.wait(f, 2.0)
+    }, tag = u32(Behavior_Tag.Combat_AI))
+
+    // Spawn movement fiber with Movement tag
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+        fmt.Println("[Movement] Patrolling perimeter...")
+        coroutine.wait(f, 5.0)
+    }, tag = u32(Behavior_Tag.Movement))
+
+    coroutine.scheduler_step(&sched, 0.1)
+
+    // Inspect active counts by tag:
+    combat_count := coroutine.scheduler_count_by_tag(&sched, u32(Behavior_Tag.Combat_AI))
+    fmt.printf("Active Combat AI fibers: %d\n", combat_count)
+
+    // EMP Blast: Cancel ALL combat fibers across all entities!
+    fmt.Println("\n>>> EMP BLAST DETONATES: Cancelling all Combat AI! <<<")
+    cancelled := coroutine.scheduler_cancel_by_tag(&sched, u32(Behavior_Tag.Combat_AI))
+    fmt.printf("Cancelled %d combat fibers. Movement fibers continue!\n", cancelled)
+
+    coroutine.scheduler_step(&sched, 0.1)
+}
+```
+
+---
+
 ## Next Steps
 In [Tutorial 9: Headless CI/CD Testing](09_headless_ci_testing.md), you will learn how to write automated gameplay tests that simulate minutes of combat in milliseconds using `simulate_until`.

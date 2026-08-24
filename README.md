@@ -4,9 +4,9 @@ A high-performance, deterministic **stackful coroutine engine** for [Odin](https
 
 Write gameplay scripts as straight-line code — `wait`, `sync`, `race`, `rush`, `fallback`, `tween` — while the scheduler handles suspension, cancellation, and hierarchy behind the scenes. No callback spaghetti, no state machines, no OOP boilerplate.
 
-**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick`) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` · built-in tweening · headless CI simulation (`simulate_until`).
+**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick`) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · multi-channel select (`chan_select_recv`) · cancellation tokens (`Cancel_Token`) · category mass cancellation (`scheduler_cancel_by_tag`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` / POSIX `PROT_NONE` · built-in tweening · headless CI simulation (`simulate_until`).
 
-Ships with interactive **Raylib** demos: a 2D Boss Encounter and an All-Features Showcase with a live F1 fiber-tree debugger and freeze-frame controls.
+Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sandbox, and an All-Features Showcase with a live F1 fiber-tree debugger and freeze-frame controls.
 
 ---
 
@@ -17,7 +17,7 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter and an All-Features
   - **Simulation Clock (`sim_time`, `sim_delta`)**: Pausable, scalable gameplay clock for AI, combat, and animations.
   - **Real / Wall Clock (`real_time`, `real_delta`)**: Unpaused clock for UI menus, HUD overlays, and network pings (`wait_real`, `spawn_real`).
   - **Fixed Integer Ticks (`sim_ticks`)**: Integer tick domain for lockstep physics, rollback netcode, and exact replays (`wait_ticks`, `scheduler_step_ticks`).
-- **Structured Concurrency Matrix**:
+- **Structured Concurrency & Synchronization Matrix**:
   - `sync`: Spawns parallel branches and suspends the parent fiber until all branches complete.
   - `race`: Preemptive first-to-finish race that immediately and recursively aborts competing sibling subtrees.
   - `rush`: First-to-succeed race that ignores early failures and resumes on first success.
@@ -25,6 +25,8 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter and an All-Features
   - `with_timeout`: Auto-cancelling task execution within time limits.
   - `fiber_join`: Dynamic task joining allowing fibers to await independent fiber handles (like `pthread_join`).
   - `Event(T)`: 1-to-many publish-subscribe typed event broadcast with zero polling.
+  - `chan_select_recv`: Go-style CSP multi-channel multiplexer awaiting whichever channel is ready first.
+  - `Cancel_Token`: Decoupled explicit cancellation token for cross-subsystem aborts without shared scopes.
   - `Fiber_Semaphore`: Cooperative counting semaphore allowing up to $N$ concurrent permits.
   - `Fiber_Latch`: Countdown rendezvous synchronization barrier.
   - `Signal`: Zero-polling event broadcasting (`signal_wait`, `signal_emit`).
@@ -34,6 +36,7 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter and an All-Features
   - `Phase_Director`: Dynamic phase coordinator with automatic previous-phase fiber cancellation.
   - `simulate_until`: High-speed headless simulation runner for CI/CD automated gameplay tests.
   - `spawn_val`: 128-byte inline by-value payload storage eliminating heap allocations and dangling stack pointers.
+  - `user_tag` & `scheduler_cancel_by_tag`: 4-byte category tagging enabling selective mass cancellations.
   - `scheduler_prewarm`: Pre-allocate memory slabs during level loads to eliminate runtime frame hitches.
   - `scheduler_pool_stats`: Real-time memory telemetry and active stack metrics.
 - **Unopinionated Async Job Bridge (`await_async` / `Async_Token`)**:
@@ -52,7 +55,7 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter and an All-Features
 - **Multi-Tiered Stack Safety**:
   - Configurable `Stack_Allocation_Mode`:
     - `Standard_Slab`: Portable heap slabs with 64-byte `0xDEAD_BEEF_CAFE_BABE` canary watermark.
-    - `Virtual_Memory_OS`: OS-level virtual memory allocation with hardware `PAGE_GUARD` trapping.
+    - `Virtual_Memory_OS`: OS-level virtual memory allocation with hardware `PAGE_GUARD` (Windows) and `mprotect(PROT_NONE)` (Linux/macOS) trapping.
   - `0xAA` stack watermarking and real-time high-water usage profiling (`fiber_calc_stack_usage`).
 - **Hierarchical Cancellations**:
   - `scope_cancel` / `scope_destroy`: Cleanly cancels and unwinds all coroutines attached to an entity scope.
@@ -182,6 +185,38 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_De
 coroutine.event_emit(&sched, &death_event, Player_Death_Info{killer_id = 42})
 ```
 
+### 4. Multi-Channel Select (`chan_select_recv`)
+
+```odin
+ch_combat, ch_network: coroutine.Channel(Command)
+
+// Suspend fiber until ANY channel has a message ready:
+idx, cmd, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(Command){&ch_combat, &ch_network})
+if ok {
+    switch idx {
+    case 0: process_combat_command(cmd)
+    case 1: process_network_packet(cmd)
+    }
+}
+```
+
+### 5. Explicit Cancellation Token (`Cancel_Token`)
+
+```odin
+tok: coroutine.Cancel_Token
+coroutine.cancel_token_init(&tok)
+defer coroutine.cancel_token_destroy(&tok)
+
+// Independent worker awaits cancellation:
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t: ^coroutine.Cancel_Token) {
+    coroutine.cancel_token_wait(f, t)
+    fmt.println("Subsystem cancelled!")
+}, &tok)
+
+// Cancel token across all listeners:
+coroutine.cancel_token_cancel(&sched, &tok)
+```
+
 ---
 
 ## Building & Running
@@ -192,10 +227,13 @@ A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_
 # Run the Interactive All-Features Showcase Game
 .\build.ps1 run-showcase
 
+# Run the Quest & AI Sandbox
+.\build.ps1 run-quest
+
 # Run the 2D Boss Fight Demo
 .\build.ps1 run
 
-# Run All 81 Unit Tests
+# Run All 90 Unit Tests
 .\build.ps1 test
 
 # Run Full LLVM Optimization & Architecture Matrix (11 builds)
