@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [QoL Enhancements & Ergonomic Cleanups] - 2026-08-24
+
+### Added
+- **Vector `tween` Overloads (`tween :: proc{tween_f32, tween_vec2, tween_vec3, tween_vec4}`)**:
+  - Direct single-line interpolation for `[2]f32` (Vector2), `[3]f32` (Vector3), and `[4]f32` (Vector4 / Color).
+- **Direct Procedure Passing in `with_timeout` (`with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, with_timeout_nil}`)**:
+  - Allows passing procedures directly to `with_timeout(f, seconds, entry, ...)` without manually wrapping with `coroutine.branch(...)`.
+- **`wait_while` Helper Group (`wait_while :: proc{wait_while_ptr, wait_while_val, wait_while_nil}`)**:
+  - Natural dual of `wait_until`, eliminating double-negative condition logic.
+- **Scope Query Helpers (`scope_active_count`, `scope_is_busy`, `scope_is_empty`)**:
+  - Inspect active fiber count and running status for any entity's `Fiber_Scope`.
+- **`wait_until_val` and Unified `wait_until` Overloads (`wait_until :: proc{wait_until_ptr, wait_until_val, wait_until_nil}`)**:
+  - Value-based predicate parameter support matching `spawn` and `branch`.
+- **Unit Tests 45–50 (`src/coroutine/coroutine_test.odin`)**:
+  - Added unit test coverage for ephemeral stack frame destruction safety, vector tweens, direct procedure `with_timeout` overloads, `wait_while`, `wait_until_val`, and scope query helpers.
+
+### Changed
+- **Boss Centering Animation Refactor (`src/main.odin`)**:
+  - Replaced multi-branch `sync` centering block with a single vector `coroutine.tween(f, &b.pos, ...)` call.
+- **Showcase Station 2 Refactor (`examples/showcase/main.odin`)**:
+  - Simplified `with_timeout` call to pass the capture procedure directly.
+
 ## [By-Value Coroutine Spawning & Branching] - 2026-08-24
 
 ### Added

@@ -425,3 +425,16 @@ scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
     scope_cancel(sched, scope)
     delete(scope.handles)
 }
+
+scope_active_count :: proc(scope: ^Fiber_Scope) -> int {
+    if scope == nil do return 0
+    return len(scope.handles)
+}
+
+scope_is_busy :: proc(scope: ^Fiber_Scope) -> bool {
+    return scope_active_count(scope) > 0
+}
+
+scope_is_empty :: proc(scope: ^Fiber_Scope) -> bool {
+    return scope_active_count(scope) == 0
+}

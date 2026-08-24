@@ -322,14 +322,7 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     trigger_camera_shake(10.0)
 
     // 1. Move to Center
-    coroutine.sync(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.tween(f, &b.pos.x, b.pos.x, f32(SCREEN_WIDTH)/2.0, 1.0, coroutine.ease_in_out_cubic)
-        }, b),
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.tween(f, &b.pos.y, b.pos.y, 180.0, 1.0, coroutine.ease_in_out_cubic)
-        }, b),
-    )
+    coroutine.tween(f, &b.pos, b.pos, [2]f32{f32(SCREEN_WIDTH) / 2.0, 180.0}, 1.0, coroutine.ease_in_out_cubic)
 
     // 2. Shield Charge Cinematic
     coroutine.sync(f,

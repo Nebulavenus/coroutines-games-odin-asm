@@ -207,7 +207,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.status_color = rl.YELLOW
 
     // with_timeout uses race internally: aborts if time exceeds 3.5s
-    timed_out := coroutine.with_timeout(f, 3.5, coroutine.branch(proc(f: ^coroutine.Fiber) {
+    timed_out := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber) {
         st := &g_world.station_capture
         for st.progress < 1.0 {
             coroutine.yield_frame(f)
@@ -219,7 +219,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
                 st.progress += f.sched.delta_time * 0.15
             }
         }
-    }, "Player Capture Progress"))
+    }, "Player Capture Progress")
 
     if timed_out {
         s.capture_success = false

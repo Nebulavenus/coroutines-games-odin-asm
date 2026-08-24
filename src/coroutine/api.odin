@@ -153,7 +153,7 @@ yield_frame :: proc(f: ^Fiber) {
     wait_frames(f, 1)
 }
 
-wait_until_typed :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
+wait_until_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     if f == nil || f.sched == nil do return
 
     // If condition is already met, return immediately
@@ -163,6 +163,37 @@ wait_until_typed :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T
 
     f.condition_fn = cast(proc(user_data: rawptr) -> bool)condition
     f.condition_data = rawptr(data)
+    f.status = .Waiting_Condition
+    append(&f.sched.condition_waiters, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+wait_until_typed :: wait_until_ptr
+
+wait_until_val :: proc(f: ^Fiber, condition: proc(data: $T) -> bool, data: T) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "wait_until_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || f.sched == nil do return
+
+    if condition != nil && condition(data) {
+        return
+    }
+
+    wrapper :: proc(user_data: rawptr) -> bool {
+        fiber := (^Fiber)(user_data)
+        fn := cast(proc(data: T) -> bool)fiber.user_fn
+        if fn == nil do return true
+        val := (^T)(&fiber.payload_storage[0])^
+        return fn(val)
+    }
+
+    data_copy := data
+    mem.copy(&f.payload_storage[0], &data_copy, size_of(T))
+    f.condition_fn = wrapper
+    f.condition_data = rawptr(f)
+    f.user_fn = rawptr(condition)
     f.status = .Waiting_Condition
     append(&f.sched.condition_waiters, f)
 
@@ -195,7 +226,80 @@ wait_until_nil :: proc(f: ^Fiber, condition: proc() -> bool) {
 }
 
 // Unified overloaded entry point
-wait_until :: proc{wait_until_typed, wait_until_nil}
+wait_until :: proc{wait_until_ptr, wait_until_val, wait_until_nil}
+wait_cond  :: wait_until_nil
+
+wait_while_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
+    if f == nil || f.sched == nil do return
+    if condition == nil || !condition(data) do return
+
+    wrapper :: proc(user_data: rawptr) -> bool {
+        fiber := (^Fiber)(user_data)
+        fn := cast(proc(data: ^T) -> bool)fiber.user_fn
+        if fn == nil do return true
+        return !fn((^T)(fiber.user_data))
+    }
+
+    f.condition_fn = wrapper
+    f.condition_data = rawptr(f)
+    f.user_data = rawptr(data)
+    f.user_fn = rawptr(condition)
+    f.status = .Waiting_Condition
+    append(&f.sched.condition_waiters, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+wait_while_val :: proc(f: ^Fiber, condition: proc(data: $T) -> bool, data: T) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "wait_while_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || f.sched == nil do return
+    if condition == nil || !condition(data) do return
+
+    wrapper :: proc(user_data: rawptr) -> bool {
+        fiber := (^Fiber)(user_data)
+        fn := cast(proc(data: T) -> bool)fiber.user_fn
+        if fn == nil do return true
+        val := (^T)(&fiber.payload_storage[0])^
+        return !fn(val)
+    }
+
+    data_copy := data
+    mem.copy(&f.payload_storage[0], &data_copy, size_of(T))
+    f.condition_fn = wrapper
+    f.condition_data = rawptr(f)
+    f.user_fn = rawptr(condition)
+    f.status = .Waiting_Condition
+    append(&f.sched.condition_waiters, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+wait_while_nil :: proc(f: ^Fiber, condition: proc() -> bool) {
+    if f == nil || f.sched == nil do return
+    if condition == nil || !condition() do return
+
+    wrapper := proc(user_data: rawptr) -> bool {
+        cond := cast(proc() -> bool)user_data
+        if cond == nil do return true
+        return !cond()
+    }
+
+    f.condition_fn = wrapper
+    f.condition_data = rawptr(condition)
+    f.status = .Waiting_Condition
+    append(&f.sched.condition_waiters, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+// Unified overloaded entry point
+wait_while :: proc{wait_while_ptr, wait_while_val, wait_while_nil}
 
 // ============================================================================
 // Structured Concurrency: Branch, Sync, and Race
@@ -381,7 +485,7 @@ ease_in_out_cubic :: proc(t: f32) -> f32 {
     return 0.5 * f * f * f + 1.0
 }
 
-tween :: proc(
+tween_f32 :: proc(
     f: ^Fiber,
     output: ^f32,
     start, target: f32,
@@ -400,13 +504,12 @@ tween :: proc(
     }
 
     elapsed: f32 = 0.0
-
     output^ = start
 
     for elapsed < duration {
         yield_frame(f)
         elapsed += f.sched.delta_time
-        t := clamp(elapsed / duration, 0.0, 1.0)
+        t := math.clamp(elapsed / duration, 0.0, 1.0)
         eased_t := ease_fn(t)
         output^ = start + (target - start) * eased_t
     }
@@ -414,11 +517,116 @@ tween :: proc(
     output^ = target
 }
 
+tween_vec2 :: proc(
+    f: ^Fiber,
+    output: ^[2]f32,
+    start, target: [2]f32,
+    duration: f32,
+    ease: Ease_Proc = nil,
+) {
+    if f == nil || output == nil do return
+    if duration <= 0.0 {
+        output^ = target
+        return
+    }
+
+    ease_fn: Ease_Proc = ease_linear
+    if ease != nil {
+        ease_fn = ease
+    }
+
+    elapsed: f32 = 0.0
+    output^ = start
+
+    for elapsed < duration {
+        yield_frame(f)
+        elapsed += f.sched.delta_time
+        t := math.clamp(elapsed / duration, 0.0, 1.0)
+        eased_t := ease_fn(t)
+        output.x = start.x + (target.x - start.x) * eased_t
+        output.y = start.y + (target.y - start.y) * eased_t
+    }
+
+    output^ = target
+}
+
+tween_vec3 :: proc(
+    f: ^Fiber,
+    output: ^[3]f32,
+    start, target: [3]f32,
+    duration: f32,
+    ease: Ease_Proc = nil,
+) {
+    if f == nil || output == nil do return
+    if duration <= 0.0 {
+        output^ = target
+        return
+    }
+
+    ease_fn: Ease_Proc = ease_linear
+    if ease != nil {
+        ease_fn = ease
+    }
+
+    elapsed: f32 = 0.0
+    output^ = start
+
+    for elapsed < duration {
+        yield_frame(f)
+        elapsed += f.sched.delta_time
+        t := math.clamp(elapsed / duration, 0.0, 1.0)
+        eased_t := ease_fn(t)
+        output.x = start.x + (target.x - start.x) * eased_t
+        output.y = start.y + (target.y - start.y) * eased_t
+        output.z = start.z + (target.z - start.z) * eased_t
+    }
+
+    output^ = target
+}
+
+tween_vec4 :: proc(
+    f: ^Fiber,
+    output: ^[4]f32,
+    start, target: [4]f32,
+    duration: f32,
+    ease: Ease_Proc = nil,
+) {
+    if f == nil || output == nil do return
+    if duration <= 0.0 {
+        output^ = target
+        return
+    }
+
+    ease_fn: Ease_Proc = ease_linear
+    if ease != nil {
+        ease_fn = ease
+    }
+
+    elapsed: f32 = 0.0
+    output^ = start
+
+    for elapsed < duration {
+        yield_frame(f)
+        elapsed += f.sched.delta_time
+        t := math.clamp(elapsed / duration, 0.0, 1.0)
+        eased_t := ease_fn(t)
+        output.x = start.x + (target.x - start.x) * eased_t
+        output.y = start.y + (target.y - start.y) * eased_t
+        output.z = start.z + (target.z - start.z) * eased_t
+        output.w = start.w + (target.w - start.w) * eased_t
+    }
+
+    output^ = target
+}
+
+// Unified overloaded entry point
+tween :: proc{tween_f32, tween_vec2, tween_vec3, tween_vec4}
+
 // ============================================================================
 // with_timeout Helper
 // ============================================================================
 
-with_timeout :: proc(f: ^Fiber, seconds: f32, task: Branch_Desc) -> (timed_out: bool) {
+with_timeout_branch :: proc(f: ^Fiber, seconds: f32, task: Branch_Desc) -> (timed_out: bool) {
     if f == nil || f.sched == nil do return false
 
     Timeout_Data :: struct {
@@ -436,6 +644,21 @@ with_timeout :: proc(f: ^Fiber, seconds: f32, task: Branch_Desc) -> (timed_out: 
 
     return winner == 1
 }
+
+with_timeout_ptr :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "") -> (timed_out: bool) {
+    return with_timeout_branch(f, seconds, branch_ptr(entry, data, name))
+}
+
+with_timeout_val :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber, data: $T), data: T, name: string = "") -> (timed_out: bool) where !intrinsics.type_is_pointer(T) {
+    return with_timeout_branch(f, seconds, branch_val(entry, data, name))
+}
+
+with_timeout_nil :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber), name: string = "") -> (timed_out: bool) {
+    return with_timeout_branch(f, seconds, branch_nil(entry, name))
+}
+
+// Unified overloaded entry point
+with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, with_timeout_nil}
 
 // ============================================================================
 // Signal (Event Broadcast)

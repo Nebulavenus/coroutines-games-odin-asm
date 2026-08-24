@@ -1780,3 +1780,197 @@ test_spawn_by_value_ephemeral_stack_safety :: proc(t: ^testing.T) {
     testing.expect_value(t, results[2], 22.5)
     testing.expect_value(t, results[3], 30.0)
 }
+
+// ============================================================================
+// Test 46: Vector Tween Overloads ([2]f32, [3]f32, [4]f32)
+// ============================================================================
+
+@(test)
+test_tween_vectors :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    v2_out: [2]f32
+    v3_out: [3]f32
+    v4_out: [4]f32
+
+    spawn(&sched, proc(f: ^Fiber, p2: ^[2]f32) {
+        tween(f, p2, [2]f32{0, 0}, [2]f32{100, 200}, 0.1)
+    }, &v2_out)
+
+    spawn(&sched, proc(f: ^Fiber, p3: ^[3]f32) {
+        tween(f, p3, [3]f32{10, 20, 30}, [3]f32{40, 50, 60}, 0.1)
+    }, &v3_out)
+
+    spawn(&sched, proc(f: ^Fiber, p4: ^[4]f32) {
+        tween(f, p4, [4]f32{1, 2, 3, 4}, [4]f32{5, 6, 7, 8}, 0.1)
+    }, &v4_out)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, v2_out.x, 100.0)
+    testing.expect_value(t, v2_out.y, 200.0)
+
+    testing.expect_value(t, v3_out.x, 40.0)
+    testing.expect_value(t, v3_out.y, 50.0)
+    testing.expect_value(t, v3_out.z, 60.0)
+
+    testing.expect_value(t, v4_out.x, 5.0)
+    testing.expect_value(t, v4_out.y, 6.0)
+    testing.expect_value(t, v4_out.z, 7.0)
+    testing.expect_value(t, v4_out.w, 8.0)
+}
+
+// ============================================================================
+// Test 47: Direct Procedure Passing in with_timeout Overloads
+// ============================================================================
+
+@(test)
+test_with_timeout_proc_overloads :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    results: [3]bool
+
+    // 1. Direct nil-proc with timeout (should time out)
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
+        timed_out := with_timeout(f, 0.05, proc(f: ^Fiber) {
+            wait(f, 0.5) // Exceeds timeout
+        })
+        res[0] = timed_out
+    }, &results)
+
+    // 2. Direct ptr-proc completing in time (should NOT time out)
+    speed: f32 = 100.0
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
+        spd := f32(100.0)
+        timed_out := with_timeout(f, 0.5, proc(f: ^Fiber, s: ^f32) {
+            wait(f, 0.05)
+            s^ = 200.0
+        }, &spd)
+        res[1] = timed_out
+    }, &results)
+
+    // 3. Direct val-proc completing in time (should NOT time out)
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
+        timed_out := with_timeout(f, 0.5, proc(f: ^Fiber, val: int) {
+            wait(f, 0.05)
+        }, 42)
+        res[2] = timed_out
+    }, &results)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    testing.expect_value(t, results[0], true)  // Timed out
+    testing.expect_value(t, results[1], false) // Finished in time
+    testing.expect_value(t, results[2], false) // Finished in time
+}
+
+// ============================================================================
+// Test 48: wait_while Helper
+// ============================================================================
+
+@(test)
+test_wait_while :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        is_charging: bool,
+        finished:    bool,
+    }
+
+    state := State{is_charging = true, finished = false}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait_while(f, proc(s: ^State) -> bool {
+            return s.is_charging
+        }, s)
+        s.finished = true
+    }, &state)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, state.finished, false)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, state.finished, false)
+
+    // Clear charging condition
+    state.is_charging = false
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, state.finished, true)
+}
+
+// ============================================================================
+// Test 49: wait_until by Value
+// ============================================================================
+
+@(test)
+test_wait_until_val :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    threshold: f32 = 50.0
+    ran := false
+
+    spawn(&sched, proc(f: ^Fiber, r: ^bool) {
+        current_val := f32(10.0)
+        // Wait until predicate using captured value threshold
+        wait_until(f, proc(thresh: f32) -> bool {
+            return thresh >= 50.0
+        }, f32(50.0))
+        r^ = true
+    }, &ran)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, ran, true)
+}
+
+// ============================================================================
+// Test 50: Scope Query Helpers & Scope Destroy
+// ============================================================================
+
+@(test)
+test_scope_query_helpers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    scope: Fiber_Scope
+
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect_value(t, scope_is_busy(&scope), false)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+
+    h1 := spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 1.0)
+    }, scope = &scope)
+
+    h2 := spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 1.0)
+    }, scope = &scope)
+
+    testing.expect_value(t, scope_active_count(&scope), 2)
+    testing.expect_value(t, scope_is_busy(&scope), true)
+    testing.expect_value(t, scope_is_empty(&scope), false)
+
+    // Cancel 1 handle
+    fiber_cancel(&sched, h1)
+    scheduler_step(&sched, 0.016) // Cleans up cancelled fiber and unlinks from scope
+
+    testing.expect_value(t, scope_active_count(&scope), 1)
+
+    // Destroy scope completely with scheduler
+    scope_destroy(&sched, &scope)
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect_value(t, scope_is_busy(&scope), false)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+}
