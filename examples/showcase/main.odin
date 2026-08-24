@@ -189,9 +189,9 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
 
     if all_ok {
         s.completed = true
-        // Flash completion animation
-        coroutine.tween(f, &s.result_alpha, 0.0, 1.0, 0.3)
-        coroutine.wait(f, 1.0)
+        // Flash completion animation with juicy bounce
+        coroutine.tween(f, &s.result_alpha, 0.0, 1.0, 0.4, coroutine.ease_out_bounce)
+        coroutine.wait(f, 0.8)
         coroutine.tween(f, &s.result_alpha, 1.0, 0.0, 0.5)
     }
 
@@ -214,9 +214,9 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
             // Progress increases faster if player stays inside radius
             dist := linalg.length(g_world.player.pos - st.pos)
             if dist < st.radius {
-                st.progress += f.sched.delta_time * 0.4
+                st.progress += coroutine.delta_time(f) * 0.4
             } else {
-                st.progress += f.sched.delta_time * 0.15
+                st.progress += coroutine.delta_time(f) * 0.15
             }
         }
     }, "Player Capture Progress")
@@ -243,31 +243,28 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     st := &g_world.station_charger
     charger_pos := st.pos
 
-    // Fly to charger entrance
-    coroutine.tween(f, &d.pos.x, d.pos.x, charger_pos.x - 30.0, 0.6)
-    coroutine.tween(f, &d.pos.y, d.pos.y, charger_pos.y, 0.6)
+    // Fly to charger entrance (Vector2 tween)
+    coroutine.tween(f, &d.pos, d.pos, [2]f32{charger_pos.x - 30.0, charger_pos.y}, 0.6, coroutine.ease_in_out_quad)
 
     // CRITICAL SECTION: Mutex lock (only 1 drone can enter pad at a time)
     coroutine.mutex_lock(f, &st.mutex)
     d.is_charging = true
 
-    // Move into pad center
-    coroutine.tween(f, &d.pos.x, d.pos.x, charger_pos.x, 0.3)
-    coroutine.tween(f, &d.pos.y, d.pos.y, charger_pos.y, 0.3)
+    // Move into pad center (Vector2 tween)
+    coroutine.tween(f, &d.pos, d.pos, charger_pos, 0.3, coroutine.ease_in_out_quad)
 
     // Charge up over 1.2 seconds
     coroutine.tween(f, &d.charge_level, 0.0, 100.0, 1.2)
 
-    // Move out of pad
-    coroutine.tween(f, &d.pos.x, d.pos.x, charger_pos.x + 40.0, 0.3)
+    // Move out of pad (Vector2 tween)
+    coroutine.tween(f, &d.pos, d.pos, [2]f32{charger_pos.x + 40.0, charger_pos.y}, 0.3, coroutine.ease_in_out_quad)
 
     d.is_charging = false
     coroutine.mutex_unlock(f.sched, &st.mutex)
     // END CRITICAL SECTION
 
-    // Return to home position
-    coroutine.tween(f, &d.pos.x, d.pos.x, d.home_pos.x, 0.8)
-    coroutine.tween(f, &d.pos.y, d.pos.y, d.home_pos.y, 0.8)
+    // Return to home position (Vector2 tween)
+    coroutine.tween(f, &d.pos, d.pos, d.home_pos, 0.8, coroutine.ease_in_out_quad)
 }
 
 // --- 4. Alert Beacon (Signal) ---
@@ -498,7 +495,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     // --- Station 1 Interaction: Ritual (Press [1] or [E] near station) ---
     dist1 := linalg.length(w.player.pos - w.station_ritual.pos)
     if (dist1 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.ONE) {
-        if !w.station_ritual.is_active {
+        if !coroutine.scope_is_busy(&w.station_ritual.scope) {
             coroutine.spawn(&w.sched, ritual_master_fiber, &w.station_ritual, scope = &w.station_ritual.scope, name = "Ritual Master (sync)")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Ritual [sync] triggered")
         }
@@ -507,7 +504,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     // --- Station 2 Interaction: Capture Contest (Press [2] or [E] near station) ---
     dist2 := linalg.length(w.player.pos - w.station_capture.pos)
     if (dist2 < w.station_capture.radius && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.TWO) {
-        if !w.station_capture.is_capturing {
+        if !coroutine.scope_is_busy(&w.station_capture.scope) {
             coroutine.spawn(&w.sched, capture_contest_fiber, &w.station_capture, scope = &w.station_capture.scope, name = "Capture [race/timeout]")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Capture Contest [race] started")
         }
@@ -516,13 +513,13 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     // --- Station 3 Interaction: Charger Mutex (Press [3] or [E] near station) ---
     dist3 := linalg.length(w.player.pos - w.station_charger.pos)
     if (dist3 < 90.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.THREE) {
-        for i in 0 ..< 4 {
-            d := &w.station_charger.drones[i]
-            if !d.is_charging {
+        if !coroutine.scope_is_busy(&w.station_charger.scope) {
+            for i in 0 ..< 4 {
+                d := &w.station_charger.drones[i]
                 coroutine.spawn(&w.sched, drone_charge_fiber, d, scope = &w.station_charger.scope, name = fmt.tprintf("Drone #%d (Mutex)", d.id))
             }
+            coroutine.chan_try_send(&w.station_channel.log_channel, "4 Drones dispatched to [Mutex]")
         }
-        coroutine.chan_try_send(&w.station_channel.log_channel, "4 Drones dispatched to [Mutex]")
     }
 
     // --- Station 4 Interaction: Beacon Signal (Press [4] or [E] near station) ---
@@ -547,7 +544,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     // --- Station 6 Interaction: Async Research (Press [6] or [E] near station) ---
     dist6 := linalg.length(w.player.pos - w.station_lab.pos)
     if (dist6 < 80.0 && rl.IsKeyPressed(.E)) || rl.IsKeyPressed(.SIX) {
-        if !w.station_lab.is_working {
+        if !coroutine.scope_is_busy(&w.station_lab.scope) {
             coroutine.spawn(&w.sched, lab_research_fiber, &w.station_lab, scope = &w.station_lab.scope, name = "Async Research Lab")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Dispatched [await_async] background worker")
         }

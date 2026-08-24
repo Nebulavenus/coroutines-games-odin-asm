@@ -128,6 +128,25 @@ wait :: proc(f: ^Fiber, seconds: f32) {
     context = f.stored_context
 }
 
+delta_time :: #force_inline proc "contextless" (f: ^Fiber) -> f32 {
+    return f != nil && f.sched != nil ? f.sched.delta_time : 0.0
+}
+
+current_time :: #force_inline proc "contextless" (f: ^Fiber) -> f64 {
+    return f != nil && f.sched != nil ? f.sched.current_time : 0.0
+}
+
+current_frame :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
+    return f != nil && f.sched != nil ? f.sched.current_frame : 0
+}
+
+scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
+    if f == nil || f.sched == nil || scope == nil do return
+    wait_until(f, proc(s: ^Fiber_Scope) -> bool {
+        return s == nil || len(s.handles) == 0
+    }, scope)
+}
+
 wait_ptr :: proc(f: ^Fiber, seconds_ptr: ^f32) {
     if seconds_ptr == nil {
         yield_frame(f)
@@ -483,6 +502,38 @@ ease_in_out_cubic :: proc(t: f32) -> f32 {
     }
     f := (2.0 * t) - 2.0
     return 0.5 * f * f * f + 1.0
+}
+
+ease_out_bounce :: proc(t: f32) -> f32 {
+    n1: f32 = 7.5625
+    d1: f32 = 2.75
+    x := t
+    if x < 1.0 / d1 {
+        return n1 * x * x
+    } else if x < 2.0 / d1 {
+        x -= 1.5 / d1
+        return n1 * x * x + 0.75
+    } else if x < 2.5 / d1 {
+        x -= 2.25 / d1
+        return n1 * x * x + 0.9375
+    } else {
+        x -= 2.625 / d1
+        return n1 * x * x + 0.984375
+    }
+}
+
+ease_out_back :: proc(t: f32) -> f32 {
+    c1: f32 = 1.70158
+    c3: f32 = c1 + 1.0
+    x := t - 1.0
+    return 1.0 + c3 * x * x * x + c1 * x * x
+}
+
+ease_out_elastic :: proc(t: f32) -> f32 {
+    if t <= 0.0 do return 0.0
+    if t >= 1.0 do return 1.0
+    c4: f32 = (2.0 * math.PI) / 3.0
+    return math.pow(2.0, -10.0 * t) * math.sin((t * 10.0 - 0.75) * c4) + 1.0
 }
 
 tween_f32 :: proc(

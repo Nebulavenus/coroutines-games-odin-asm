@@ -1974,3 +1974,130 @@ test_scope_query_helpers :: proc(t: ^testing.T) {
     testing.expect_value(t, scope_is_busy(&scope), false)
     testing.expect_value(t, scope_is_empty(&scope), true)
 }
+
+// ============================================================================
+// Test 51: Fiber Time Accessor Helpers (delta_time, current_time, current_frame)
+// ============================================================================
+
+@(test)
+test_fiber_time_accessors :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    captured_dt: f32 = 0.0
+    captured_time: f64 = 0.0
+    captured_frame: u64 = 0
+
+    spawn(&sched, proc(f: ^Fiber) {
+        yield_frame(f)
+    })
+
+    State :: struct {
+        dt:    ^f32,
+        time:  ^f64,
+        frame: ^u64,
+    }
+
+    spawn(&sched, proc(f: ^Fiber, s: State) {
+        yield_frame(f)
+        s.dt^ = delta_time(f)
+        s.time^ = current_time(f)
+        s.frame^ = current_frame(f)
+    }, State{&captured_dt, &captured_time, &captured_frame})
+
+    scheduler_step(&sched, 0.033) // frame 1, dt = 0.033
+    scheduler_step(&sched, 0.016) // frame 2, dt = 0.016
+
+    testing.expect_value(t, captured_dt, f32(0.016))
+    testing.expect(t, math.abs(captured_time - (0.033 + 0.016)) < 0.001, "Expected current_time ~ 0.049")
+    testing.expect_value(t, captured_frame, u64(2))
+}
+
+// ============================================================================
+// Test 52: scope_wait (Wait for Entire Scope Completion)
+// ============================================================================
+
+@(test)
+test_scope_wait :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    wave_scope: Fiber_Scope
+    defer scope_destroy(&sched, &wave_scope)
+
+    enemies_done: [3]bool
+    boss_started := false
+
+    // Spawn 3 wave enemies with staggered durations
+    for i in 0 ..< 3 {
+        idx := i
+        spawn(&sched, proc(f: ^Fiber, flag: ^bool) {
+            wait(f, f32(1 + f.branch_index) * 0.05)
+            flag^ = true
+        }, &enemies_done[i], scope = &wave_scope)
+    }
+
+    // Spawn master supervisor waiting for entire wave scope
+    Supervisor_Arg :: struct {
+        scope:   ^Fiber_Scope,
+        flag:    ^[3]bool,
+        started: ^bool,
+    }
+
+    spawn(&sched, proc(f: ^Fiber, arg: Supervisor_Arg) {
+        scope_wait(f, arg.scope)
+        // All enemies must be done when supervisor resumes
+        if arg.flag[0] && arg.flag[1] && arg.flag[2] {
+            arg.started^ = true
+        }
+    }, Supervisor_Arg{&wave_scope, &enemies_done, &boss_started})
+
+    // Step scheduler until wave finishes
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.05)
+    }
+
+    testing.expect_value(t, enemies_done[0], true)
+    testing.expect_value(t, enemies_done[1], true)
+    testing.expect_value(t, enemies_done[2], true)
+    testing.expect_value(t, boss_started, true)
+}
+
+// ============================================================================
+// Test 53: Expanded Game-Juice Easing Functions (Bounce, Back, Elastic)
+// ============================================================================
+
+@(test)
+test_expanded_easing_functions :: proc(t: ^testing.T) {
+    // 1. Boundary tests (t=0 -> 0, t=1 -> 1)
+    testing.expect(t, math.abs(ease_out_bounce(0.0) - 0.0) < 0.001, "ease_out_bounce(0) == 0")
+    testing.expect(t, math.abs(ease_out_bounce(1.0) - 1.0) < 0.001, "ease_out_bounce(1) == 1")
+
+    testing.expect(t, math.abs(ease_out_back(0.0) - 0.0) < 0.001, "ease_out_back(0) == 0")
+    testing.expect(t, math.abs(ease_out_back(1.0) - 1.0) < 0.001, "ease_out_back(1) == 1")
+
+    testing.expect(t, math.abs(ease_out_elastic(0.0) - 0.0) < 0.001, "ease_out_elastic(0) == 0")
+    testing.expect(t, math.abs(ease_out_elastic(1.0) - 1.0) < 0.001, "ease_out_elastic(1) == 1")
+
+    // 2. Overshoot properties (ease_out_back exceeds 1.0 before settling to 1.0)
+    mid_back := ease_out_back(0.8)
+    testing.expect(t, mid_back > 1.0, "ease_out_back overshoots past 1.0")
+
+    // 3. Easing inside tween execution
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    out_val: f32 = 0.0
+    spawn(&sched, proc(f: ^Fiber, out: ^f32) {
+        tween(f, out, 0.0, 100.0, 0.1, ease_out_bounce)
+    }, &out_val)
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.02)
+    }
+
+    testing.expect_value(t, out_val, 100.0)
+}

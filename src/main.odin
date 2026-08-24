@@ -129,7 +129,7 @@ camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: f32) {
 
     for elapsed < dur {
         coroutine.yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += coroutine.delta_time(f)
         decay := clamp(1.0 - (elapsed / dur), 0.0, 1.0)
         curr := intensity * decay
         if curr > 0.0 {
@@ -154,14 +154,15 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {
     start_y := ft.pos.y
     target_y := start_y - 45.0
 
-    // Tween upward position and fade out
+    // Tween upward position with juicy back-easing and fade out
     dur: f32 = 0.8
     elapsed: f32 = 0.0
     for elapsed < dur {
         coroutine.yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += coroutine.delta_time(f)
         t := clamp(elapsed / dur, 0.0, 1.0)
-        ft.pos.y = math.lerp(start_y, target_y, t)
+        eased_t := coroutine.ease_out_back(t)
+        ft.pos.y = start_y + (target_y - start_y) * eased_t
         ft.alpha = 1.0 - t
     }
 
@@ -295,8 +296,8 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     coroutine.race(f,
         // Condition branch: End Phase 1 when HP < 700
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.wait_until(f, proc(b: ^Boss) -> bool {
-                return b.hp <= 700.0 || !b.alive
+            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
+                return b.hp > 700.0 && b.alive
             }, b)
         }, b, "HP < 700 Trigger"),
 
@@ -351,8 +352,8 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // 4. Phase 2 Combat Loop until HP < 350
     coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.wait_until(f, proc(b: ^Boss) -> bool {
-                return b.hp <= 350.0 || !b.alive
+            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
+                return b.hp > 350.0 && b.alive
             }, b)
         }, b, "HP < 350 Trigger"),
 
@@ -468,7 +469,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     g.player.pos.y = clamp(g.player.pos.y, g.player.radius, f32(SCREEN_HEIGHT) - g.player.radius)
 
     // Player Dash Trigger (Space or Right Mouse)
-    if (rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT)) && g.player.can_dash {
+    if (rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT)) && g.player.can_dash && !coroutine.scope_is_busy(&g.player.scope) {
         coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash")
     }
 

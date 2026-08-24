@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [QoL Enhancements 2 & Ergonomic Cleanups] - 2026-08-24
+
+### Added
+- **Fiber Time Accessors (`delta_time(f)`, `current_time(f)`, `current_frame(f)`)**:
+  - Encapsulated `#force_inline` helpers in `coroutine` package for clean time querying inside fibers.
+- **`scope_wait(f, &scope)`**:
+  - Helper to suspend calling fibers until an entire target `Fiber_Scope` has completed all child tasks.
+- **Expanded Game-Juice Easing Curves**:
+  - Added `ease_out_bounce`, `ease_out_back`, and `ease_out_elastic` for juicy animations and UI transitions.
+- **Unit Tests 51–53 (`src/coroutine/coroutine_test.odin`)**:
+  - Validated time accessors, scope wait synchronization, and game-juice easing curves across 12-thread runner.
+
 ## [QoL Enhancements & Ergonomic Cleanups] - 2026-08-24
 
 ### Added
