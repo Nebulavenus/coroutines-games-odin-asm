@@ -1140,4 +1140,14 @@ The engine provides three distinct temporal domains:
 - Eliminates dangling stack pointers when spawning from transient procedures without dynamic heap allocations.
 
 ### E. Phase Director FSM (`Phase_Director`)
-- Clean state machine for boss fights and cutscenes. Switching phases via `phase_switch` automatically cancels and cleans up all active coroutines belonging to the previous phase.
+- Clean state machine for boss fights and cutscenes. Switching phases via `phase_switch` automatically cancels and cleans up all active coroutines belonging to the previous phase.
+
+### F. Pure Concurrency Primitives (`fiber_join`, `Event(T)`, `Fiber_Semaphore`, `Fiber_Latch`)
+- **Dynamic Task Join (`fiber_join(f, handle)`)**: Allows any fiber to await the terminal completion of an independent task handle (returning `true` on `.Completed` and `false` on abort/failure).
+- **Typed Multicast Broadcast (`Event(T)`)**: 1-to-many publish-subscribe mechanism that broadcasts typed data across decoupled systems in a single tick without CPU polling.
+- **Counting Semaphores (`Fiber_Semaphore`)**: Cooperative Dijkstra semaphore allowing up to $N$ concurrent permits for resource throttling (e.g. limiting simultaneous pathfinding queries or audio voices).
+- **Countdown Latches (`Fiber_Latch`)**: Multi-system rendezvous barrier unblocking all waiting fibers once counted down $N$ times.
+
+### G. Loading-Screen Pre-Warming & Diagnostics (`scheduler_prewarm`, `Pool_Stats`)
+- **`scheduler_prewarm(sched, count)`**: Pre-allocates slab capacity during loading screens or boot, guaranteeing zero mid-game allocation spikes.
+- **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ circular handle history queries (`fiber_is_alive`, `fiber_status`).

@@ -16,6 +16,12 @@ This document records the comprehensive verification matrix, architectural analy
 | **Stack Watermarking & High-Water Usage** | `src/coroutine/pool.odin` — `0xAA` watermarked stacks and `fiber_calc_stack_usage` runtime profiler | **PASS** |
 | **3-Tier Multi-Domain Engine Clock** | `src/coroutine/scheduler.odin` — Dual min-heaps (`timer_heap`, `real_timer_heap`), discrete fixed ticks (`wait_ticks`), and pause/time-scale dilation | **PASS** |
 | **Structured Concurrency Matrix** | `src/coroutine/api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, and `branch` descriptors | **PASS** |
+| **Dynamic Task Joining (`fiber_join`)** | `src/coroutine/api.odin` — Dynamic task join awaiting independent fiber handles | **PASS** |
+| **Typed Multicast Events (`Event(T)`)** | `src/coroutine/api.odin` — 1-to-many typed publish-subscribe broadcast with zero polling | **PASS** |
+| **Counting Semaphores (`Fiber_Semaphore`)** | `src/coroutine/api.odin` — Up to $N$ concurrent permits without OS thread locking | **PASS** |
+| **Countdown Latch (`Fiber_Latch`)** | `src/coroutine/api.odin` — Multi-subsystem synchronization barrier | **PASS** |
+| **Memory Pre-Warming & Stats** | `src/coroutine/pool.odin` & `scheduler.odin` — `scheduler_prewarm` and `scheduler_pool_stats` telemetry | **PASS** |
+| **Handle Introspection & Diagnostics** | `src/coroutine/api.odin` — `fiber_is_alive` and `fiber_status` queries with circular handle history | **PASS** |
 | **Unopinionated Async Job Bridge** | `src/coroutine/api.odin` — Zero-allocation lock-free `Async_Token` and `await_async` bridging background workers to main-thread fibers | **PASS** |
 | **Pure CSP Typed Channels (`Channel(T)`)** | `src/coroutine/api.odin` — Unbuffered (rendezvous) & bounded FIFO queues (`chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_close`) | **PASS** |
 | **Stateful Pull Generators (`Generator(T)`)** | `src/coroutine/api.odin` — Lazy pull-based generator iteration (`yield_value`, `generator_next`) with 16KB dedicated stacks | **PASS** |
@@ -28,16 +34,16 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (70 Tests Passing)
+## 2. Test Suite Execution Results (81 Tests Passing)
 
-All **70 unit tests** are executed via `build.ps1 test`:
+All **81 unit tests** are executed via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 70 tests in ~227ms. All tests were successful.
+Finished 81 tests in ~307ms. All tests were successful.
 ```
 
-### Complete 70-Test Catalog across 11 Test Suites:
+### Complete 81-Test Catalog across 12 Test Suites:
 
 #### Suite 1: Basic Context Switching & Register Preservation
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -113,7 +119,20 @@ Finished 70 tests in ~227ms. All tests were successful.
 51. `test_many_concurrent_fibers`: 100 simultaneous fibers executing concurrently.
 52. `test_simulate_until_duration`: Simulating fixed time steps headlessly.
 53. `test_simulate_until_condition`: Simulating until arbitrary game condition is satisfied.
-54-70. Additional edge-case validations covering deep stack alignments, recursive coordinator cancellations, boundary tick wraps, and allocator tracking.
+54-70. Edge-case validations covering deep stack alignments, recursive coordinator cancellations, and ring buffer wraparound.
+
+#### Suite 12: Pure Concurrency Primitives & Telemetry (Tests 71–81)
+71. `test_fiber_join_normal_completion`: Verifies caller fiber suspends and wakes on target completion (`ok == true`).
+72. `test_fiber_join_cancelled_target`: Verifies `fiber_join` unblocks and returns `ok == false` when target is aborted.
+73. `test_fiber_join_already_finished`: Verifies joining an already finished/recycled fiber returns immediately.
+74. `test_event_typed_multicast`: Verifies `Event(T)` 1-to-many publish-subscribe delivers typed payload to multiple listeners.
+75. `test_event_empty_emit`: Verifies emitting to an `Event(T)` with zero active listeners is safe.
+76. `test_fiber_semaphore_concurrency_limit`: Verifies `Fiber_Semaphore` limits active concurrency to exactly $N$ permits.
+77. `test_fiber_semaphore_try_acquire`: Verifies non-blocking permit acquisition and release.
+78. `test_fiber_latch_barrier`: Verifies `Fiber_Latch` blocks multiple waiters until counted down $N$ times.
+79. `test_scheduler_prewarm`: Verifies `scheduler_prewarm` allocates memory slabs up-front during loading screens.
+80. `test_handle_introspection_and_status`: Verifies `fiber_is_alive` and `fiber_status` diagnostics across live and historical fibers.
+81. `test_scheduler_pool_stats`: Verifies `scheduler_pool_stats` accurately tracks active fibers, free stacks, and memory KB.
 
 ---
 
@@ -123,9 +142,9 @@ All 11 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none` | `x86-64-v1` | Headless Test Runner | **PASS** (70/70) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (70/70) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (70/70) |
+| `test_debug` | `-o:none` | `x86-64-v1` | Headless Test Runner | **PASS** (81/81) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (81/81) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (81/81) |
 | `boss_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
 | `quest_ai_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |

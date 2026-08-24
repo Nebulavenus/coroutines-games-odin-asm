@@ -13,6 +13,7 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 6. [Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)](#recipe-6-unpausable-real-time-pause-menus--hud-animations-wait_real--spawn_real)
 7. [Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)](#recipe-7-lockstep-fixed-tick-physics--rollback-netcode-wait_ticks)
 8. [Recipe 8: Multi-Phase Boss AI with `Phase_Director`](#recipe-8-multi-phase-boss-ai-with-phase_director)
+9. [Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints](#recipe-9-rts-unit-action-queue-with-command-preemption--waypoints)
 
 ---
 
@@ -389,5 +390,78 @@ boss_lifecycle_controller :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
 
     // Seamlessly cancel Phase 1 and launch Phase 2!
     coroutine.phase_switch(&b.director, 2, boss_phase_2, b)
+}
+```
+
+---
+
+## Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints
+
+### Problem
+An RTS game (like *Warcraft 3* or *StarCraft*) requires units to process a queue of commands (Move $\rightarrow$ Attack $\rightarrow$ Build). When a player issues a new immediate order (right-clicking without Shift), the current action must abort instantly. When Shift-queuing orders, actions execute in sequence.
+
+### Solution
+Use `coroutine.Fiber_Scope` to manage unit action lifecycles and a dynamic action queue:
+
+```odin
+package gameplay
+
+import "src/coroutine"
+
+Command_Kind :: enum { Move, Attack_Target, Build_Structure }
+
+Unit_Command :: struct {
+    kind:       Command_Kind,
+    target_pos: [2]f32,
+    target_id:  u32,
+}
+
+RTS_Unit :: struct {
+    pos:          [2]f32,
+    action_scope: coroutine.Fiber_Scope,
+    cmd_queue:    [dynamic]Unit_Command,
+    sched:        ^coroutine.Scheduler,
+}
+
+// Issue a brand-new immediate order (Cancels existing action immediately!)
+unit_issue_immediate_order :: proc(unit: ^RTS_Unit, cmd: Unit_Command) {
+    // 1. Instantly abort current executing action fiber
+    coroutine.scope_cancel(unit.sched, &unit.action_scope)
+    clear(&unit.cmd_queue)
+
+    // 2. Start new action fiber
+    append(&unit.cmd_queue, cmd)
+    coroutine.spawn_ptr(unit.sched, unit_action_processor, unit, scope = &unit.action_scope)
+}
+
+// Issue a shift-queued order (Appends to queue)
+unit_queue_order :: proc(unit: ^RTS_Unit, cmd: Unit_Command) {
+    append(&unit.cmd_queue, cmd)
+    if coroutine.scope_is_empty(&unit.action_scope) {
+        coroutine.spawn_ptr(unit.sched, unit_action_processor, unit, scope = &unit.action_scope)
+    }
+}
+
+// Action Queue Processor Fiber
+unit_action_processor :: proc(f: ^coroutine.Fiber, unit: ^RTS_Unit) {
+    for len(unit.cmd_queue) > 0 {
+        cmd := pop_front(&unit.cmd_queue)
+
+        switch cmd.kind {
+        case .Move:
+            // Tween position towards waypoint
+            coroutine.tween_vector2(f, &unit.pos, unit.pos, cmd.target_pos, 2.0, coroutine.ease_linear)
+
+        case .Attack_Target:
+            // Combat animation loop
+            for i := 0; i < 3; i += 1 {
+                coroutine.wait(f, 0.8) // Attack swing timer
+            }
+
+        case .Build_Structure:
+            // Construction channel
+            coroutine.wait(f, 5.0) // 5s construction time
+        }
+    }
 }
 ```

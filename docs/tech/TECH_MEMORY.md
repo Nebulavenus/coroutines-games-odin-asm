@@ -142,3 +142,36 @@ payload: [FIBER_PAYLOAD_SIZE]u8
   2. The argument is copied directly into `fiber.payload`.
   3. The fiber procedure receives a safe, internal pointer `cast(^T)&f.payload[0]`.
   4. Zero heap allocations; 100% immune to caller stack invalidation.
+
+---
+
+## 6. Loading-Screen Memory Pre-Warming & Pool Telemetry
+
+### Pre-Warming (`scheduler_prewarm`)
+In production games, allocating memory slabs mid-gameplay can induce micro-stutter frame spikes. The engine provides loading-screen memory pre-warming:
+
+```odin
+// Pre-allocate slabs for up to 64 concurrent fibers during level load
+coroutine.scheduler_prewarm(&sched, 64)
+```
+
+- Calculates the required number of 1 MB slabs.
+- Commits virtual memory and initializes watermarks up-front.
+- Guarantees zero allocation overhead during fast-paced combat or gameplay loops.
+
+### Real-Time Pool Telemetry (`scheduler_pool_stats`)
+The engine exposes zero-overhead memory and stack metrics for runtime profiling:
+
+```odin
+Pool_Stats :: struct {
+    total_stacks:     int,  // Total allocated fiber stacks
+    active_fibers:    int,  // Currently executing or suspended fibers
+    free_fibers:      int,  // Idle stacks in free-list
+    slabs_count:      int,  // Number of 1MB slabs committed
+    stack_size_bytes: uint, // Configured size per stack (e.g. 32768)
+    total_memory_kb:  uint, // Total committed memory in KB
+}
+
+stats := coroutine.scheduler_pool_stats(&sched)
+```
+

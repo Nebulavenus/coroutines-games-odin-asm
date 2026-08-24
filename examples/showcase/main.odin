@@ -3,12 +3,12 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:math/linalg"
-import "core:math/rand"
 import "core:mem"
 import "core:thread"
 import "core:time"
 import rl "vendor:raylib"
-import coroutine "../../src/coroutine"
+
+import "../../src/coroutine"
 
 // ============================================================================
 // Constants & Configuration
@@ -20,6 +20,12 @@ SCREEN_HEIGHT :: 720
 // ============================================================================
 // Data Types for Showcase Stations
 // ============================================================================
+
+Showcase_Event :: struct {
+    title: string,
+    desc:  string,
+    color: rl.Color,
+}
 
 // --- Station 1: The Ritual Circle (sync) ---
 Rune :: struct {
@@ -106,7 +112,7 @@ Forge_Station :: struct {
     display_timer: f32,
 }
 
-// --- Station 6: The Async Research Lab (Async_Token / await_async) ---
+// --- Station 6: The Async Research Lab (Async_Token / await_async & fiber_join) ---
 Research_Job :: struct {
     token:          coroutine.Async_Token,
     complexity:     int,
@@ -115,12 +121,14 @@ Research_Job :: struct {
 }
 
 Lab_Station :: struct {
-    pos:          rl.Vector2,
-    job:          Research_Job,
-    is_working:   bool,
-    status_text:  string,
-    status_color: rl.Color,
-    scope:        coroutine.Fiber_Scope,
+    pos:            rl.Vector2,
+    job:            Research_Job,
+    is_working:     bool,
+    status_text:    string,
+    status_color:   rl.Color,
+    drone_active:   bool,
+    drone_pos:      rl.Vector2,
+    scope:          coroutine.Fiber_Scope,
 }
 
 // --- Station 7: The Telemetry Feed (Channel(T)) ---
@@ -130,6 +138,43 @@ Channel_Station :: struct {
     recent_logs:   [dynamic]string,
     items_sent:    int,
     scope:         coroutine.Fiber_Scope,
+}
+
+// --- Station 8: Gate Construction Rendezvous (Fiber_Latch) ---
+Gate_Task :: struct {
+    name:     string,
+    progress: f32,
+    done:     bool,
+    color:    rl.Color,
+}
+
+Gate_Station :: struct {
+    pos:          rl.Vector2,
+    latch:        coroutine.Fiber_Latch,
+    tasks:        [3]Gate_Task, // 0: Pillars, 1: Power Core, 2: Matrix
+    is_building:  bool,
+    portal_open:  bool,
+    portal_alpha: f32,
+    status_text:  string,
+    scope:        coroutine.Fiber_Scope,
+}
+
+// --- Station 9: Laser Defense Turrets (Fiber_Semaphore) ---
+Turret :: struct {
+    pos:         rl.Vector2,
+    target_pos:  rl.Vector2,
+    is_firing:   bool,
+    laser_alpha: f32,
+    color:       rl.Color,
+    id:          int,
+}
+
+Defense_Station :: struct {
+    pos:       rl.Vector2,
+    sem:       coroutine.Fiber_Semaphore, // 2 concurrent permits
+    turrets:   [4]Turret,
+    is_active: bool,
+    scope:     coroutine.Fiber_Scope,
 }
 
 // ============================================================================
@@ -145,6 +190,7 @@ Player :: struct {
 
 Showcase_World :: struct {
     sched:                   coroutine.Scheduler,
+    event_hub:               coroutine.Event(Showcase_Event),
     player:                  Player,
     station_ritual:          Ritual_Station,
     station_capture:         Capture_Station,
@@ -153,6 +199,12 @@ Showcase_World :: struct {
     station_forge:           Forge_Station,
     station_lab:             Lab_Station,
     station_channel:         Channel_Station,
+    station_gate:            Gate_Station,
+    station_defense:         Defense_Station,
+    toast_title:             string,
+    toast_desc:              string,
+    toast_color:             rl.Color,
+    toast_timer:             f32,
     show_coroutine_debugger: bool,
     global_time:             f32,
     step_count:              int,
@@ -169,16 +221,16 @@ g_world: ^Showcase_World
 // Coroutine Logic for Each Station
 // ============================================================================
 
-// --- 1. Ritual Station (sync) ---
+// --- 1. Ritual Circle (sync) ---
 
 rune_charge_fiber :: proc(f: ^coroutine.Fiber, r: ^Rune) {
     r.active = true
     r.progress = 0.0
-    dur: f32 = 1.0 + f32(r.pos.x - 100.0) / 100.0 // Varying durations
-    if dur < 1.0 do dur = 1.5
-
-    coroutine.tween(f, &r.progress, 0.0, 1.0, dur, coroutine.ease_in_out_quad)
-    r.active = false
+    for r.progress < 1.0 {
+        coroutine.yield_frame(f)
+        r.progress += coroutine.delta_time(f) / 1.5
+    }
+    r.progress = 1.0
 }
 
 ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
@@ -186,22 +238,30 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
     s.completed = false
     s.result_alpha = 0.0
 
-    // SYNC: Run 3 charging runes in parallel; master resumes ONLY when all 3 finish
-    all_ok := coroutine.sync(f,
-        coroutine.branch(rune_charge_fiber, &s.runes[0], "Fire Rune"),
-        coroutine.branch(rune_charge_fiber, &s.runes[1], "Frost Rune"),
-        coroutine.branch(rune_charge_fiber, &s.runes[2], "Storm Rune"),
+    // Broadcast Event(T)
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Started", "3 Runes charging in parallel (sync)", rl.SKYBLUE})
+
+    // Parallel join of 3 runes using structured sync
+    coroutine.sync(f,
+        coroutine.branch(rune_charge_fiber, &s.runes[0], "Charge Fire Rune"),
+        coroutine.branch(rune_charge_fiber, &s.runes[1], "Charge Frost Rune"),
+        coroutine.branch(rune_charge_fiber, &s.runes[2], "Charge Storm Rune"),
     )
 
-    if all_ok {
-        s.completed = true
-        // Flash completion animation with juicy bounce
-        coroutine.tween(f, &s.result_alpha, 0.0, 1.0, 0.4, coroutine.ease_out_bounce)
-        coroutine.wait(f, 0.8)
-        coroutine.tween(f, &s.result_alpha, 1.0, 0.0, 0.5)
-    }
+    // All runes finished! Animate completed burst
+    s.completed = true
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Complete", "All 3 runes synchronized successfully!", rl.GREEN})
 
+    coroutine.tween(f, &s.result_alpha, 0.0, 1.0, 0.5, coroutine.ease_out_quad)
+    coroutine.wait(f, 2.0)
+    coroutine.tween(f, &s.result_alpha, 1.0, 0.0, 0.5, coroutine.ease_in_quad)
+
+    for i in 0 ..< 3 {
+        s.runes[i].active = false
+        s.runes[i].progress = 0.0
+    }
     s.is_active = false
+    s.completed = false
 }
 
 // --- 2. Capture Contest (race & with_timeout) ---
@@ -209,36 +269,47 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
 capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.is_capturing = true
     s.progress = 0.0
-    s.status_text = "Contesting Zone (Race vs 3.5s Timeout)..."
+    s.status_text = "Contesting: Hold position in circle!"
     s.status_color = rl.YELLOW
 
-    // with_timeout uses race internally: aborts if time exceeds 3.5s
-    timed_out := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber) {
-        st := &g_world.station_capture
-        for st.progress < 1.0 {
-            coroutine.yield_frame(f)
-            // Progress increases faster if player stays inside radius
-            dist := linalg.length(g_world.player.pos - st.pos)
-            if dist < st.radius {
-                st.progress += coroutine.delta_time(f) * 0.4
-            } else {
-                st.progress += coroutine.delta_time(f) * 0.15
-            }
-        }
-    }, "Player Capture Progress")
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3s timeout (race)", rl.YELLOW})
 
-    if timed_out {
-        s.capture_success = false
-        s.status_text = "FAILED: Zone Timed Out!"
-        s.status_color = rl.RED
-    } else {
+    // Preemptive race: Capture task vs. 3.0s timeout
+    won_index := coroutine.race(f,
+        // Branch 0: Player must stay inside radius for 1.8 accumulated seconds
+        coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
+            for s.progress < 1.0 {
+                coroutine.yield_frame(f)
+                dist := linalg.length(g_world.player.pos - s.pos)
+                if dist < s.radius {
+                    s.progress += coroutine.delta_time(f) / 1.8
+                } else {
+                    s.progress = max(0.0, s.progress - coroutine.delta_time(f) * 0.8)
+                }
+            }
+        }, s, "Capture Accumulation"),
+
+        // Branch 1: 3.5-second hard timeout
+        coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
+            coroutine.wait(f, 3.5)
+        }, s, "Contest Timeout"),
+    )
+
+    if won_index == 0 {
         s.capture_success = true
-        s.status_text = "SUCCESS: Zone Captured!"
+        s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
+        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Point Captured", "Player secured the zone in time!", rl.GREEN})
+    } else {
+        s.capture_success = false
+        s.status_text = "FAILED: Timeout Expired!"
+        s.status_color = rl.RED
+        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Failed", "Timeout expired before completion!", rl.RED})
     }
 
     coroutine.wait(f, 2.0)
     s.is_capturing = false
+    s.progress = 0.0
     s.status_text = "Step into circle & Press [E] to contest"
     s.status_color = rl.RAYWHITE
 }
@@ -246,90 +317,84 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
 // --- 3. Energy Charger (Fiber_Mutex) ---
 
 drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
-    st := &g_world.station_charger
-    charger_pos := st.pos
+    pad_pos := g_world.station_charger.pos
 
-    // Fly to charger entrance (Vector2 tween)
-    coroutine.tween(f, &d.pos, d.pos, [2]f32{charger_pos.x - 30.0, charger_pos.y}, 0.6, coroutine.ease_in_out_quad)
+    // Move to charging pad entrance
+    coroutine.tween(f, &d.pos, d.pos, pad_pos + {0, 30}, 0.8, coroutine.ease_in_out_quad)
 
-    // CRITICAL SECTION: Mutex lock (only 1 drone can enter pad at a time)
-    coroutine.mutex_lock(f, &st.mutex)
+    // Request mutual exclusion on charging pad
+    coroutine.mutex_lock(f, &g_world.station_charger.mutex)
+    defer coroutine.mutex_unlock(f.sched, &g_world.station_charger.mutex)
+
+    // Entered charging pad
     d.is_charging = true
+    coroutine.tween(f, &d.pos, d.pos, pad_pos, 0.3, coroutine.ease_out_quad)
 
-    // Move into pad center (Vector2 tween)
-    coroutine.tween(f, &d.pos, d.pos, charger_pos, 0.3, coroutine.ease_in_out_quad)
+    // Charge battery for 1.2 seconds
+    for d.charge_level < 1.0 {
+        coroutine.yield_frame(f)
+        d.charge_level += coroutine.delta_time(f) / 1.2
+    }
+    d.charge_level = 1.0
 
-    // Charge up over 1.2 seconds
-    coroutine.tween(f, &d.charge_level, 0.0, 100.0, 1.2)
-
-    // Move out of pad (Vector2 tween)
-    coroutine.tween(f, &d.pos, d.pos, [2]f32{charger_pos.x + 40.0, charger_pos.y}, 0.3, coroutine.ease_in_out_quad)
-
+    // Return to home post
     d.is_charging = false
-    coroutine.mutex_unlock(f.sched, &st.mutex)
-    // END CRITICAL SECTION
-
-    // Return to home position (Vector2 tween)
     coroutine.tween(f, &d.pos, d.pos, d.home_pos, 0.8, coroutine.ease_in_out_quad)
+    d.charge_level = 0.0
 }
 
 // --- 4. Alert Beacon (Signal) ---
 
 sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
     for {
-        // Zero-polling suspension: sleeps until alarm signal is emitted
+        s.is_alerted = false
+
+        // Suspends until alarm_signal is emitted! Zero CPU polling.
         coroutine.signal_wait(f, &g_world.station_beacon.alarm_signal)
 
-        // Sentry is alerted!
+        // Alarm triggered! Wake up and flash
         s.is_alerted = true
         s.alert_timer = 2.5
 
-        // Rush to beacon center
-        beacon_pos := g_world.station_beacon.pos
-        coroutine.tween(f, &s.pos.x, s.pos.x, beacon_pos.x + rand.float32_range(-40, 40), 0.5)
-        coroutine.tween(f, &s.pos.y, s.pos.y, beacon_pos.y + rand.float32_range(-40, 40), 0.5)
+        // Move outwards in defensive perimeter
+        dir := linalg.normalize(s.home_pos - g_world.station_beacon.pos)
+        target := s.home_pos + dir * 30.0
+        coroutine.tween(f, &s.pos, s.home_pos, target, 0.3, coroutine.ease_out_back)
 
-        // Patrol alert area for 2 seconds
         coroutine.wait(f, 2.0)
 
-        // Return home
-        s.is_alerted = false
-        coroutine.tween(f, &s.pos.x, s.pos.x, s.home_pos.x, 0.8)
-        coroutine.tween(f, &s.pos.y, s.pos.y, s.home_pos.y, 0.8)
+        // Return to resting position
+        coroutine.tween(f, &s.pos, s.pos, s.home_pos, 0.6, coroutine.ease_in_out_quad)
     }
 }
 
-// --- 5. Loot Forge (Stateful Generator) ---
+// --- 5. Loot Forge (Generator) ---
 
 loot_generator_entry :: proc(f: ^coroutine.Fiber, g: ^coroutine.Generator(Loot_Item)) {
-    tiers := [?]string{"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic"}
-    colors := [?]rl.Color{rl.GRAY, rl.GREEN, rl.SKYBLUE, rl.PURPLE, rl.GOLD, rl.RED}
-    names := [?]string{"Iron Dagger", "Ranger Bow", "Arcane Staff", "Dragon Blade", "Void Reaver", "Infinity Edge"}
+    items := [?]Loot_Item{
+        {"Rusty Dagger",      "Common",    rl.LIGHTGRAY, 12},
+        {"Iron Longsword",    "Uncommon",  rl.GREEN,     35},
+        {"Flametongue Blade", "Rare",      rl.SKYBLUE,   85},
+        {"Obsidian Reaver",   "Epic",      rl.PURPLE,    160},
+        {"Astra Divine Bow",  "Legendary", rl.GOLD,      320},
+    }
 
-    idx := 0
     for {
-        t_idx := idx % len(tiers)
-        item := Loot_Item{
-            name  = names[t_idx],
-            tier  = tiers[t_idx],
-            color = colors[t_idx],
-            power = 100 + (t_idx + 1) * 75,
+        for item in items {
+            // Yields item back to consumer in O(1) time
+            coroutine.yield_value(f, g, item)
         }
-
-        // Pull-based yield to consumer
-        coroutine.yield_value(f, g, item)
-        idx += 1
     }
 }
 
-// --- 6. Async Research Lab (Async_Token / await_async) ---
+// --- 6. Async Research Lab (await_async & fiber_join) ---
 
 research_worker_thread :: proc(data: rawptr) {
-    job := (^Research_Job)(data)
+    job := cast(^Research_Job)data
     start_t := time.now()
 
-    // Simulate heavy multi-threaded compute (1.2 seconds)
-    time.sleep(1200 * time.Millisecond)
+    // Simulate heavy multi-threaded compute (1.0 seconds)
+    time.sleep(1000 * time.Millisecond)
 
     job.result_nodes = 42 * job.complexity
     job.elapsed_worker = f32(time.duration_seconds(time.since(start_t)))
@@ -343,6 +408,8 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     s.status_text = "Worker Thread Computing (await_async)..."
     s.status_color = rl.YELLOW
 
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Async Job Dispatched", "Background OS thread spawned (await_async)", rl.YELLOW})
+
     coroutine.async_token_init(&s.job.token)
     s.job.complexity = 10
 
@@ -353,8 +420,26 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     ok := coroutine.await_async(f, &s.job.token)
 
     if ok {
-        s.status_text = fmt.tprintf("Done in %.2fs! Found %d nodes", s.job.elapsed_worker, s.job.result_nodes)
+        s.status_text = fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (fiber_join)...", s.job.elapsed_worker)
+        s.status_color = rl.SKYBLUE
+
+        // Spawn Analysis Drone task and await with fiber_join!
+        s.drone_active = true
+        s.drone_pos = s.pos + {0, -40}
+
+        drone_h := coroutine.spawn(f.sched, proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
+            for i := 0; i < 4; i += 1 {
+                coroutine.wait(f, 0.4)
+                s.drone_pos.x += (i % 2 == 0 ? 25.0 : -25.0)
+            }
+            s.drone_active = false
+        }, s, name = "Analysis Drone (Task Join)")
+
+        coroutine.fiber_join(f, drone_h)
+
+        s.status_text = fmt.tprintf("Research & Drone Complete! Found %d nodes", s.job.result_nodes)
         s.status_color = rl.GREEN
+        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Analysis Complete", "Async job & Analysis Drone joined successfully!", rl.GREEN})
     } else {
         s.status_text = "Async Compute Failed"
         s.status_color = rl.RED
@@ -362,7 +447,7 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
 
     coroutine.wait(f, 3.0)
     s.is_working = false
-    s.status_text = "Press [E] to launch background worker"
+    s.status_text = "Press [6] or [E] to launch background worker"
     s.status_color = rl.RAYWHITE
 }
 
@@ -381,37 +466,120 @@ channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
     }
 }
 
+// --- 8. Gate Construction Rendezvous (Fiber_Latch) ---
+
+builder_subtask_fiber :: proc(f: ^coroutine.Fiber, task: ^Gate_Task) {
+    task.progress = 0.0
+    task.done = false
+    for task.progress < 1.0 {
+        coroutine.yield_frame(f)
+        task.progress += coroutine.delta_time(f) / 1.6
+    }
+    task.progress = 1.0
+    task.done = true
+
+    // Rendezvous count down!
+    coroutine.latch_count_down(f.sched, &g_world.station_gate.latch)
+}
+
+gate_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Gate_Station) {
+    s.is_building = true
+    s.portal_open = false
+    s.portal_alpha = 0.0
+    s.status_text = "Building: 3 Tasks Synchronizing (Fiber_Latch)..."
+
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Gate Construction", "3 subtasks rendezvous on Fiber_Latch", rl.SKYBLUE})
+
+    coroutine.latch_init(&s.latch, initial_count = 3)
+    defer coroutine.latch_destroy(&s.latch)
+
+    for i in 0 ..< 3 {
+        coroutine.spawn(f.sched, builder_subtask_fiber, &s.tasks[i], scope = &s.scope, name = fmt.tprintf("Builder #%d", i + 1))
+    }
+
+    // Await all 3 builders via countdown barrier!
+    coroutine.latch_wait(f, &s.latch)
+
+    // Portal opens!
+    s.portal_open = true
+    s.status_text = "PORTAL ACTIVATED! All 3 builders rendezvoused!"
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Portal Open", "Fiber_Latch barrier unblocked!", rl.GREEN})
+
+    coroutine.tween(f, &s.portal_alpha, 0.0, 1.0, 0.5, coroutine.ease_out_quad)
+    coroutine.wait(f, 3.0)
+    coroutine.tween(f, &s.portal_alpha, 1.0, 0.0, 0.5, coroutine.ease_in_quad)
+
+    for i in 0 ..< 3 {
+        s.tasks[i].done = false
+        s.tasks[i].progress = 0.0
+    }
+    s.is_building = false
+    s.portal_open = false
+    s.status_text = "Press [7] or [E] to construct gate"
+}
+
+// --- 9. Laser Defense Turrets (Fiber_Semaphore) ---
+
+turret_defense_fiber :: proc(f: ^coroutine.Fiber, t: ^Turret) {
+    for {
+        coroutine.wait(f, f32(t.id) * 0.4)
+
+        // Acquire 1 of 2 power permits from semaphore
+        coroutine.semaphore_acquire(f, &g_world.station_defense.sem)
+
+        t.is_firing = true
+        t.laser_alpha = 1.0
+
+        for i := 0; i < 20; i += 1 {
+            coroutine.yield_frame(f)
+            t.laser_alpha = 0.6 + 0.4 * math.sin(g_world.global_time * 25.0)
+        }
+
+        t.is_firing = false
+        t.laser_alpha = 0.0
+
+        // Release power permit
+        coroutine.semaphore_release(f.sched, &g_world.station_defense.sem)
+
+        coroutine.wait(f, 1.2)
+    }
+}
+
 // ============================================================================
 // Initialization & Destruction
 // ============================================================================
 
 showcase_init :: proc(w: ^Showcase_World) {
     coroutine.scheduler_init(&w.sched)
+    // Pre-warm stack pool for zero-allocation runtime performance
+    coroutine.scheduler_prewarm(&w.sched, 64)
+
+    coroutine.event_init(&w.event_hub)
 
     w.player = Player{
         pos    = {SCREEN_WIDTH / 2.0, SCREEN_HEIGHT / 2.0},
-        speed  = 220.0,
+        speed  = 240.0,
         radius = 16.0,
     }
 
     // 1. Ritual Station (sync)
-    w.station_ritual.pos = {200, 180}
-    w.station_ritual.runes[0] = Rune{pos = {150, 140}, color = rl.RED, name = "Fire"}
-    w.station_ritual.runes[1] = Rune{pos = {200, 100}, color = rl.SKYBLUE, name = "Frost"}
-    w.station_ritual.runes[2] = Rune{pos = {250, 140}, color = rl.GOLD, name = "Storm"}
+    w.station_ritual.pos = {160, 160}
+    w.station_ritual.runes[0] = Rune{pos = {120, 130}, color = rl.RED, name = "Fire"}
+    w.station_ritual.runes[1] = Rune{pos = {160, 100}, color = rl.SKYBLUE, name = "Frost"}
+    w.station_ritual.runes[2] = Rune{pos = {200, 130}, color = rl.GOLD, name = "Storm"}
 
     // 2. Capture Station (race & with_timeout)
-    w.station_capture.pos = {540, 180}
-    w.station_capture.radius = 60.0
+    w.station_capture.pos = {460, 160}
+    w.station_capture.radius = 55.0
     w.station_capture.status_text = "Step into circle & Press [E] to contest"
     w.station_capture.status_color = rl.RAYWHITE
 
     // 3. Charger Station (Fiber_Mutex)
-    w.station_charger.pos = {880, 180}
-    w.station_charger.radius = 45.0
+    w.station_charger.pos = {760, 160}
+    w.station_charger.radius = 42.0
     coroutine.mutex_init(&w.station_charger.mutex)
     for i in 0 ..< 4 {
-        home := rl.Vector2{f32(780 + i * 65), 100}
+        home := rl.Vector2{f32(680 + i * 55), 90}
         w.station_charger.drones[i] = Drone{
             pos       = home,
             home_pos  = home,
@@ -421,34 +589,67 @@ showcase_init :: proc(w: ^Showcase_World) {
     }
 
     // 4. Beacon Station (Signal)
-    w.station_beacon.pos = {200, 480}
+    w.station_beacon.pos = {160, 440}
     coroutine.signal_init(&w.station_beacon.alarm_signal)
     for i in 0 ..< 6 {
         angle := f32(i) * (math.TAU / 6.0)
-        home := w.station_beacon.pos + {math.cos(angle) * 75.0, math.sin(angle) * 75.0}
+        home := w.station_beacon.pos + {math.cos(angle) * 70.0, math.sin(angle) * 70.0}
         w.station_beacon.sentries[i] = Sentry{
             pos      = home,
             home_pos = home,
             color    = rl.ORANGE,
         }
-        // Spawn sentry fibers
         coroutine.spawn(&w.sched, sentry_watch_fiber, &w.station_beacon.sentries[i], scope = &w.station_beacon.scope, name = fmt.tprintf("Sentry #%d", i + 1))
     }
 
     // 5. Forge Station (Generator)
-    w.station_forge.pos = {540, 480}
+    w.station_forge.pos = {460, 440}
     coroutine.generator_init(&w.station_forge.loot_gen, loot_generator_entry)
 
-    // 6. Lab Station (Async_Token / await_async)
-    w.station_lab.pos = {880, 480}
-    w.station_lab.status_text = "Press [E] to launch background worker"
+    // 6. Lab Station (Async_Token / await_async & fiber_join)
+    w.station_lab.pos = {760, 440}
+    w.station_lab.status_text = "Press [6] or [E] to launch worker"
     w.station_lab.status_color = rl.RAYWHITE
 
     // 7. Channel Station (CSP Channel)
-    w.station_channel.pos = {1140, 330}
+    w.station_channel.pos = {1060, 160}
     w.station_channel.recent_logs = make([dynamic]string)
     coroutine.chan_init(&w.station_channel.log_channel, capacity = 10)
     coroutine.spawn(&w.sched, channel_consumer_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "Log Channel Consumer")
+
+    // 8. Gate Station (Fiber_Latch Rendezvous)
+    w.station_gate.pos = {1060, 440}
+    w.station_gate.tasks[0] = Gate_Task{name = "Pillars", color = rl.SKYBLUE}
+    w.station_gate.tasks[1] = Gate_Task{name = "Core", color = rl.GOLD}
+    w.station_gate.tasks[2] = Gate_Task{name = "Matrix", color = rl.PURPLE}
+    w.station_gate.status_text = "Press [7] or [E] to construct gate"
+
+    // 9. Defense Station (Fiber_Semaphore)
+    w.station_defense.pos = {640, 600}
+    coroutine.semaphore_init(&w.station_defense.sem, initial_permits = 2, max_permits = 2)
+    for i in 0 ..< 4 {
+        pos := rl.Vector2{f32(490 + i * 100), 620}
+        w.station_defense.turrets[i] = Turret{
+            pos        = pos,
+            target_pos = pos + {0, -60},
+            color      = rl.RED,
+            id         = i + 1,
+        }
+        coroutine.spawn(&w.sched, turret_defense_fiber, &w.station_defense.turrets[i], scope = &w.station_defense.scope, name = fmt.tprintf("Turret #%d (Semaphore)", i + 1))
+    }
+
+    // Spawn Toast Notification Fiber (receives Event(Showcase_Event))
+    coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber) {
+        for {
+            ev, ok := coroutine.event_wait(f, &g_world.event_hub)
+            if ok {
+                g_world.toast_title = ev.title
+                g_world.toast_desc = ev.desc
+                g_world.toast_color = ev.color
+                g_world.toast_timer = 3.5
+            }
+        }
+    }, name = "Event(T) Toast Listener")
 
     g_world = w
 }
@@ -461,7 +662,11 @@ showcase_destroy :: proc(w: ^Showcase_World) {
     coroutine.scope_destroy(&w.sched, &w.station_beacon.scope)
     coroutine.scope_destroy(&w.sched, &w.station_lab.scope)
     coroutine.scope_destroy(&w.sched, &w.station_channel.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_gate.scope)
+    coroutine.scope_destroy(&w.sched, &w.station_defense.scope)
 
+    coroutine.semaphore_destroy(&w.station_defense.sem)
+    coroutine.event_destroy(&w.event_hub)
     coroutine.mutex_destroy(&w.station_charger.mutex)
     coroutine.signal_destroy(&w.station_beacon.alarm_signal)
     coroutine.generator_destroy(&w.station_forge.loot_gen)
@@ -480,9 +685,12 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         w.sched.is_paused = !w.sched.is_paused
     }
 
-    // Debugger overlay toggle
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
         w.show_coroutine_debugger = !w.show_coroutine_debugger
+    }
+
+    if w.toast_timer > 0.0 {
+        w.toast_timer = max(0.0, w.toast_timer - dt)
     }
 
     // Determine simulation delta-time for this frame
@@ -528,6 +736,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if rl.IsKeyPressed(.FOUR)  do w.latched_station = 4
     if rl.IsKeyPressed(.FIVE) || rl.IsKeyPressed(.L) do w.latched_station = 5
     if rl.IsKeyPressed(.SIX)   do w.latched_station = 6
+    if rl.IsKeyPressed(.SEVEN) do w.latched_station = 7
     if rl.IsKeyPressed(.E)     do w.latched_interact = true
 
     // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
@@ -563,7 +772,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     w.latched_station = 0
     w.latched_interact = false
 
-    // --- Station 1 Interaction: Ritual (Press [1] or [E] near station) ---
+    // --- Station 1: Ritual (Press [1] or [E] near station) ---
     dist1 := linalg.length(w.player.pos - w.station_ritual.pos)
     if (dist1 < 80.0 && interact) || trigger_station == 1 {
         if !coroutine.scope_is_busy(&w.station_ritual.scope) {
@@ -572,7 +781,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         }
     }
 
-    // --- Station 2 Interaction: Capture Contest (Press [2] or [E] near station) ---
+    // --- Station 2: Capture Contest (Press [2] or [E] near station) ---
     dist2 := linalg.length(w.player.pos - w.station_capture.pos)
     if (dist2 < w.station_capture.radius && interact) || trigger_station == 2 {
         if !coroutine.scope_is_busy(&w.station_capture.scope) {
@@ -581,7 +790,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         }
     }
 
-    // --- Station 3 Interaction: Charger Mutex (Press [3] or [E] near station) ---
+    // --- Station 3: Charger Mutex (Press [3] or [E] near station) ---
     dist3 := linalg.length(w.player.pos - w.station_charger.pos)
     if (dist3 < 90.0 && interact) || trigger_station == 3 {
         if !coroutine.scope_is_busy(&w.station_charger.scope) {
@@ -593,14 +802,15 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         }
     }
 
-    // --- Station 4 Interaction: Beacon Signal (Press [4] or [E] near station) ---
+    // --- Station 4: Beacon Signal (Press [4] or [E] near station) ---
     dist4 := linalg.length(w.player.pos - w.station_beacon.pos)
     if (dist4 < 80.0 && interact) || trigger_station == 4 {
         coroutine.signal_emit(&w.sched, &w.station_beacon.alarm_signal)
         coroutine.chan_try_send(&w.station_channel.log_channel, "Alarm [Signal] broadcast to 6 sentries")
+        coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"Alarm Tripped", "Signal broadcast woken 6 sentries!", rl.RED})
     }
 
-    // --- Station 5 Interaction: Loot Forge (Press [5] or [E] near station) ---
+    // --- Station 5: Loot Forge (Press [5] or [E] near station) ---
     dist5 := linalg.length(w.player.pos - w.station_forge.pos)
     if (dist5 < 80.0 && interact) || trigger_station == 5 {
         item, ok := coroutine.generator_next(&w.station_forge.loot_gen)
@@ -609,15 +819,25 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
             w.station_forge.has_item = true
             w.station_forge.total_forged += 1
             coroutine.chan_try_send(&w.station_channel.log_channel, fmt.tprintf("Forged %s (%s)", item.name, item.tier))
+            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{fmt.tprintf("Forged %s", item.name), fmt.tprintf("Tier: %s | Pwr: %d", item.tier, item.power), item.color})
         }
     }
 
-    // --- Station 6 Interaction: Async Research (Press [6] or [E] near station) ---
+    // --- Station 6: Async Research (Press [6] or [E] near station) ---
     dist6 := linalg.length(w.player.pos - w.station_lab.pos)
     if (dist6 < 80.0 && interact) || trigger_station == 6 {
         if !coroutine.scope_is_busy(&w.station_lab.scope) {
             coroutine.spawn(&w.sched, lab_research_fiber, &w.station_lab, scope = &w.station_lab.scope, name = "Async Research Lab")
             coroutine.chan_try_send(&w.station_channel.log_channel, "Dispatched [await_async] background worker")
+        }
+    }
+
+    // --- Station 8: Gate Construction (Press [7] or [E] near station) ---
+    dist8 := linalg.length(w.player.pos - w.station_gate.pos)
+    if (dist8 < 80.0 && interact) || trigger_station == 7 {
+        if !coroutine.scope_is_busy(&w.station_gate.scope) {
+            coroutine.spawn(&w.sched, gate_master_fiber, &w.station_gate, scope = &w.station_gate.scope, name = "Gate Master (Fiber_Latch)")
+            coroutine.chan_try_send(&w.station_channel.log_channel, "Gate Construction [Fiber_Latch] started")
         }
     }
 }
@@ -638,88 +858,138 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawLine(0, y, SCREEN_WIDTH, y, {24, 30, 42, 255})
     }
 
-    // --- Render Station 1: Ritual Circle (sync) ---
-    rl.DrawCircleLines(i32(w.station_ritual.pos.x), i32(w.station_ritual.pos.y), 70.0, rl.SKYBLUE)
-    rl.DrawText("1. RITUAL CIRCLE", i32(w.station_ritual.pos.x) - 55, i32(w.station_ritual.pos.y) - 95, 14, rl.SKYBLUE)
-    rl.DrawText("[sync: 3 Runes]", i32(w.station_ritual.pos.x) - 45, i32(w.station_ritual.pos.y) - 80, 12, rl.GRAY)
+    // Top Header & Pool Telemetry
+    rl.DrawText("STACKFUL COROUTINE ENGINE — ADVANCED FEATURE SHOWCASE", 25, 14, 20, rl.RAYWHITE)
+    stats := coroutine.scheduler_pool_stats(&w.sched)
+    header_stats := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Mem: %d KB | Defense Sem: %d", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb, coroutine.semaphore_available_permits(&w.station_defense.sem))
+    rl.DrawText(header_stats, 25, 38, 12, rl.SKYBLUE)
+
+    // --- Station 1: Ritual Circle (sync) ---
+    rl.DrawCircleLines(i32(w.station_ritual.pos.x), i32(w.station_ritual.pos.y), 65.0, rl.SKYBLUE)
+    rl.DrawText("1. RITUAL CIRCLE", i32(w.station_ritual.pos.x) - 55, i32(w.station_ritual.pos.y) - 85, 13, rl.SKYBLUE)
+    rl.DrawText("[sync: 3 Runes]", i32(w.station_ritual.pos.x) - 45, i32(w.station_ritual.pos.y) - 72, 11, rl.GRAY)
 
     for r in w.station_ritual.runes {
-        rl.DrawCircleV(r.pos, 12.0, r.active ? r.color : rl.DARKGRAY)
-        rl.DrawCircleLines(i32(r.pos.x), i32(r.pos.y), 12.0, r.color)
-        rl.DrawRectangle(i32(r.pos.x) - 15, i32(r.pos.y) + 16, i32(30.0 * r.progress), 4, r.color)
+        rl.DrawCircleV(r.pos, 11.0, r.active ? r.color : rl.DARKGRAY)
+        rl.DrawCircleLines(i32(r.pos.x), i32(r.pos.y), 11.0, r.color)
+        rl.DrawRectangle(i32(r.pos.x) - 15, i32(r.pos.y) + 14, i32(30.0 * r.progress), 3, r.color)
     }
     if w.station_ritual.completed {
-        rl.DrawCircleV(w.station_ritual.pos, 35.0, {100, 220, 255, u8(w.station_ritual.result_alpha * 200.0)})
+        rl.DrawCircleV(w.station_ritual.pos, 30.0, {100, 220, 255, u8(w.station_ritual.result_alpha * 200.0)})
     }
 
-    // --- Render Station 2: Capture Contest (race & with_timeout) ---
+    // --- Station 2: Capture Contest (race & with_timeout) ---
     rl.DrawCircleLines(i32(w.station_capture.pos.x), i32(w.station_capture.pos.y), w.station_capture.radius, rl.YELLOW)
     rl.DrawCircleSector(w.station_capture.pos, w.station_capture.radius, 0, w.station_capture.progress * 360.0, 32, {255, 220, 50, 60})
-    rl.DrawText("2. CAPTURE CONTEST", i32(w.station_capture.pos.x) - 65, i32(w.station_capture.pos.y) - 95, 14, rl.YELLOW)
-    rl.DrawText("[race & with_timeout]", i32(w.station_capture.pos.x) - 60, i32(w.station_capture.pos.y) - 80, 12, rl.GRAY)
-    rl.DrawText(fmt.ctprintf("%s", w.station_capture.status_text), i32(w.station_capture.pos.x) - 90, i32(w.station_capture.pos.y) + 70, 11, w.station_capture.status_color)
+    rl.DrawText("2. CAPTURE CONTEST", i32(w.station_capture.pos.x) - 65, i32(w.station_capture.pos.y) - 85, 13, rl.YELLOW)
+    rl.DrawText("[race & timeout]", i32(w.station_capture.pos.x) - 50, i32(w.station_capture.pos.y) - 72, 11, rl.GRAY)
+    rl.DrawText(fmt.ctprintf("%s", w.station_capture.status_text), i32(w.station_capture.pos.x) - 85, i32(w.station_capture.pos.y) + 65, 10, w.station_capture.status_color)
 
-    // --- Render Station 3: Energy Charger (Fiber_Mutex) ---
+    // --- Station 3: Energy Charger (Fiber_Mutex) ---
     rl.DrawCircleLines(i32(w.station_charger.pos.x), i32(w.station_charger.pos.y), w.station_charger.radius, rl.PURPLE)
-    rl.DrawText("3. ENERGY CHARGER", i32(w.station_charger.pos.x) - 65, i32(w.station_charger.pos.y) - 95, 14, rl.PURPLE)
-    rl.DrawText("[Fiber_Mutex Pad]", i32(w.station_charger.pos.x) - 50, i32(w.station_charger.pos.y) - 80, 12, rl.GRAY)
+    rl.DrawText("3. ENERGY CHARGER", i32(w.station_charger.pos.x) - 60, i32(w.station_charger.pos.y) - 85, 13, rl.PURPLE)
+    rl.DrawText("[Fiber_Mutex Pad]", i32(w.station_charger.pos.x) - 48, i32(w.station_charger.pos.y) - 72, 11, rl.GRAY)
 
     for d in w.station_charger.drones {
-        rl.DrawCircleV(d.pos, 10.0, d.color)
-        rl.DrawText(fmt.ctprintf("#%d", d.id), i32(d.pos.x) - 6, i32(d.pos.y) - 6, 10, rl.BLACK)
+        rl.DrawCircleV(d.pos, 9.0, d.color)
+        rl.DrawText(fmt.ctprintf("#%d", d.id), i32(d.pos.x) - 5, i32(d.pos.y) - 5, 9, rl.BLACK)
         if d.is_charging {
-            rl.DrawCircleLines(i32(d.pos.x), i32(d.pos.y), 15.0, rl.WHITE)
+            rl.DrawCircleLines(i32(d.pos.x), i32(d.pos.y), 13.0, rl.WHITE)
         }
     }
 
-    // --- Render Station 4: Alert Beacon (Signal) ---
-    rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 30.0, rl.ORANGE)
-    rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 55, i32(w.station_beacon.pos.y) - 65, 14, rl.ORANGE)
-    rl.DrawText("[Signal Broadcast]", i32(w.station_beacon.pos.x) - 50, i32(w.station_beacon.pos.y) - 50, 12, rl.GRAY)
+    // --- Station 4: Alert Beacon (Signal) ---
+    rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 28.0, rl.ORANGE)
+    rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 52, i32(w.station_beacon.pos.y) - 60, 13, rl.ORANGE)
+    rl.DrawText("[Signal Broadcast]", i32(w.station_beacon.pos.x) - 50, i32(w.station_beacon.pos.y) - 48, 11, rl.GRAY)
 
     for s in w.station_beacon.sentries {
-        rl.DrawCircleV(s.pos, 9.0, s.is_alerted ? rl.RED : s.color)
+        rl.DrawCircleV(s.pos, 8.0, s.is_alerted ? rl.RED : s.color)
         if s.is_alerted {
-            rl.DrawText("!", i32(s.pos.x) - 3, i32(s.pos.y) - 18, 14, rl.RED)
+            rl.DrawText("!", i32(s.pos.x) - 3, i32(s.pos.y) - 16, 13, rl.RED)
         }
     }
 
-    // --- Render Station 5: Loot Forge (Generator) ---
-    rl.DrawRectangleLines(i32(w.station_forge.pos.x) - 50, i32(w.station_forge.pos.y) - 50, 100, 100, rl.GOLD)
-    rl.DrawText("5. LOOT FORGE", i32(w.station_forge.pos.x) - 45, i32(w.station_forge.pos.y) - 75, 14, rl.GOLD)
-    rl.DrawText("[Generator(T)]", i32(w.station_forge.pos.x) - 40, i32(w.station_forge.pos.y) - 60, 12, rl.GRAY)
+    // --- Station 5: Loot Forge (Generator) ---
+    rl.DrawRectangleLines(i32(w.station_forge.pos.x) - 45, i32(w.station_forge.pos.y) - 45, 90, 90, rl.GOLD)
+    rl.DrawText("5. LOOT FORGE", i32(w.station_forge.pos.x) - 42, i32(w.station_forge.pos.y) - 68, 13, rl.GOLD)
+    rl.DrawText("[Generator(T)]", i32(w.station_forge.pos.x) - 38, i32(w.station_forge.pos.y) - 55, 11, rl.GRAY)
 
     if w.station_forge.has_item {
         item := w.station_forge.current_item
-        rl.DrawText(fmt.ctprintf("%s", item.name), i32(w.station_forge.pos.x) - 40, i32(w.station_forge.pos.y) - 15, 12, item.color)
-        rl.DrawText(fmt.ctprintf("[%s] Pwr: %d", item.tier, item.power), i32(w.station_forge.pos.x) - 40, i32(w.station_forge.pos.y) + 5, 10, rl.LIGHTGRAY)
+        rl.DrawText(fmt.ctprintf("%s", item.name), i32(w.station_forge.pos.x) - 38, i32(w.station_forge.pos.y) - 12, 11, item.color)
+        rl.DrawText(fmt.ctprintf("[%s] Pwr: %d", item.tier, item.power), i32(w.station_forge.pos.x) - 38, i32(w.station_forge.pos.y) + 6, 9, rl.LIGHTGRAY)
     } else {
-        rl.DrawText("Press [E]/[5]/[L]", i32(w.station_forge.pos.x) - 42, i32(w.station_forge.pos.y) - 5, 10, rl.GRAY)
+        rl.DrawText("Press [5]/[E]", i32(w.station_forge.pos.x) - 35, i32(w.station_forge.pos.y) - 4, 10, rl.GRAY)
     }
 
-    // --- Render Station 6: Async Research Lab (Async_Token / await_async) ---
-    rl.DrawRectangleLines(i32(w.station_lab.pos.x) - 60, i32(w.station_lab.pos.y) - 50, 120, 100, rl.LIME)
-    rl.DrawText("6. ASYNC LAB", i32(w.station_lab.pos.x) - 45, i32(w.station_lab.pos.y) - 75, 14, rl.LIME)
-    rl.DrawText("[await_async]", i32(w.station_lab.pos.x) - 40, i32(w.station_lab.pos.y) - 60, 12, rl.GRAY)
-    rl.DrawText(fmt.ctprintf("%s", w.station_lab.status_text), i32(w.station_lab.pos.x) - 80, i32(w.station_lab.pos.y) + 60, 10, w.station_lab.status_color)
+    // --- Station 6: Async Research Lab (Async_Token & fiber_join) ---
+    rl.DrawRectangleLines(i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 45, 110, 90, rl.LIME)
+    rl.DrawText("6. ASYNC LAB", i32(w.station_lab.pos.x) - 40, i32(w.station_lab.pos.y) - 68, 13, rl.LIME)
+    rl.DrawText("[await_async & join]", i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 55, 10, rl.GRAY)
+    rl.DrawText(fmt.ctprintf("%s", w.station_lab.status_text), i32(w.station_lab.pos.x) - 75, i32(w.station_lab.pos.y) + 52, 9, w.station_lab.status_color)
 
-    // --- Render Station 7: Telemetry Log Feed (Channel(T)) ---
-    panel_x: i32 = 1000
-    panel_y: i32 = 20
-    panel_w: i32 = 260
-    panel_h: i32 = 180
+    if w.station_lab.drone_active {
+        rl.DrawCircleV(w.station_lab.drone_pos, 8.0, rl.PINK)
+        rl.DrawCircleLines(i32(w.station_lab.drone_pos.x), i32(w.station_lab.drone_pos.y), 10.0, rl.WHITE)
+    }
+
+    // --- Station 7: Telemetry Log Feed (Channel(T)) ---
+    panel_x: i32 = 980
+    panel_y: i32 = 60
+    panel_w: i32 = 280
+    panel_h: i32 = 170
     rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 16, 24, 220})
     rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {60, 100, 150, 255})
-    rl.DrawText("7. CSP CHANNEL LOGS", panel_x + 10, panel_y + 10, 12, rl.SKYBLUE)
-    rl.DrawLine(panel_x + 10, panel_y + 28, panel_x + panel_w - 10, panel_y + 28, {50, 70, 100, 255})
+    rl.DrawText("7. CSP CHANNEL LOGS", panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
+    rl.DrawLine(panel_x + 10, panel_y + 24, panel_x + panel_w - 10, panel_y + 24, {50, 70, 100, 255})
 
-    log_y := panel_y + 35
+    log_y := panel_y + 30
     for msg in w.station_channel.recent_logs {
         rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, rl.LIGHTGRAY)
         log_y += 18
     }
 
-    // --- Render Player Character ---
+    // --- Station 8: Gate Construction Rendezvous (Fiber_Latch) ---
+    rl.DrawRectangleLines(i32(w.station_gate.pos.x) - 60, i32(w.station_gate.pos.y) - 50, 120, 100, rl.VIOLET)
+    rl.DrawText("8. GATE RENDEZVOUS", i32(w.station_gate.pos.x) - 62, i32(w.station_gate.pos.y) - 72, 13, rl.VIOLET)
+    rl.DrawText("[Fiber_Latch 3-Way]", i32(w.station_gate.pos.x) - 55, i32(w.station_gate.pos.y) - 58, 10, rl.GRAY)
+
+    for i in 0 ..< 3 {
+        task := w.station_gate.tasks[i]
+        ty := i32(w.station_gate.pos.y) - 30 + i32(i * 18)
+        rl.DrawText(fmt.ctprintf("%s:", task.name), i32(w.station_gate.pos.x) - 50, ty, 9, task.color)
+        rl.DrawRectangle(i32(w.station_gate.pos.x) + 5, ty + 2, 45, 6, rl.DARKGRAY)
+        rl.DrawRectangle(i32(w.station_gate.pos.x) + 5, ty + 2, i32(45.0 * task.progress), 6, task.color)
+    }
+
+    if w.station_gate.portal_open {
+        rl.DrawCircleV(w.station_gate.pos + {0, 60}, 24.0, rl.Fade(rl.VIOLET, w.station_gate.portal_alpha))
+        rl.DrawCircleLines(i32(w.station_gate.pos.x), i32(w.station_gate.pos.y) + 60, 24.0, rl.WHITE)
+        rl.DrawText("PORTAL OPEN", i32(w.station_gate.pos.x) - 35, i32(w.station_gate.pos.y) + 55, 9, rl.WHITE)
+    }
+    rl.DrawText(fmt.ctprintf("%s", w.station_gate.status_text), i32(w.station_gate.pos.x) - 80, i32(w.station_gate.pos.y) + 58, 9, rl.YELLOW)
+
+    // --- Station 9: Laser Defense Turrets (Fiber_Semaphore) ---
+    rl.DrawRectangleLines(460, 565, 360, 95, {160, 60, 60, 255})
+    rl.DrawText("9. LASER DEFENSE GRID (Fiber_Semaphore: 2 Permits)", 475, 572, 12, rl.RED)
+
+    for t in w.station_defense.turrets {
+        rl.DrawCircleV(t.pos, 8.0, t.is_firing ? rl.RED : rl.GRAY)
+        if t.is_firing {
+            rl.DrawLineEx(t.pos, t.target_pos, 3.0, rl.Fade(rl.RED, t.laser_alpha))
+            rl.DrawCircleV(t.target_pos, 4.0, rl.ORANGE)
+        }
+    }
+
+    // --- Multicast Event(T) Toast Banner ---
+    if w.toast_timer > 0.0 {
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 65, 450, 24, {20, 30, 45, 235})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 65, 450, 24, w.toast_color)
+        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s — %s", w.toast_title, w.toast_desc), 35, SCREEN_HEIGHT - 60, 11, w.toast_color)
+    }
+
+    // --- Player Character ---
     rl.DrawCircleV(w.player.pos, w.player.radius, rl.WHITE)
     rl.DrawCircleLines(i32(w.player.pos.x), i32(w.player.pos.y), w.player.radius + 3.0, rl.LIME)
 
@@ -732,7 +1002,7 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawText(step_text, 30, SCREEN_HEIGHT - 30, 14, flash_col)
     } else {
         rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {12, 14, 20, 220})
-        rl.DrawText("WASD: Move | [1-6] or [E]: Trigger Station | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
+        rl.DrawText("WASD: Move | [1-7] or [E]: Trigger Station | F1: Tree | F3: Pause | F4: Step 1F | F5: Step 10F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
     }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
@@ -749,10 +1019,14 @@ showcase_render :: proc(w: ^Showcase_World) {
         if w.sched.is_paused {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
         }
-        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY & STACK PROFILER (F1) %s", pause_header), overlay_x + 15, overlay_y + 12, 15, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
-        rl.DrawLine(overlay_x + 10, overlay_y + 35, overlay_x + overlay_w - 10, overlay_y + 35, {60, 80, 120, 255})
+        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY & STACK PROFILER (F1) %s", pause_header), overlay_x + 15, overlay_y + 12, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
 
-        tree_y := overlay_y + 45
+        stats_line := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
+        rl.DrawText(stats_line, overlay_x + 15, overlay_y + 28, 11, rl.SKYBLUE)
+
+        rl.DrawLine(overlay_x + 10, overlay_y + 44, overlay_x + overlay_w - 10, overlay_y + 44, {60, 80, 120, 255})
+
+        tree_y := overlay_y + 54
 
         draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
             if f == nil || cur_y^ > max_y do return

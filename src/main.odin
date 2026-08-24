@@ -397,6 +397,7 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 game_init :: proc(g: ^Game) {
     coroutine.scheduler_init(&g.sched)
+    coroutine.scheduler_prewarm(&g.sched, 64)
 
     g.player = Player{
         pos           = {f32(SCREEN_WIDTH) / 2.0, f32(SCREEN_HEIGHT) - 100.0},
@@ -772,9 +773,14 @@ game_render :: proc(g: ^Game) {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", g.step_count, g.game_time)
         }
         rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (F1) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
-        rl.DrawLine(panel_x + 10, panel_y + 35, panel_x + panel_w - 10, panel_y + 35, {60, 80, 120, 255})
 
-        tree_y := panel_y + 45
+        stats := coroutine.scheduler_pool_stats(&g.sched)
+        stats_text := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
+        rl.DrawText(stats_text, panel_x + 15, panel_y + 32, 11, rl.SKYBLUE)
+
+        rl.DrawLine(panel_x + 10, panel_y + 48, panel_x + panel_w - 10, panel_y + 48, {60, 80, 120, 255})
+
+        tree_y := panel_y + 58
 
         draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
             if f == nil || cur_y^ > max_y do return

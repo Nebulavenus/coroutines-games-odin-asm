@@ -93,3 +93,50 @@ Modern games often offload heavy compute (A* pathfinding, mesh generation, asset
 - Event broadcast primitive (`signal_wait`, `signal_emit`).
 - Allows multiple fibers to suspend awaiting a named event (e.g. `on_boss_enrage`, `on_alarm_tripped`).
 - `signal_emit(&sig)` wakes all listening fibers simultaneously in a single frame.
+
+---
+
+## 5. Typed Multicast Events (`Event(T)`)
+
+While `Signal` broadcasts void notifications (0 data), `Event(T)` provides 1-to-many typed publish-subscribe broadcasts:
+
+```odin
+Event :: struct($T: typeid) {
+    waiters:   [dynamic]^Fiber,
+    allocator: mem.Allocator,
+}
+```
+
+- `event_wait(f, &ev)`: Suspends fiber and registers it in `ev.waiters`.
+- `event_emit(sched, &ev, payload)`: Delivers a copy of `payload` to all active listeners and queues them for execution on the next frame. Zero CPU polling.
+
+---
+
+## 6. Counting Semaphores & Countdown Latches
+
+### `Fiber_Semaphore` (Counting Semaphore)
+- Generalizes mutual exclusion to up to $N$ concurrent permits.
+- Ideal for concurrency limits (e.g. max 3 concurrent pathfinding queries, max 2 concurrent audio streams).
+- `semaphore_acquire`: Suspends if available permits are 0.
+- `semaphore_release`: Increments permits and wakes queued fibers in FIFO order.
+- `semaphore_try_acquire`: Non-blocking permit check.
+
+### `Fiber_Latch` (Countdown Rendezvous Barrier)
+- Synchronization barrier initialized with count $N$.
+- Multiple fibers can wait with `latch_wait(f, &latch)`.
+- Other systems decrement the barrier with `latch_count_down(sched, &latch, count)`.
+- When the count reaches 0, all waiting fibers are unblocked simultaneously.
+
+---
+
+## 7. Dynamic Task Joining (`fiber_join`)
+
+Allows any fiber to await the termination of an independent fiber handle:
+
+```odin
+ok := coroutine.fiber_join(f, target_handle)
+```
+
+- If target fiber is already completed/recycled, returns immediately.
+- Suspends calling fiber until target terminates. Returns `true` if target completed with `.Completed`, and `false` if target was aborted or failed.
+

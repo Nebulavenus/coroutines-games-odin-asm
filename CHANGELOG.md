@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Pure Concurrency Primitives & Telemetry] - 2026-08-24
+
+### Added
+- **Dynamic Task Joining (`fiber_join(f, handle)`)**:
+  - Allows fibers to await the completion of independent fiber handles across different scopes or root tasks.
+  - Returns `true` if target completed with `.Completed`, and `false` if aborted/failed.
+- **Typed Multicast Event (`Event(T)`)**:
+  - 1-to-Many publish-subscribe synchronization primitive (`event_init`, `event_destroy`, `event_wait`, `event_emit`, `event_waiter_count`, `event_has_waiters`).
+  - Zero polling; delivers typed payloads to all active listeners in a single broadcast frame.
+- **Counting Semaphore (`Fiber_Semaphore`)**:
+  - Cooperative Dijkstra counting semaphore allowing up to $N$ concurrent permits (`semaphore_init`, `semaphore_destroy`, `semaphore_try_acquire`, `semaphore_acquire`, `semaphore_release`, `semaphore_available_permits`).
+- **Countdown Latch / Barrier (`Fiber_Latch`)**:
+  - Rendezvous barrier unblocking waiting fibers once counted down $N$ times (`latch_init`, `latch_destroy`, `latch_count_down`, `latch_wait`, `latch_get_count`, `latch_is_ready`).
+- **Loading-Screen Memory Pre-Warming (`scheduler_prewarm` / `fiber_pool_prewarm`)**:
+  - Allows games to pre-allocate slabs during level loads to eliminate runtime frame hitches.
+- **Handle Introspection & Memory Telemetry (`fiber_is_alive`, `fiber_status`, `Pool_Stats`)**:
+  - Safe handle querying via circular `handle_history` and real-time pool memory statistics (`scheduler_pool_stats`).
+- **RTS Unit Action Queue Recipe (`COOKBOOK.md`)**:
+  - Added Recipe 9 demonstrating unit command queuing with `Fiber_Scope` and preemption.
+- **Unit Tests 71–81 (`src/coroutine/coroutine_test.odin`)**:
+  - 11 new tests covering task join, multicast events, counting semaphores, countdown latches, pool pre-warming, and handle introspection. 81 / 81 unit tests passing (100%).
+
 ## [Documentation Suite, Technical Deep-Dives & Tutorials] - 2026-08-24
 
 ### Added

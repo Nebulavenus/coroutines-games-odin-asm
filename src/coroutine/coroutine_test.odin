@@ -2841,3 +2841,379 @@ test_multi_clock_heap_integrity :: proc(t: ^testing.T) {
     testing.expect_value(t, len(sched.timer_heap), 0)
     testing.expect_value(t, len(sched.tick_waiters), 0)
 }
+
+// ============================================================================
+// Test 71: Dynamic Task Joining (fiber_join on normal completion)
+// ============================================================================
+
+@(test)
+test_fiber_join_normal_completion :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    target_done := false
+    joiner_success := false
+
+    target_handle := spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.05)
+        done^ = true
+    }, &target_done)
+
+    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
+        h := (cast(^Fiber_Handle)args[0])^
+        s := cast(^bool)args[1]
+        ok := fiber_join(f, h)
+        if ok do s^ = true
+    }, &[2]rawptr{&target_handle, &joiner_success})
+
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, target_done)
+    testing.expect(t, joiner_success)
+}
+
+// ============================================================================
+// Test 72: Dynamic Task Joining (fiber_join on cancelled target)
+// ============================================================================
+
+@(test)
+test_fiber_join_cancelled_target :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    join_result := true
+
+    target_handle := spawn(&sched, proc(f: ^Fiber) {
+        for {
+            yield_frame(f)
+        }
+    })
+
+    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
+        h := (cast(^Fiber_Handle)args[0])^
+        res := cast(^bool)args[1]
+        res^ = fiber_join(f, h)
+    }, &[2]rawptr{&target_handle, &join_result})
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, fiber_is_alive(&sched, target_handle))
+
+    // Abort target
+    fiber_cancel(&sched, target_handle)
+
+    // Step scheduler
+    for _ in 0 ..< 3 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, !fiber_is_alive(&sched, target_handle))
+    testing.expect_value(t, join_result, false)
+}
+
+// ============================================================================
+// Test 73: Dynamic Task Joining (fiber_join on already completed fiber)
+// ============================================================================
+
+@(test)
+test_fiber_join_already_finished :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    target_handle := spawn(&sched, proc(f: ^Fiber) {
+        // Finishes immediately
+    })
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !fiber_is_alive(&sched, target_handle))
+
+    joiner_done := false
+    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
+        h := (cast(^Fiber_Handle)args[0])^
+        done := cast(^bool)args[1]
+        ok := fiber_join(f, h)
+        if ok do done^ = true
+    }, &[2]rawptr{&target_handle, &joiner_done})
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, joiner_done)
+}
+
+// ============================================================================
+// Test 74: Typed Multicast Event (Event(T) 1-to-many publish-subscribe)
+// ============================================================================
+
+@(test)
+test_event_typed_multicast :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ev: Event(string)
+    event_init(&ev)
+    defer event_destroy(&ev)
+
+    received: [3]string
+
+    for i in 0 ..< 3 {
+        Test_Listener :: struct {
+            ev:  ^Event(string),
+            dst: ^string,
+        }
+        listener_data := Test_Listener{ev = &ev, dst = &received[i]}
+        spawn_val(&sched, proc(f: ^Fiber, data: Test_Listener) {
+            msg, ok := event_wait(f, data.ev)
+            if ok do data.dst^ = msg
+        }, listener_data)
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, event_waiter_count(&ev), 3)
+    testing.expect(t, event_has_waiters(&ev))
+
+    // Broadcast message to all 3 listeners
+    event_emit(&sched, &ev, "Multicast Payload 100")
+
+    scheduler_step(&sched, 0.01)
+
+    for i in 0 ..< 3 {
+        testing.expect_value(t, received[i], "Multicast Payload 100")
+    }
+    testing.expect_value(t, event_waiter_count(&ev), 0)
+}
+
+// ============================================================================
+// Test 75: Typed Multicast Event (Empty emit safety)
+// ============================================================================
+
+@(test)
+test_event_empty_emit :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ev: Event(int)
+    event_init(&ev)
+    defer event_destroy(&ev)
+
+    // Emit with 0 listeners should not crash
+    event_emit(&sched, &ev, 999)
+    testing.expect_value(t, event_waiter_count(&ev), 0)
+    testing.expect(t, !event_has_waiters(&ev))
+}
+
+// ============================================================================
+// Test 76: Counting Semaphore (Concurrency permit limiter)
+// ============================================================================
+
+@(test)
+test_fiber_semaphore_concurrency_limit :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, initial_permits = 2, max_permits = 2)
+    defer semaphore_destroy(&sem)
+
+    active_count := 0
+    max_observed := 0
+    total_completed := 0
+
+    Sem_Worker :: struct {
+        sem:             ^Fiber_Semaphore,
+        active:          ^int,
+        max_obs:         ^int,
+        total_comp:      ^int,
+    }
+
+    worker_data := Sem_Worker{
+        sem        = &sem,
+        active     = &active_count,
+        max_obs    = &max_observed,
+        total_comp = &total_completed,
+    }
+
+    for _ in 0 ..< 6 {
+        spawn_val(&sched, proc(f: ^Fiber, data: Sem_Worker) {
+            semaphore_acquire(f, data.sem)
+            data.active^ += 1
+            if data.active^ > data.max_obs^ {
+                data.max_obs^ = data.active^
+            }
+
+            wait(f, 0.02)
+
+            data.active^ -= 1
+            semaphore_release(f.sched, data.sem)
+            data.total_comp^ += 1
+        }, worker_data)
+    }
+
+    for _ in 0 ..< 15 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, total_completed, 6)
+    testing.expect_value(t, max_observed, 2)
+    testing.expect_value(t, semaphore_available_permits(&sem), 2)
+}
+
+// ============================================================================
+// Test 77: Counting Semaphore (try_acquire non-blocking)
+// ============================================================================
+
+@(test)
+test_fiber_semaphore_try_acquire :: proc(t: ^testing.T) {
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, initial_permits = 1, max_permits = 1)
+    defer semaphore_destroy(&sem)
+
+    testing.expect(t, semaphore_try_acquire(&sem))
+    testing.expect_value(t, semaphore_available_permits(&sem), 0)
+    testing.expect(t, !semaphore_try_acquire(&sem)) // Depleted
+
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    semaphore_release(&sched, &sem)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+    testing.expect(t, semaphore_try_acquire(&sem))
+}
+
+// ============================================================================
+// Test 78: Countdown Latch / Barrier (Fiber_Latch)
+// ============================================================================
+
+@(test)
+test_fiber_latch_barrier :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    latch: Fiber_Latch
+    latch_init(&latch, initial_count = 3)
+    defer latch_destroy(&latch)
+
+    waiter_1_done := false
+    waiter_2_done := false
+
+    Latch_Waiter :: struct {
+        latch: ^Fiber_Latch,
+        done:  ^bool,
+    }
+
+    spawn_val(&sched, proc(f: ^Fiber, data: Latch_Waiter) {
+        latch_wait(f, data.latch)
+        data.done^ = true
+    }, Latch_Waiter{&latch, &waiter_1_done})
+
+    spawn_val(&sched, proc(f: ^Fiber, data: Latch_Waiter) {
+        latch_wait(f, data.latch)
+        data.done^ = true
+    }, Latch_Waiter{&latch, &waiter_2_done})
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !waiter_1_done)
+    testing.expect(t, !waiter_2_done)
+    testing.expect_value(t, latch_get_count(&latch), 3)
+    testing.expect(t, !latch_is_ready(&latch))
+
+    // Count down 2
+    latch_count_down(&sched, &latch, 2)
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !waiter_1_done)
+    testing.expect_value(t, latch_get_count(&latch), 1)
+
+    // Final count down -> 0 (unblocks both waiters)
+    latch_count_down(&sched, &latch, 1)
+    testing.expect(t, latch_is_ready(&latch))
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, waiter_1_done)
+    testing.expect(t, waiter_2_done)
+}
+
+// ============================================================================
+// Test 79: Pool Pre-Warming (scheduler_prewarm / fiber_pool_prewarm)
+// ============================================================================
+
+@(test)
+test_scheduler_prewarm :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    testing.expect_value(t, len(sched.fiber_pool.all_fibers), 0)
+
+    // Pre-warm to 80 fibers (allocates 3 slabs: 32 * 3 = 96 stacks)
+    scheduler_prewarm(&sched, 80)
+    testing.expect(t, len(sched.fiber_pool.all_fibers) >= 80)
+    testing.expect(t, len(sched.fiber_pool.free_fibers) >= 80)
+}
+
+// ============================================================================
+// Test 80: Handle Introspection & Telemetry (fiber_is_alive & fiber_status)
+// ============================================================================
+
+@(test)
+test_handle_introspection_and_status :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    handle := spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 0.05)
+    })
+
+    testing.expect(t, fiber_is_alive(&sched, handle))
+    status, ok := fiber_status(&sched, handle)
+    testing.expect(t, ok)
+    testing.expect(t, status == .Ready)
+
+    scheduler_step(&sched, 0.01)
+    status, ok = fiber_status(&sched, handle)
+    testing.expect(t, ok)
+    testing.expect(t, status == .Sleeping_Time)
+
+    // Advance time until finish
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, !fiber_is_alive(&sched, handle))
+}
+
+// ============================================================================
+// Test 81: Memory Telemetry & Statistics (scheduler_pool_stats)
+// ============================================================================
+
+@(test)
+test_scheduler_pool_stats :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.total_stacks, 0)
+    testing.expect_value(t, stats.active_fibers, 0)
+    testing.expect_value(t, stats.free_fibers, 0)
+    testing.expect_value(t, stats.slabs_count, 0)
+
+    // Spawn 3 active fibers (allocates first slab)
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) })
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) })
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 1.0) })
+
+    stats = scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.total_stacks, 32)
+    testing.expect_value(t, stats.active_fibers, 3)
+    testing.expect_value(t, stats.free_fibers, 29)
+    testing.expect_value(t, stats.slabs_count, 1)
+    testing.expect(t, stats.total_memory_kb > 0)
+}

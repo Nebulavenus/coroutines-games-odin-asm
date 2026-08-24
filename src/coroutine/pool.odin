@@ -180,6 +180,11 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     pool.next_handle_id += 1
     if pool.next_handle_id == 0 do pool.next_handle_id = 1 // Avoid 0
 
+    pool.handle_history[fiber.handle % 256] = Handle_Entry{
+        handle = fiber.handle,
+        status = .Ready,
+    }
+
     // Reset fields
     fiber.status = .Ready
     fiber.parent = nil
@@ -247,6 +252,29 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.scope = nil
 
     append(&pool.free_fibers, fiber)
+}
+
+fiber_pool_prewarm :: proc(pool: ^Fiber_Pool, fiber_count: int, allocator := context.allocator) {
+    for len(pool.all_fibers) < fiber_count {
+        fiber_pool_grow(pool, allocator)
+    }
+}
+
+fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
+    total := len(pool.all_fibers)
+    free_count := len(pool.free_fibers)
+    active := total - free_count
+    slabs := len(pool.slabs)
+    slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(slabs)
+
+    return Pool_Stats{
+        total_stacks     = total,
+        active_fibers    = active,
+        free_fibers      = free_count,
+        slabs_count      = slabs,
+        stack_size_bytes = pool.stack_size,
+        total_memory_kb  = slab_bytes / 1024,
+    }
 }
 
 // ============================================================================

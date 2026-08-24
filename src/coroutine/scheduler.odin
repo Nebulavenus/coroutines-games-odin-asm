@@ -598,7 +598,12 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
         fiber.scope = nil
     }
 
-    // 4. Return to pool
+    // 4. Record status in history before recycling
+    if fiber.handle != 0 {
+        sched.fiber_pool.handle_history[fiber.handle % 256].status = fiber.status
+    }
+
+    // 5. Return to pool
     fiber_pool_recycle(&sched.fiber_pool, fiber)
 }
 
@@ -741,4 +746,14 @@ scheduler_sim_ticks :: #force_inline proc(sched: ^Scheduler) -> u64 {
 
 scheduler_frame_count :: #force_inline proc(sched: ^Scheduler) -> u64 {
     return sched != nil ? sched.clock.frame_count : 0
+}
+
+scheduler_prewarm :: proc(sched: ^Scheduler, fiber_count: int, allocator := context.allocator) {
+    if sched == nil do return
+    fiber_pool_prewarm(&sched.fiber_pool, fiber_count, allocator)
+}
+
+scheduler_pool_stats :: proc(sched: ^Scheduler) -> Pool_Stats {
+    if sched == nil do return {}
+    return fiber_pool_stats(&sched.fiber_pool)
 }

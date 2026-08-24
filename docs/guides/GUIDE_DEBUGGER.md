@@ -9,7 +9,8 @@ The engine includes a visual in-game fiber hierarchy debugger and an interactive
 Pressing `[F1]` or `[TAB]` in the interactive examples overlays the real-time coroutine hierarchy:
 
 ```
-=== ACTIVE COROUTINE HIERARCHY TREE ===
+=== ACTIVE COROUTINE HIERARCHY TREE (F1) ===
+Pool: 2 Slabs | Stacks: 64 | Active: 5 | Free: 59 | Memory: 2048 KB
 ├─ [Fiber 1] Root: Boss AI Timeline (Running)
 │  ├─ [Fiber 2] sync: Laser Charge (Sleeping_Sim: 0.42s remaining) [Stack: 1.8KB / 32KB] (5.6%)
 │  ├─ [Fiber 3] sync: Radial Spreader (Sleeping_Sim: 0.12s remaining) [Stack: 2.1KB / 32KB] (6.5%)
@@ -21,6 +22,7 @@ Pressing `[F1]` or `[TAB]` in the interactive examples overlays the real-time co
 
 | Telemetry Field | Display Example | Description |
 | :--- | :--- | :--- |
+| **Pool Memory Line** | `Pool: 2 Slabs \| Stacks: 64` | Live `scheduler_pool_stats` metrics (Slabs, Stacks, Active, Free, Memory KB) |
 | **Fiber ID & Tree Depth** | `├─ [Fiber 2]` | Intrusive hierarchy depth based on parent-child links |
 | **Branch Role / Tag** | `sync: Laser Charge` | Debug label passed to `branch` or `spawn` |
 | **Lifecycle State** | `(Sleeping_Sim)` | Current status: `Running`, `Ready`, `Sleeping_Sim`, `Sleeping_Real`, `Sleeping_Ticks`, `Suspended_Join` |

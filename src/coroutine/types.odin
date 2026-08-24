@@ -169,6 +169,41 @@ Fiber_Mutex :: struct {
     waiters: [dynamic]^Fiber,
 }
 
+// --- 1-to-Many Typed Multicast Event ---
+
+Event :: struct($T: typeid) {
+    waiters:   [dynamic]^Fiber,
+    allocator: mem.Allocator,
+}
+
+// --- Counting Semaphore (Up to N Concurrent Permits) ---
+
+Fiber_Semaphore :: struct {
+    permits:     int,
+    max_permits: int,
+    waiters:     [dynamic]^Fiber,
+    allocator:   mem.Allocator,
+}
+
+// --- Countdown Latch / Barrier ---
+
+Fiber_Latch :: struct {
+    count:     int,
+    waiters:   [dynamic]^Fiber,
+    allocator: mem.Allocator,
+}
+
+// --- Pool Memory Telemetry ---
+
+Pool_Stats :: struct {
+    total_stacks:     int,
+    active_fibers:    int,
+    free_fibers:      int,
+    slabs_count:      int,
+    stack_size_bytes: uint,
+    total_memory_kb:  uint,
+}
+
 // --- Async Job Bridge ---
 
 Async_State :: enum u8 {
@@ -224,6 +259,11 @@ Fiber_Pool_Config :: struct {
     allocator:       mem.Allocator,
 }
 
+Handle_Entry :: struct {
+    handle: Fiber_Handle,
+    status: Fiber_Status,
+}
+
 Fiber_Pool :: struct {
     stack_size:      uint,
     stacks_per_slab: int,
@@ -232,6 +272,7 @@ Fiber_Pool :: struct {
     free_fibers:     [dynamic]^Fiber,
     all_fibers:      [dynamic]^Fiber,
     next_handle_id:  u32,
+    handle_history:  [256]Handle_Entry,
 }
 
 // ============================================================================

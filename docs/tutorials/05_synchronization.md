@@ -159,5 +159,99 @@ main :: proc() {
 
 ---
 
+## 4. 1-to-Many Typed Multicast with `Event(T)`
+
+While `Signal` broadcasts empty notifications, `Event(T)` delivers a typed payload to all active listening fibers in a single broadcast:
+
+```odin
+Player_Death :: struct {
+    victim:    string,
+    killer_id: int,
+}
+
+death_event: coroutine.Event(Player_Death)
+coroutine.event_init(&death_event)
+defer coroutine.event_destroy(&death_event)
+
+// UI Audio Fiber
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_Death)) {
+    info, ok := coroutine.event_wait(f, ev)
+    if ok do fmt.printf("[Audio] Playing death sting for %s killed by #%d!\n", info.victim, info.killer_id)
+}, &death_event)
+
+// Scoreboard Fiber
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_Death)) {
+    info, ok := coroutine.event_wait(f, ev)
+    if ok do fmt.printf("[Scoreboard] Incrementing kill count for killer #%d!\n", info.killer_id)
+}, &death_event)
+
+// Broadcasts to ALL listening fibers in 1 tick:
+coroutine.event_emit(&sched, &death_event, Player_Death{"Knight", 42})
+```
+
+---
+
+## 5. Limiting Concurrency with `Fiber_Semaphore`
+
+When you want to allow up to $N$ fibers to concurrently access a shared pool (e.g. max 2 concurrent audio voices or max 3 simultaneous A* searches):
+
+```odin
+pathfinding_sem: coroutine.Fiber_Semaphore
+coroutine.semaphore_init(&pathfinding_sem, initial_permits = 3, max_permits = 3)
+defer coroutine.semaphore_destroy(&pathfinding_sem)
+
+ai_pathfind_task :: proc(f: ^coroutine.Fiber, sem: ^coroutine.Fiber_Semaphore) {
+    coroutine.semaphore_acquire(f, sem) // Suspends if all 3 permits are in use
+    defer coroutine.semaphore_release(f.sched, sem)
+
+    // Compute heavy path...
+    coroutine.wait(f, 0.2)
+}
+```
+
+---
+
+## 6. Multi-Subsystem Rendezvous with `Fiber_Latch`
+
+A `Fiber_Latch` acts as a countdown barrier initialized with count $N$. Waiting fibers block until $N$ subsystems have called `latch_count_down`:
+
+```odin
+loading_latch: coroutine.Fiber_Latch
+coroutine.latch_init(&loading_latch, initial_count = 3) // Wait for 3 systems
+defer coroutine.latch_destroy(&loading_latch)
+
+// Game Manager Fiber:
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, latch: ^coroutine.Fiber_Latch) {
+    fmt.Println("Waiting for Level, Textures, and Audio to finish loading...")
+    coroutine.latch_wait(f, latch)
+    fmt.Println("All 3 subsystems ready! Starting gameplay!")
+}, &loading_latch)
+
+// Subsystems report completion:
+coroutine.latch_count_down(&sched, &loading_latch) // Loaded Level
+coroutine.latch_count_down(&sched, &loading_latch) // Loaded Textures
+coroutine.latch_count_down(&sched, &loading_latch) // Loaded Audio -> Unblocks Game Manager!
+```
+
+---
+
+## 7. Dynamic Task Joining with `fiber_join`
+
+Wait for any independent fiber handle to finish, fail, or be cancelled:
+
+```odin
+boss_cutscene_handle := coroutine.spawn(&sched, cinematic_intro_proc)
+
+// Player controller waits for cutscene to finish:
+coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cutscene: coroutine.Fiber_Handle) {
+    ok := coroutine.fiber_join(f, cutscene)
+    if ok {
+        fmt.println("Cutscene completed! Enabling player controls!")
+    }
+}, boss_cutscene_handle)
+```
+
+---
+
 ## Next Steps
 In [Tutorial 6: Offloading Heavy Compute](06_async_background_jobs.md), you will learn how to bridge OS background worker threads to coroutines with `await_async`.

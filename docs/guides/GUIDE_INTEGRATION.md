@@ -42,6 +42,7 @@ main :: proc() {
     // 3. Initialize Coroutine Engine
     world: Game_World
     coroutine.scheduler_init(&world.sched)
+    coroutine.scheduler_prewarm(&world.sched, 64) // Pre-allocate slabs during boot
     defer coroutine.scheduler_destroy(&world.sched)
 
     // 4. Spawn Background World Timelines

@@ -232,6 +232,55 @@ scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
     }, scope)
 }
 
+fiber_is_alive :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
+    if sched == nil || handle == 0 do return false
+    for f in sched.fiber_pool.all_fibers {
+        if f.handle == handle && f.status != .Unused {
+            return f.status != .Completed && f.status != .Aborted && f.status != .Failed
+        }
+    }
+    return false
+}
+
+fiber_status :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
+    if sched == nil || handle == 0 do return .Completed, false
+    // 1. Check active fibers
+    for f in sched.fiber_pool.all_fibers {
+        if f.handle == handle && f.status != .Unused {
+            return f.status, true
+        }
+    }
+    // 2. Check historical record
+    entry := sched.fiber_pool.handle_history[handle % 256]
+    if entry.handle == handle {
+        return entry.status, true
+    }
+    return .Completed, false
+}
+
+fiber_join :: proc(f: ^Fiber, target_handle: Fiber_Handle) -> (ok: bool) {
+    if f == nil || f.sched == nil || target_handle == 0 do return false
+
+    // If target is already dead/finished
+    if !fiber_is_alive(f.sched, target_handle) {
+        status, found := fiber_status(f.sched, target_handle)
+        return found ? (status == .Completed) : true
+    }
+
+    Join_Data :: struct {
+        sched:  ^Scheduler,
+        handle: Fiber_Handle,
+    }
+    data := Join_Data{sched = f.sched, handle = target_handle}
+
+    wait_until_val(f, proc(d: Join_Data) -> bool {
+        return !fiber_is_alive(d.sched, d.handle)
+    }, data)
+
+    status, found := fiber_status(f.sched, target_handle)
+    return found ? (status == .Completed) : true
+}
+
 wait_ptr :: proc(f: ^Fiber, seconds_ptr: ^f32) {
     if seconds_ptr == nil {
         yield_frame(f)
@@ -935,6 +984,164 @@ mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     } else {
         m.locked = false
     }
+}
+
+// ============================================================================
+// Event(T) (1-to-Many Typed Multicast Broadcast)
+// ============================================================================
+
+event_init :: proc(ev: ^Event($T), allocator := context.allocator) {
+    ev.waiters = make([dynamic]^Fiber, allocator)
+    ev.allocator = allocator
+}
+
+event_destroy :: proc(ev: ^Event($T)) {
+    delete(ev.waiters)
+}
+
+event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
+    if f == nil || ev == nil || f.sched == nil do return {}, false
+
+    append(&ev.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+
+    if size_of(T) <= FIBER_PAYLOAD_SIZE {
+        payload = (cast(^T)&f.payload_storage[0])^
+        return payload, true
+    }
+    return {}, true
+}
+
+event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
+    if sched == nil || ev == nil do return
+
+    for f in ev.waiters {
+        if f.status == .Suspended_Join {
+            if size_of(T) <= FIBER_PAYLOAD_SIZE {
+                (cast(^T)&f.payload_storage[0])^ = payload
+            }
+            f.status = .Ready
+            append(&sched.ready_queue, f)
+        }
+    }
+    clear(&ev.waiters)
+}
+
+event_waiter_count :: #force_inline proc(ev: ^Event($T)) -> int {
+    return ev != nil ? len(ev.waiters) : 0
+}
+
+event_has_waiters :: #force_inline proc(ev: ^Event($T)) -> bool {
+    return ev != nil && len(ev.waiters) > 0
+}
+
+// ============================================================================
+// Fiber Semaphore (Counting Semaphore with Up to N Concurrent Permits)
+// ============================================================================
+
+semaphore_init :: proc(sem: ^Fiber_Semaphore, initial_permits: int, max_permits: int = -1, allocator := context.allocator) {
+    sem.permits = initial_permits
+    sem.max_permits = max_permits > 0 ? max_permits : initial_permits
+    sem.waiters = make([dynamic]^Fiber, allocator)
+    sem.allocator = allocator
+}
+
+semaphore_destroy :: proc(sem: ^Fiber_Semaphore) {
+    delete(sem.waiters)
+}
+
+semaphore_try_acquire :: proc(sem: ^Fiber_Semaphore) -> bool {
+    if sem == nil do return false
+    if sem.permits > 0 {
+        sem.permits -= 1
+        return true
+    }
+    return false
+}
+
+semaphore_acquire :: proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
+    if f == nil || sem == nil || f.sched == nil do return
+
+    if sem.permits > 0 {
+        sem.permits -= 1
+        return
+    }
+
+    append(&sem.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int = 1) {
+    if sched == nil || sem == nil do return
+
+    sem.permits = min(sem.permits + count, sem.max_permits)
+
+    for sem.permits > 0 && len(sem.waiters) > 0 {
+        next_fiber := pop_front(&sem.waiters)
+        if next_fiber.status == .Suspended_Join {
+            sem.permits -= 1
+            next_fiber.status = .Ready
+            append(&sched.ready_queue, next_fiber)
+        }
+    }
+}
+
+semaphore_available_permits :: #force_inline proc(sem: ^Fiber_Semaphore) -> int {
+    return sem != nil ? sem.permits : 0
+}
+
+// ============================================================================
+// Fiber Latch (Countdown Rendezvous Barrier)
+// ============================================================================
+
+latch_init :: proc(latch: ^Fiber_Latch, initial_count: int, allocator := context.allocator) {
+    latch.count = initial_count
+    latch.waiters = make([dynamic]^Fiber, allocator)
+    latch.allocator = allocator
+}
+
+latch_destroy :: proc(latch: ^Fiber_Latch) {
+    delete(latch.waiters)
+}
+
+latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
+    if sched == nil || latch == nil do return
+
+    latch.count = max(0, latch.count - n)
+    if latch.count == 0 {
+        for f in latch.waiters {
+            if f.status == .Suspended_Join {
+                f.status = .Ready
+                append(&sched.ready_queue, f)
+            }
+        }
+        clear(&latch.waiters)
+    }
+}
+
+latch_wait :: proc(f: ^Fiber, latch: ^Fiber_Latch) {
+    if f == nil || latch == nil || f.sched == nil do return
+    if latch.count <= 0 do return
+
+    append(&latch.waiters, f)
+    f.status = .Suspended_Join
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
+latch_get_count :: #force_inline proc(latch: ^Fiber_Latch) -> int {
+    return latch != nil ? latch.count : 0
+}
+
+latch_is_ready :: #force_inline proc(latch: ^Fiber_Latch) -> bool {
+    return latch != nil && latch.count <= 0
 }
 
 // ============================================================================
