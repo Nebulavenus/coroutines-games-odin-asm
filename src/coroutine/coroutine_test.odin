@@ -5214,3 +5214,264 @@ test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     testing.expect(t, !sent)
     testing.expect_value(t, len(ch.recv_waiters), 0)
 }
+
+// ============================================================================
+// Test 127: By-Value Scoped Mutex (with_mutex_val)
+// ============================================================================
+
+@(test)
+test_with_mutex_val :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    Value_Payload :: struct {
+        m:     ^Fiber_Mutex,
+        tag:   int,
+        delta: f32,
+    }
+
+    spawn_val(&sched, proc(f: ^Fiber, p: Value_Payload) {
+        with_mutex(f, p.m, proc(f: ^Fiber, val: Value_Payload) {
+            wait(f, 0.02)
+        }, p)
+    }, Value_Payload{m = &m, tag = 10, delta = 5.5})
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, m.locked)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect(t, !m.locked)
+}
+
+// ============================================================================
+// Test 128: By-Value Scoped Semaphore (with_semaphore_val)
+// ============================================================================
+
+@(test)
+test_with_semaphore_val :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, 2, 2)
+    defer semaphore_destroy(&sem)
+
+    Value_Payload :: struct {
+        sem: ^Fiber_Semaphore,
+        id:  int,
+    }
+
+    // Spawn 2 fibers using with_semaphore_val
+    for i in 0 ..< 2 {
+        spawn_val(&sched, proc(f: ^Fiber, p: Value_Payload) {
+            with_semaphore(f, p.sem, proc(f: ^Fiber, val: Value_Payload) {
+                wait(f, 0.02)
+            }, p)
+        }, Value_Payload{sem = &sem, id = i})
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, semaphore_available_permits(&sem), 0)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect_value(t, semaphore_available_permits(&sem), 2)
+}
+
+// ============================================================================
+// Test 129: Zero-Polling Event-Driven Multi-Channel Select
+// ============================================================================
+
+@(test)
+test_event_driven_multi_channel_select :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch_a, ch_b, ch_c: Channel(int)
+    chan_init(&ch_a, 2)
+    chan_init(&ch_b, 2)
+    chan_init(&ch_c, 2)
+    defer {
+        chan_destroy(&ch_a)
+        chan_destroy(&ch_b)
+        chan_destroy(&ch_c)
+    }
+
+    channels := [3]^Channel(int){&ch_a, &ch_b, &ch_c}
+
+    Select_Result :: struct {
+        idx: int,
+        val: int,
+        ok:  bool,
+    }
+    res := Select_Result{idx = -1, val = 0, ok = false}
+
+    // Receiver fiber selects across all 3 channels (event-driven suspension)
+    spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { chs: []^Channel(int), r: ^Select_Result }) {
+        idx, val, ok_recv := chan_select_recv(f, p.chs)
+        p.r.idx = idx
+        p.r.val = val
+        p.r.ok = ok_recv
+    }, &struct { chs: []^Channel(int), r: ^Select_Result }{ channels[:], &res })
+
+    // Step 1: Fiber runs, registers on ch_a, ch_b, ch_c recv_waiters, and suspends
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !res.ok)
+    testing.expect_value(t, len(ch_a.recv_waiters), 1)
+    testing.expect_value(t, len(ch_b.recv_waiters), 1)
+    testing.expect_value(t, len(ch_c.recv_waiters), 1)
+
+    // Producer sends to ch_b
+    chan_try_send(&ch_b, 777)
+
+    // Step 2: Receiver wakes immediately on ch_b, cleans up registration on ch_a and ch_c
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, res.ok)
+    testing.expect_value(t, res.idx, 1)
+    testing.expect_value(t, res.val, 777)
+
+    // Verify unregistration from other channels
+    testing.expect_value(t, len(ch_a.recv_waiters), 0)
+    testing.expect_value(t, len(ch_b.recv_waiters), 0)
+    testing.expect_value(t, len(ch_c.recv_waiters), 0)
+}
+
+// ============================================================================
+// Test 130: Generic Hierarchy Tree Traversal (scheduler_walk_tree)
+// ============================================================================
+
+@(test)
+test_scheduler_walk_tree_traversal :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Spawn a root with 2 children via sync
+    spawn_nil(&sched, proc(f: ^Fiber) {
+        sync(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.05) }, name = "Child A"),
+            branch(proc(f: ^Fiber) { wait(f, 0.05) }, name = "Child B"),
+        )
+    }, name = "Root Fiber")
+
+    // Run 1 frame so children are spawned and attached to tree
+    scheduler_step(&sched, 0.01)
+
+    Tree_Record :: struct {
+        name:  string,
+        depth: int,
+    }
+    visited := make([dynamic]Tree_Record, context.temp_allocator)
+
+    scheduler_walk_tree(&sched, proc(f: ^Fiber, depth: int, user_data: rawptr) {
+        list := cast(^[dynamic]Tree_Record)user_data
+        name := f.debug_name != "" ? f.debug_name : "Fiber"
+        append(list, Tree_Record{name = name, depth = depth})
+    }, &visited)
+
+    // Root (depth 0), Child A (depth 1), Child B (depth 1)
+    testing.expect_value(t, len(visited), 3)
+    testing.expect_value(t, visited[0].name, "Root Fiber")
+    testing.expect_value(t, visited[0].depth, 0)
+    testing.expect_value(t, visited[1].name, "Child A")
+    testing.expect_value(t, visited[1].depth, 1)
+    testing.expect_value(t, visited[2].name, "Child B")
+    testing.expect_value(t, visited[2].depth, 1)
+}
+
+// ============================================================================
+// Test 131: Precision Drift-Compensated Ticker
+// ============================================================================
+
+@(test)
+test_precision_drift_compensated_ticker :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Ticker_Ctx :: struct {
+        ticks_completed: int,
+        final_sim_time:  f64,
+    }
+    ctx := Ticker_Ctx{ticks_completed = 0, final_sim_time = 0.0}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ticker_Ctx) {
+        ticker: Ticker
+        ticker_init(&ticker, interval_seconds = 0.05)
+
+        for _ in 0 ..< 5 {
+            ticker_wait(f, &ticker)
+            c.ticks_completed += 1
+        }
+        c.final_sim_time = f.sched.clock.sim_time
+    }, &ctx)
+
+    // Step by irregular delta-times (simulating variable frame drops)
+    for _ in 0 ..< 30 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, ctx.ticks_completed, 5)
+    // 5 ticks of 0.05s = exactly 0.25s (with <= 1 frame step tolerance)
+    testing.expect(t, ctx.final_sim_time >= 0.25 && ctx.final_sim_time <= 0.27)
+}
+
+// ============================================================================
+// Test 132: Cancel Token Task Wrapping (with_cancel_token)
+// ============================================================================
+
+@(test)
+test_with_cancel_token_interruption :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    task_completed := false
+    was_cancelled := false
+
+    Spawn_Ctx :: struct {
+        tok:       ^Cancel_Token,
+        completed: ^bool,
+        cancelled: ^bool,
+    }
+    ctx := Spawn_Ctx{tok = &tok, completed = &task_completed, cancelled = &was_cancelled}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
+        interrupted := with_cancel_token(f, c.tok, branch(proc(f: ^Fiber, comp: ^bool) {
+            wait(f, 0.10)
+            comp^ = true
+        }, c.completed, name = "Long Task"))
+
+        c.cancelled^ = interrupted
+    }, &ctx)
+
+    // Step 0.02s
+    for _ in 0 ..< 2 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect(t, !task_completed)
+    testing.expect(t, !was_cancelled)
+
+    // Trigger cancel token mid-task
+    cancel_token_cancel(&sched, &tok)
+
+    // Step to let race resolve
+    scheduler_step(&sched, 0.01)
+
+    testing.expect(t, was_cancelled)
+    testing.expect(t, !task_completed)
+}

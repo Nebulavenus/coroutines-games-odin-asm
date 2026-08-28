@@ -18,6 +18,10 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 11. [Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)](#recipe-11-decoupled-stage-transition-cancellation-token-cancel_token)
 12. [Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)](#recipe-12-category-mass-cancellation--emp-disruption-user_tag--scheduler_cancel_by_tag)
 13. [Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)](#recipe-13-channel-timeout--deadlock-free-message-polling-chan_recv_timeout)
+14. [Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`Ticker`)](#recipe-14-zero-drift-periodic-heartbeats--damage-over-time-ticker)
+15. [Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)](#recipe-15-deadlock-proof-scoped-mutex--semaphore-locks-with_mutex--with_semaphore)
+16. [Recipe 16: 1-Line Emergency Task Abort (`with_cancel_token`)](#recipe-16-1-line-emergency-task-abort-with_cancel_token)
+17. [Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)](#recipe-17-custom-in-engine-hierarchy-tree-debuggers-scheduler_walk_tree)
 
 > 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) for the 8 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
 
@@ -648,5 +652,131 @@ telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(Tele
 
         fmt.printf("[TELEMETRY] Node #%d ping: %.1f ms\n", packet.sender_id, packet.ping_ms)
     }
+}
+```
+
+---
+
+## Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`Ticker`)
+
+### Problem
+When executing periodic gameplay actions with naive `wait(f, interval)`, frame execution delays compound over time. A poison DoT intended to tick exactly once every 0.5s over 60 seconds may only tick 100 times instead of 120 due to cumulative delta-time drift.
+
+### Solution
+Use `coroutine.Ticker` with `ticker_init` and `ticker_wait`. The ticker tracks absolute target timestamps (`target_time += interval`), eliminating drift across long match sessions.
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+apply_poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
+    ticker: coroutine.Ticker
+    coroutine.ticker_init(&ticker, interval_seconds = 0.5)
+
+    // Exactly 10 ticks over 5.0 seconds with zero drift:
+    for _ in 0 ..< 10 {
+        coroutine.ticker_wait(f, &ticker)
+        enemy.hp -= 12.0
+        spawn_poison_vfx(enemy.pos)
+    }
+}
+```
+
+---
+
+## Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)
+
+### Problem
+Fibers acquiring cooperative mutexes or counting semaphores may fail to call `mutex_unlock` or `semaphore_release` if an early `return` or error branch is taken, causing permanent subsystem deadlocks.
+
+### Solution
+Use `coroutine.with_mutex` and `coroutine.with_semaphore` procedure groups. They guarantee defer unlock upon body completion or early exit.
+
+```odin
+package gameplay
+
+import "src/coroutine"
+
+Drone_Task :: struct {
+    pad_mutex: ^coroutine.Fiber_Mutex,
+    drone_id:  int,
+    pos:       [2]f32,
+}
+
+drone_recharge_fiber :: proc(f: ^coroutine.Fiber, task: ^Drone_Task) {
+    // Guarantees unlock on return or abort:
+    coroutine.with_mutex(f, task.pad_mutex, proc(f: ^coroutine.Fiber, t: ^Drone_Task) {
+        coroutine.tween_v2(f, &t.pos, t.pos, {400, 300}, 0.5)
+        coroutine.wait(f, 1.2) // Charge battery
+    }, task)
+}
+```
+
+---
+
+## Recipe 16: 1-Line Emergency Task Abort (`with_cancel_token`)
+
+### Problem
+An interactive player action (hacking a terminal, channeling a portal, reviving an ally) needs to be tied to a facility-wide alarm token or emergency kill switch in a single concise statement.
+
+### Solution
+Use `coroutine.with_cancel_token(f, &token, branch)`. It races the workload against the token's cancellation signal and returns `true` if interrupted.
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
+    interrupted := coroutine.with_cancel_token(f, &g_lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, t: ^Terminal) {
+        coroutine.tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
+        t.is_hacked = true
+    }, term, name = "Hack Workload"))
+
+    if interrupted {
+        fmt.println("Hacking aborted: Emergency lockdown active!")
+        term.hack_progress = 0.0
+    }
+}
+```
+
+---
+
+## Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)
+
+### Problem
+Developers building in-engine GUI visualizers (e.g. Raylib, Dear ImGui, Sokol) need to traverse the active coroutine tree without writing duplicate recursive boilerplate.
+
+### Solution
+Use `coroutine.scheduler_walk_tree` with a `coroutine.Fiber_Visitor` procedure:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "src/coroutine"
+
+Draw_Context :: struct {
+    start_y: i32,
+    row_h:   i32,
+}
+
+render_fiber_debugger_hud :: proc(sched: ^coroutine.Scheduler) {
+    ctx := Draw_Context{start_y = 40, row_h = 18}
+
+    coroutine.scheduler_walk_tree(sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+        c := cast(^Draw_Context)user_data
+        indent := depth * 16
+        used, total := coroutine.fiber_calc_stack_usage(f)
+
+        name := f.debug_name != "" ? f.debug_name : "Fiber"
+        text := fmt.tprintf("%*s[#%d] %s (%v) - %.1fKB/%.0fKB", indent, "", f.handle, name, f.status, f32(used)/1024.0, f32(total)/1024.0)
+
+        draw_hud_text(text, 20 + i32(indent), c.start_y)
+        c.start_y += c.row_h
+    }, &ctx)
 }
 ```

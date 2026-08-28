@@ -244,8 +244,11 @@ boss_patrol_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     angle_offset: f32 = 0.0
+    ticker: coroutine.Ticker
+    coroutine.ticker_init(&ticker, 0.25)
+
     for {
-        coroutine.wait(f, 0.25)
+        coroutine.ticker_wait(f, &ticker)
         if !b.alive do break
 
         bullets_count := 8
@@ -265,13 +268,15 @@ boss_targeted_burst_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         coroutine.wait(f, 1.8)
         if !b.alive do break
 
-        // Fire 3 targeted bursts towards player
+        // Fire 3 targeted bursts towards player using a precision zero-drift Ticker
+        burst_ticker: coroutine.Ticker
+        coroutine.ticker_init(&burst_ticker, 0.12)
         for _ in 0 ..< 3 {
+            coroutine.ticker_wait(f, &burst_ticker)
             dir := linalg.normalize(g_game.player.pos - b.pos)
             vel := dir * 420.0
             spawn_projectile(b.pos, vel, 9.0, rl.RED, true)
             spawn_particles(b.pos, 5, rl.RED)
-            coroutine.wait(f, 0.12)
         }
     }
 }
@@ -833,10 +838,18 @@ game_render :: proc(g: ^Game) {
 
         rl.DrawLine(panel_x + 10, panel_y + 48, panel_x + panel_w - 10, panel_y + 48, {60, 80, 120, 255})
 
-        tree_y := panel_y + 58
+        Tree_Draw_Ctx :: struct {
+            cur_y: i32,
+            max_y: i32,
+        }
+        draw_ctx := Tree_Draw_Ctx{
+            cur_y = panel_y + 58,
+            max_y = panel_y + panel_h - 25,
+        }
 
-        draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
-            if f == nil || cur_y^ > max_y do return
+        coroutine.scheduler_walk_tree(&g.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+            ctx := cast(^Tree_Draw_Ctx)user_data
+            if f == nil || ctx.cur_y > ctx.max_y do return
 
             indent := i32(depth * 18)
             name := f.debug_name != "" ? f.debug_name : "Fiber"
@@ -889,23 +902,9 @@ game_render :: proc(g: ^Game) {
 
             prefix := depth > 0 ? "├─ " : "▼ "
             row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct)
-            rl.DrawText(fmt.ctprintf("%s", row_text), 40 + indent, cur_y^, 12, status_col)
-            cur_y^ += 18
-
-            // Recursively draw children
-            child := f.first_child
-            for child != nil {
-                draw_fiber_node(child, depth + 1, cur_y, max_y)
-                child = child.next_sibling
-            }
-        }
-
-        // Draw from root fibers
-        for f in g.sched.fiber_pool.all_fibers {
-            if f.status != .Unused && f.parent == nil {
-                draw_fiber_node(f, 0, &tree_y, panel_y + panel_h - 25)
-            }
-        }
+            rl.DrawText(fmt.ctprintf("%s", row_text), 40 + indent, ctx.cur_y, 12, status_col)
+            ctx.cur_y += 18
+        }, &draw_ctx)
     }
 
     if g.game_over {

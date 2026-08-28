@@ -164,5 +164,38 @@ if success {
 
 ---
 
+## 4. 1-Line Cancellation with `with_cancel_token`
+
+Easily run any task while racing it against a cancellation token:
+
+```odin
+interrupted := coroutine.with_cancel_token(f, &g_lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, c: ^Chest) {
+    coroutine.wait(f, 3.0)
+    c.is_unlocked = true
+}, &chest, name = "Lockpicking"))
+
+if interrupted {
+    fmt.println("Lockpicking interrupted by emergency lockdown!")
+}
+```
+
+---
+
+## 5. Zero-Drift Loops with `Ticker`
+
+When running periodic actions, replace naive `wait()` loops with `Ticker` to eliminate cumulative floating-point drift:
+
+```odin
+ticker: coroutine.Ticker
+coroutine.ticker_init(&ticker, interval_seconds = 0.5)
+
+for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds
+    coroutine.ticker_wait(f, &ticker)
+    fmt.println("Heartbeat pulse!")
+}
+```
+
+---
+
 ## Next Steps
-In [Tutorial 5: Synchronization & Communication](05_synchronization.md), you will learn how to synchronize independent fibers using `Signal`, `Fiber_Mutex`, and `Channel(T)`.
+In [Tutorial 5: Synchronization & Communication](05_synchronization.md), you will learn how to synchronize independent fibers using `with_mutex`, `Fiber_Semaphore`, `Event(T)`, and `Channel(T)`.

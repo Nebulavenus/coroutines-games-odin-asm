@@ -241,6 +241,14 @@ Cancel_Token :: struct {
     allocator:    mem.Allocator,
 }
 
+// --- Zero-Drift Periodic Ticker ---
+
+Ticker :: struct {
+    interval:  f32,
+    next_wake: f64,
+    use_real:  bool,
+}
+
 // --- Stateful Pull Generators ---
 
 Generator :: struct($T: typeid) {
@@ -314,3 +322,6 @@ Scheduler :: struct {
     watchdog_enabled:      bool,
     watchdog_max_slice_ms: f64,
 }
+
+// Tree Traversal Visitor Callback
+Fiber_Visitor :: #type proc(f: ^Fiber, depth: int, user_data: rawptr)

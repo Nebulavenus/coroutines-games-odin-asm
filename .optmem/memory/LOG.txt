@@ -26,3 +26,7 @@
 #25 2026-08-24 Implemented pure primitives (fiber_join, Event(T), Fiber_Semaphore, Fiber_Latch), pool prewarming, telemetry, RTS Action Queue recipe, and 11 new tests (81 total tests passing)
 #26 2026-08-28 Cleaned obsolete aliases, legacy clock mirror fields, and stale debug comments across engine and examples
 #27 2026-08-28 Hardened sync primitives against stale aborted waiters, expanded handle history to 2048, unified branch spawning via fiber_setup_branches, and added with_mutex/with_semaphore scoped locks (126/126 tests passing).
+#28 2026-08-28 Implemented zero-polling event-driven chan_select_recv, with_mutex_val/with_semaphore_val by-value scoped locks, and scheduler_walk_tree generic diagnostics across all demos (130/130 tests passing).
+#29 2026-08-28 Implemented dynamic batch joining (fiber_join_all/fiber_join_any), zero-drift periodic Ticker, and with_cancel_token task wrapper (134/134 tests passing).
+#30 2026-08-28 Pruned redundant fiber_join_all/any to preserve strict structured concurrency; kept single fiber_join, zero-drift Ticker, and with_cancel_token (132/132 tests passing).
+#31 2026-08-28 Updated all 3 demo applications with Ticker, with_mutex, with_cancel_token and refreshed all documentation, cookbook recipes, guides, and tutorials (132/132 unit tests passing).

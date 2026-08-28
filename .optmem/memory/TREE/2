@@ -12,3 +12,5 @@ Synchronized F3 pause toggle flags, added scheduler clock helper accessors, inte
 Completed comprehensive 19-document documentation suite (guides, tech deep-dives, tutorials) enriched with mathematical models, register layout tables, and game blueprints.
 Enriched 9 runnable tutorials with architectural diagrams, and implemented pure primitives (fiber_join, Event(T), Fiber_Semaphore, Fiber_Latch), pool prewarming, and telemetry.
 Cleaned obsolete aliases and clock mirror fields, hardened sync primitives against stale aborted waiters, expanded handle history to 2048, unified branch spawning, and added scoped locks.
+Implemented event-driven chan_select_recv, by-value scoped locks, scheduler_walk_tree diagnostics, dynamic batch joins (fiber_join_all/any), zero-drift Ticker, and with_cancel_token.
+Pruned redundant slice joiners for strict structured concurrency; integrated Ticker, with_mutex, and with_cancel_token across all 3 demos, updating all cookbook recipes and tech guides.

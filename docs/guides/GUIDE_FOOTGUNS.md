@@ -1,4 +1,4 @@
-﻿# The 8 Cooperative Fiber Footguns & Prevention Guide
+# The 8 Cooperative Fiber Footguns & Prevention Guide
 
 > **MANDATORY READING FOR ALL GAMEPLAY AND SYSTEMS ENGINEERS**:
 > Stackful cooperative coroutines provide unmatched clarity for complex gameplay state machines, hierarchical AI, cutscenes, and async pipelines. However, because fibers are **cooperative single-threaded execution contexts**, misuse can cause subtle deadlocks, memory corruption, or frame freezes.
@@ -149,7 +149,15 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 `
 
 ### How the Engine Mitigates It
-1. **Native Odin `defer`**:
+1. **Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)**:
+   `odin
+   // BEST: 100% deadlock-proof! Automatically guarantees unlock on return or abort:
+   coroutine.with_mutex(f, m, proc(f: ^coroutine.Fiber, data: ^Task_Data) {
+       if player_is_too_far() do return // Safe!
+       perform_exclusive_work(data)
+   }, data)
+   `
+2. **Native Odin `defer`**:
    `odin
    // SAFE: Guaranteed to unlock on return, break, or failure!
    charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
@@ -159,7 +167,7 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
        if player_is_too_far() do return
    }
    `
-2. **Guaranteed Cancellation Cleanup (`fiber_set_cleanup`)**:
+3. **Guaranteed Cancellation Cleanup (`fiber_set_cleanup`)**:
    `odin
    coroutine.fiber_set_cleanup(f, proc(user_data: rawptr) {
        m := (^coroutine.Fiber_Mutex)(user_data)
@@ -168,7 +176,7 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
    `
 
 ### The Rule
-> **Always write `defer mutex_unlock(f.sched, m)` or `defer semaphore_release(f.sched, sem)` immediately after acquiring a lock.**
+> **Prefer `with_mutex` / `with_semaphore` for all scoped operations, or write `defer mutex_unlock(f.sched, m)` immediately after acquiring a lock.**
 
 ---
 
@@ -242,19 +250,82 @@ Attempting to serialize raw suspended fiber stack bytes directly to a disk save 
 
 ---
 
+## Footgun 9: The Cumulative Time-Drift Loop (Periodic Timers Falling Behind)
+
+### The Trap
+Writing periodic gameplay cadences (e.g. poison ticks, sensor scans, network pings) with naive relative sleeps `wait(f, interval)`. Because the work done during each loop iteration takes non-zero CPU execution time, that execution delay compounds across every frame, causing the loop to lag and drift seconds behind real game time:
+
+```odin
+// DANGEROUS: Suffers from cumulative floating-point time drift!
+poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
+    for {
+        coroutine.wait(f, 0.5)
+        heavy_ai_calculation() // If this takes 0.03s, next tick happens at 0.53s!
+    }
+}
+```
+
+### How the Engine Mitigates It
+Use the built-in **`coroutine.Ticker`** (`ticker_init`, `ticker_wait`). The ticker advances target timestamps via absolute interval arithmetic ($\text{target\_time} += \text{interval}$), guaranteeing zero cumulative time drift regardless of frame execution variations.
+
+```odin
+// SAFE & DRIFT-FREE:
+poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
+    ticker: coroutine.Ticker
+    coroutine.ticker_init(&ticker, interval_seconds = 0.5)
+
+    for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds
+        coroutine.ticker_wait(f, &ticker)
+        enemy.hp -= 10.0
+    }
+}
+```
+
+### The Rule
+> **Never use naive `wait(f, interval)` loops for periodic heartbeats or rhythm-critical game actions. Use `coroutine.Ticker`.**
+
+---
+
+## Footgun 10: Unstructured Task Slices vs. Structured Trees (Background Orphan Fibers)
+
+### The Trap
+Spawning a dynamic array of independent fiber handles (`spawn()`) and manually polling them without parent-child ownership. If the parent fiber aborts or takes damage, the spawned background fibers **continue running as detached background orphans**, leaking CPU time and causing erratic game behavior:
+
+```odin
+// DANGEROUS:
+boss_spawn_minions :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
+    handles: [4]coroutine.Fiber_Handle
+    for i in 0 ..< 4 {
+        handles[i] = coroutine.spawn(f.sched, minion_ai, &boss.minions[i])
+    }
+    // If boss dies or aborts here, minions KEEP RUNNING as orphaned background fibers!
+}
+```
+
+### How the Engine Mitigates It
+1. **Structured Concurrency (`sync`, `race`, `rush`, `fallback`)**: The parent fiber owns all branch children. If the parent or a sibling aborts, the entire branch tree is automatically cancelled and recycled bottom-up.
+2. **Entity Scopes (`Fiber_Scope` & `scope_wait`)**: For dynamic clusters attached to an entity, pass `scope = &boss.scope`. Calling `scope_destroy` guarantees every child is terminated.
+
+### The Rule
+> **Prefer Structured Concurrency (`sync`/`race`) for hierarchical workflows, and `Fiber_Scope` (`scope_wait`) for entity lifecycle clusters. Never leave detached background handles unowned.**
+
+---
+
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
-`
+```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    THE GAMEPLAY PROGRAMMER'S CHEAT SHEET                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Always yield inside loops: Use wait() or yield_frame() in for loops.    │
+│ 1. Always yield inside loops: Use wait(), yield_frame(), or Ticker.        │
 │ 2. Keep stack buffers small: Use dynamic arrays for large data (>1 KB).     │
 │ 3. Pass transient parameters by value: Let the 128B payload buffer copy it. │
 │ 4. Bind fibers to entity scopes: scope_destroy() cancels them on death.     │
-│ 5. Always defer mutex unlocks: Write defer mutex_unlock() right after lock. │
+│ 5. Use with_mutex / with_semaphore: Guarantees deadlock-free scoped unlock. │
 │ 6. Always close producer channels: Write defer chan_close(&ch).             │
 │ 7. Treat temp memory as private: Do not pass temp slices across fibers.     │
 │ 8. Save game state, not stacks: Re-spawn coroutines from phase checkpoints. │
+│ 9. Use Ticker for periodic loops: Eliminates cumulative delta-time drift.   │
+│ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 └─────────────────────────────────────────────────────────────────────────────┘
-`
+```

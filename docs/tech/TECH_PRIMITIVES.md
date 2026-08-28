@@ -154,12 +154,14 @@ ready_idx, val, ok := coroutine.chan_try_select_recv([]^coroutine.Channel(int){&
 ready_idx, val, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(string){&ch_net, &ch_input})
 ```
 
-- **Semantics:** Iterates the channel slice. If any channel has a message available or is closed, it consumes the item and returns immediately with `(ready_index, value, ok)`.
-- If all channels are empty, `chan_select_recv` suspends the calling fiber until any channel receives data or is closed.
+- **Semantics:** 
+  1. Fast path: probes all channels with `chan_try_recv` in $O(N)$ time.
+  2. Event-driven suspension: if all channels are empty, appends calling fiber `f` to `ch.recv_waiters` across **all open channels** simultaneously and suspends once with zero CPU frame polling.
+  3. Wakeup & cleanup: on wakeup from any sender, automatically unregisters `f` from all other channels and pops data from the ready channel.
 
 ---
 
-## 9. Explicit Cancellation Token (`Cancel_Token`)
+## 9. Explicit Cancellation Token (`Cancel_Token` & `with_cancel_token`)
 
 A lightweight, decoupled cancellation primitive for cross-subsystem coordination:
 
@@ -176,8 +178,78 @@ cancel_token_destroy(&tok)
 cancel_token_cancel(&sched, &tok)
 cancel_token_wait(f, &tok)
 is_cancelled := cancel_token_is_cancelled(&tok)
+
+// 1-line race cancellation wrapper:
+cancelled := coroutine.with_cancel_token(f, &tok, coroutine.branch(task_proc, task_data))
 ```
 
 - Enables multiple independent fibers across different entity scopes to coordinate abort signals without sharing a `Fiber_Scope`.
 - Calling `cancel_token_wait` on an already-cancelled token returns immediately without suspension.
+- `with_cancel_token` races the task branch against a token watcher and returns `true` if cancelled before completion.
+
+---
+
+## 10. Zero-Drift Gameplay Ticker (`Ticker`)
+
+Periodic gameplay loops using relative sleeps `wait(f, interval)` suffer from cumulative floating-point time drift because workload execution delays compound across frames.
+
+```odin
+Ticker :: struct {
+    interval:  f32,
+    next_wake: f64,
+    use_real:  bool,
+}
+
+ticker_init(&ticker, interval_seconds = 0.5, use_real_time = false)
+ticker_wait(f, &ticker)
+```
+
+### Mathematical Time Anchoring:
+- Calculates target wake timestamps via absolute interval addition: $\text{target\_time}_{k+1} = \text{target\_time}_k + \Delta t$
+- If the game drops frames or stalls, the ticker catches up without cascading bursts by clamping forward to $\text{now} + \Delta t$.
+- Guarantees exact frequency (e.g. exactly 120 ticks in 60.0s) across both simulation and real-time clock domains.
+
+---
+
+## 11. Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)
+
+```odin
+with_mutex :: proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}
+with_semaphore :: proc{with_semaphore_ptr, with_semaphore_val, with_semaphore_nil}
+```
+
+- Automatically pairs `mutex_lock` / `semaphore_acquire` with deferred release upon lambda or procedure exit.
+- Supports pointer payloads, inline by-value structs (`size_of(T) <= 128`), and parameterless nil lambdas.
+- Prevents resource starvation and permanent deadlock when fibers take early returns or abort.
+
+---
+
+## 12. Hierarchy Tree Diagnostics (`scheduler_walk_tree` & `Fiber_Visitor`)
+
+Provides engine-agnostic hierarchical traversal for custom in-game HUDs and GUI profilers (Raylib, ImGui, Sokol):
+
+```odin
+Fiber_Visitor :: #type proc(f: ^Fiber, depth: int, user_data: rawptr)
+
+scheduler_walk_tree(sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+    // Traverse active fiber hierarchy with depth-level indentation
+    used, total := coroutine.fiber_calc_stack_usage(f)
+    fmt.printf("%*s[#%d] %s (%v) - Stack: %.1fKB\n", depth * 2, "", f.handle, f.debug_name, f.status, f32(used)/1024.0)
+})
+```
+
+---
+
+## 13. Stale Aborted Waiter Immunity
+
+All synchronization waitlists (`mutex.waiters`, `sem.waiters`, `latch.waiters`, `chan.recv_waiters`, `token.waiters`) are protected by **generational handle validation**:
+
+```odin
+if next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
+    next_fiber.status = .Ready
+    append(&sched.ready_queue, next_fiber)
+}
+```
+
+If a waiting fiber is aborted externally, its entry in a waiter queue is safely ignored and discarded upon release, preventing false wakeups or corrupted fiber states.
 

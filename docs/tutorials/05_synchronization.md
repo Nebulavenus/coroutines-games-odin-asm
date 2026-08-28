@@ -67,14 +67,12 @@ Charging_Station :: struct {
 drone_worker :: proc(f: ^coroutine.Fiber, id: int) {
     fmt.printf("[Drone %d] Arrived at charging bay. Requesting lock...\n", id)
 
-    // Suspends fiber if another drone is currently charging
-    coroutine.mutex_lock(f, &station.mutex)
-
-    fmt.printf(">>> [Drone %d] ACQUIRED CHARGING PAD! Recharging battery...\n", id)
-    coroutine.wait(f, 1.0) // 1 second charging time
-
-    fmt.printf("<<< [Drone %d] Recharged 100%%. Releasing pad.\n", id)
-    coroutine.mutex_unlock(&station.mutex) // Hands pad to next drone in queue
+    // Deadlock-proof scoped lock (guarantees release on exit or abort):
+    coroutine.with_mutex(f, &station.mutex, proc(f: ^coroutine.Fiber, id: int) {
+        fmt.printf(">>> [Drone %d] ACQUIRED CHARGING PAD! Recharging battery...\n", id)
+        coroutine.wait(f, 1.0) // 1 second charging time
+        fmt.printf("<<< [Drone %d] Recharged 100%%. Releasing pad.\n", id)
+    }, id)
 }
 
 station: Charging_Station

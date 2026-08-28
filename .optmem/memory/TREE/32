@@ -1,0 +1,1 @@
+Production-ready stackful coroutine engine in Odin via native ASM: structured concurrency (sync/race/rush/fallback), 3-tier clocks, CSP channels, zero-drift Ticker, scoped locks, VM guard pages, live F1 debugger, 3 demos, and 132 tests.

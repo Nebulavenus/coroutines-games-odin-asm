@@ -753,3 +753,27 @@ scheduler_pool_stats :: proc(sched: ^Scheduler) -> Pool_Stats {
     if sched == nil do return {}
     return fiber_pool_stats(&sched.fiber_pool)
 }
+
+// ============================================================================
+// Tree Traversal & Diagnostics Utility
+// ============================================================================
+
+scheduler_walk_tree :: proc(sched: ^Scheduler, visitor: Fiber_Visitor, user_data: rawptr = nil) {
+    if sched == nil || visitor == nil do return
+
+    walk_node :: proc(f: ^Fiber, depth: int, visitor: Fiber_Visitor, user_data: rawptr) {
+        if f == nil do return
+        visitor(f, depth, user_data)
+        child := f.first_child
+        for child != nil {
+            walk_node(child, depth + 1, visitor, user_data)
+            child = child.next_sibling
+        }
+    }
+
+    for f in sched.fiber_pool.all_fibers {
+        if f.status != .Unused && f.parent == nil {
+            walk_node(f, 0, visitor, user_data)
+        }
+    }
+}

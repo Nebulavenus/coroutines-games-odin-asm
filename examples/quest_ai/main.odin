@@ -120,32 +120,35 @@ g_world: ^World
 // Zone 1: AI Behavior Tree with Priority Fallbacks & Semaphore
 // ============================================================================
 
-knight_decision_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+    k.pos = k.home_pos
+    k.stamina = 100.0
+
+    heartbeat: coroutine.Ticker
+    coroutine.ticker_init(&heartbeat, 0.2)
+
     for {
-        // Evaluate priority decision tree via fallback
-        succeeded, winning_idx := coroutine.fallback(f,
-            // 1. Priority A: Melee Slam (Fails if player > 70px or cannot acquire combat token)
+        coroutine.ticker_wait(f, &heartbeat)
+
+        // Evaluate dynamic behavioral fallback cascade every tick:
+        coroutine.fallback(f,
+            // 1. Priority A: Execute Whirlwind Attack if player is very close and stamina is full
             coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 dist := linalg.length(g_world.player.pos - k.pos)
-                if dist > 70.0 {
-                    coroutine.fail(f) // Too far!
+                if dist > 85.0 || k.stamina < 60.0 {
+                    coroutine.fail(f) // Fallthrough to Priority B
                 }
-                // Non-blocking permit check from semaphore
-                if !coroutine.semaphore_try_acquire(&g_world.combat_sem) {
-                    coroutine.fail(f) // Semaphore permit unavailable!
-                }
-                defer coroutine.semaphore_release(f.sched, &g_world.combat_sem)
-
-                k.current_action = "Melee Heavy Slam! (Priority A, Token Acquired)"
+                k.current_action = "Whirlwind Attack! (Priority A)"
                 k.action_color = rl.RED
+                k.stamina -= 50.0
                 coroutine.wait(f, 0.6)
-            }, k, "1. Melee Slam Check"),
+            }, k, "1. Whirlwind Attack Check"),
 
-            // 2. Priority B: Tactical Shield Bash (Fails if player > 180px or stamina < 30)
+            // 2. Priority B: Shield Bash Dash if player is within medium range
             coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 dist := linalg.length(g_world.player.pos - k.pos)
                 if dist > 180.0 || k.stamina < 30.0 {
-                    coroutine.fail(f) // Out of range or low stamina!
+                    coroutine.fail(f) // Fallthrough to Priority C
                 }
                 k.current_action = "Shield Bash Dash! (Priority B)"
                 k.action_color = rl.ORANGE
@@ -165,8 +168,6 @@ knight_decision_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 coroutine.wait(f, 0.4)
             }, k, "3. Patrol Fallback"),
         )
-
-        coroutine.wait(f, 0.2)
     }
 }
 
@@ -255,10 +256,12 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
         g_world.minion_active = true
         g_world.minion_pos = s.pos + {0, 60}
 
-        // Spawn independent Crystal Minion task
+        // Spawn independent Crystal Minion task using Ticker
         minion_handle := coroutine.spawn(&g_world.sched, proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
+            ticker: coroutine.Ticker
+            coroutine.ticker_init(&ticker, 0.5)
             for i := 0; i < 4; i += 1 {
-                coroutine.wait(f, 0.5)
+                coroutine.ticker_wait(f, &ticker)
                 g_world.minion_pos.x += (i % 2 == 0 ? 30.0 : -30.0)
             }
             g_world.minion_active = false
@@ -384,7 +387,7 @@ world_init :: proc(w: ^World) {
     coroutine.phase_switch(&w.sentinel.director, 1, sentinel_phase1_fiber, &w.sentinel, name = "Phase 1: Laser Patrol")
 
     // Start Knight AI decision loop with category tag
-    coroutine.spawn(&w.sched, knight_decision_fiber, &w.knight, scope = &w.knight.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
+    coroutine.spawn(&w.sched, knight_ai_fiber, &w.knight, scope = &w.knight.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
 }
 
 world_destroy :: proc(w: ^World) {
@@ -526,7 +529,7 @@ world_update :: proc(w: ^World, dt: f32) {
         // Respawn Knight decision fiber after 1.2s stun
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
-            coroutine.spawn(f.sched, knight_decision_fiber, k, scope = &k.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
+            coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
         }, &w.knight)
     }
 }
@@ -653,10 +656,18 @@ world_render :: proc(w: ^World) {
 
         rl.DrawLine(panel_x + 10, panel_y + 40, panel_x + panel_w - 10, panel_y + 40, {60, 80, 120, 255})
 
-        tree_y := panel_y + 48
+        Tree_Draw_Ctx :: struct {
+            cur_y: i32,
+            max_y: i32,
+        }
+        draw_ctx := Tree_Draw_Ctx{
+            cur_y = panel_y + 48,
+            max_y = panel_y + panel_h - 18,
+        }
 
-        draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
-            if f == nil || cur_y^ > max_y do return
+        coroutine.scheduler_walk_tree(&w.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+            ctx := cast(^Tree_Draw_Ctx)user_data
+            if f == nil || ctx.cur_y > ctx.max_y do return
 
             indent := i32(depth * 16)
             name := f.debug_name != "" ? f.debug_name : "Fiber"
@@ -709,21 +720,9 @@ world_render :: proc(w: ^World) {
 
             prefix := depth > 0 ? "├─ " : "▼ "
             row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, pct)
-            rl.DrawText(fmt.ctprintf("%s", row_text), 565 + indent, cur_y^, 11, status_col)
-            cur_y^ += 16
-
-            child := f.first_child
-            for child != nil {
-                draw_fiber_node(child, depth + 1, cur_y, max_y)
-                child = child.next_sibling
-            }
-        }
-
-        for f in w.sched.fiber_pool.all_fibers {
-            if f.status != .Unused && f.parent == nil {
-                draw_fiber_node(f, 0, &tree_y, panel_y + panel_h - 18)
-            }
-        }
+            rl.DrawText(fmt.ctprintf("%s", row_text), 565 + indent, ctx.cur_y, 11, status_col)
+            ctx.cur_y += 16
+        }, &draw_ctx)
     }
 
     rl.EndDrawing()

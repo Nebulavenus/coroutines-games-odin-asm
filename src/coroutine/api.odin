@@ -344,6 +344,43 @@ yield_frame :: proc(f: ^Fiber) {
     wait_frames(f, 1)
 }
 
+// ============================================================================
+// Zero-Drift Periodic Ticker
+// ============================================================================
+
+ticker_init :: proc(t: ^Ticker, interval_seconds: f32, use_real_time: bool = false) {
+    if t == nil do return
+    t.interval = interval_seconds
+    t.use_real = use_real_time
+    t.next_wake = 0.0
+}
+
+ticker_wait :: proc(f: ^Fiber, t: ^Ticker) {
+    if f == nil || f.sched == nil || t == nil do return
+
+    now := t.use_real ? f.sched.clock.real_time : f.sched.clock.sim_time
+    if t.next_wake <= 0.0 {
+        t.next_wake = now + f64(t.interval)
+    } else {
+        t.next_wake += f64(t.interval)
+        // If system fell severely behind, clamp forward to prevent cascade burst
+        if t.next_wake < now {
+            t.next_wake = now + f64(t.interval)
+        }
+    }
+
+    remaining := f32(t.next_wake - now)
+    if remaining > 0.0 {
+        if t.use_real {
+            wait_real(f, remaining)
+        } else {
+            wait(f, remaining)
+        }
+    } else {
+        yield_frame(f)
+    }
+}
+
 fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
     if f == nil do return
     f.cleanup_proc = cleanup_proc
@@ -976,6 +1013,19 @@ with_mutex_ptr :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber, data: ^
     body(f, data)
 }
 
+with_mutex_val :: proc(
+    f: ^Fiber,
+    m: ^Fiber_Mutex,
+    body: proc(f: ^Fiber, data: $T),
+    data: T,
+) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "with_mutex_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || m == nil || f.sched == nil || body == nil do return
+    mutex_lock(f, m)
+    defer mutex_unlock(f.sched, m)
+    body(f, data)
+}
+
 with_mutex_nil :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber)) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
@@ -983,7 +1033,7 @@ with_mutex_nil :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber)) {
     body(f)
 }
 
-with_mutex :: proc{with_mutex_ptr, with_mutex_nil}
+with_mutex :: proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}
 
 // ============================================================================
 // Event(T) (1-to-Many Typed Multicast Broadcast)
@@ -1102,6 +1152,19 @@ with_semaphore_ptr :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fibe
     body(f, data)
 }
 
+with_semaphore_val :: proc(
+    f: ^Fiber,
+    sem: ^Fiber_Semaphore,
+    body: proc(f: ^Fiber, data: $T),
+    data: T,
+) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "with_semaphore_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || sem == nil || f.sched == nil || body == nil do return
+    semaphore_acquire(f, sem)
+    defer semaphore_release(f.sched, sem)
+    body(f, data)
+}
+
 with_semaphore_nil :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fiber)) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
@@ -1109,7 +1172,7 @@ with_semaphore_nil :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fibe
     body(f)
 }
 
-with_semaphore :: proc{with_semaphore_ptr, with_semaphore_nil}
+with_semaphore :: proc{with_semaphore_ptr, with_semaphore_val, with_semaphore_nil}
 
 // ============================================================================
 // Fiber Latch (Countdown Rendezvous Barrier)
@@ -1201,6 +1264,20 @@ cancel_token_wait :: proc(f: ^Fiber, tok: ^Cancel_Token) {
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     context = f.stored_context
+}
+
+with_cancel_token :: proc(f: ^Fiber, tok: ^Cancel_Token, task: Branch_Desc) -> (cancelled: bool) {
+    if f == nil || f.sched == nil || tok == nil do return false
+    if cancel_token_is_cancelled(tok) do return true
+
+    winner := race(f,
+        task,
+        branch(proc(f: ^Fiber, tok: ^Cancel_Token) {
+            cancel_token_wait(f, tok)
+        }, tok, name = "Cancel Token Watcher"),
+    )
+
+    return winner == 1
 }
 
 // ============================================================================
@@ -1502,12 +1579,12 @@ chan_select_recv :: proc(f: ^Fiber, channels: []^Channel($T)) -> (ready_index: i
     if f == nil || f.sched == nil || len(channels) == 0 do return -1, {}, false
 
     for {
-        // 1. Check if any channel has a message or is closed
+        // 1. Fast path: check if any channel already has data available or is closed
         for ch, i in channels {
             if ch != nil {
-                val, popped := chan_try_recv(ch)
-                if popped {
-                    return i, val, true
+                if chan_count(ch) > 0 {
+                    val, popped := chan_try_recv(ch)
+                    if popped do return i, val, true
                 }
                 if ch.is_closed {
                     return i, {}, false
@@ -1515,8 +1592,49 @@ chan_select_recv :: proc(f: ^Fiber, channels: []^Channel($T)) -> (ready_index: i
             }
         }
 
-        // 2. Yield frame to wait for messages
-        yield_frame(f)
+        // 2. Register this fiber as a receiver on ALL open selected channels
+        registered_count := 0
+        for ch in channels {
+            if ch != nil && !ch.is_closed {
+                append(&ch.recv_waiters, f)
+                registered_count += 1
+            }
+        }
+
+        if registered_count == 0 {
+            // All channels are nil or closed
+            return -1, {}, false
+        }
+
+        // 3. Suspend once until ANY channel emits data or closes
+        f.status = .Suspended_Join
+        f.stored_context = context
+        fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+        context = f.stored_context
+
+        // 4. Unregister from all channels' recv_waiters
+        for ch in channels {
+            if ch != nil {
+                for j := len(ch.recv_waiters) - 1; j >= 0; j -= 1 {
+                    if ch.recv_waiters[j] == f {
+                        unordered_remove(&ch.recv_waiters, j)
+                    }
+                }
+            }
+        }
+
+        // 5. Check if we received data or a channel closed
+        for ch, i in channels {
+            if ch != nil {
+                if chan_count(ch) > 0 {
+                    val, popped := chan_try_recv(ch)
+                    if popped do return i, val, true
+                }
+                if ch.is_closed {
+                    return i, {}, false
+                }
+            }
+        }
     }
 }
 

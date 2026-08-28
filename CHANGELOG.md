@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Orthogonal API Streamlining, Precision Ticker & Task Ergonomics] - 2026-08-28
+
+### Added
+- **Precision Zero-Drift Gameplay Ticker (`Ticker`, `ticker_init`, `ticker_wait`)**:
+  - Added periodic timer primitive calculating target timestamps via absolute interval increments (`target += interval`) rather than relative sleep times, eliminating cumulative floating-point timing drift over long game matches.
+  - Supports both scaled simulation time (`use_real_time = false`) and wall clock time (`use_real_time = true`).
+- **Cancellation Ergonomics (`with_cancel_token`)**:
+  - Added 1-line task/branch wrapper `with_cancel_token(f, tok, task) -> bool` racing a work branch against an explicit `Cancel_Token` watcher.
+- **Unit Tests 131–132 (`src/coroutine/coroutine_test.odin`)**:
+  - Added unit tests verifying zero-drift `Ticker` and `with_cancel_token` cancellation.
+  - Test suite stands at **132 / 132 unit tests passing** (100% with 0 memory leaks).
+
+### Removed
+- **Unstructured Slice Joiners (`fiber_join_all` / `fiber_join_any`)**:
+  - Pruned redundant unstructured handle slice joiners in favor of standard Structured Concurrency fork-join (`sync`, `race`, `rush`, `fallback`) and scoped entity synchronization (`scope_wait`).
+  - Guarantees zero background orphan fibers on cancellation and maintains a strictly orthogonal, single-idiom concurrency API.
+
+## [Event-Driven Select, By-Value Scoped Locks & Generic Tree Diagnostics] - 2026-08-28
+
+### Added
+- **Zero-Polling Event-Driven `chan_select_recv`**:
+  - Upgraded multi-channel select from frame polling (`yield_frame`) to true $O(1)$ event-driven suspension across all open selected channels simultaneously with immediate wakeup and auto-cleanup.
+- **By-Value Scoped Locks (`with_mutex_val` & `with_semaphore_val`)**:
+  - Added inline value struct payload variants to `with_mutex` and `with_semaphore` overloaded procedure groups (`proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}`).
+- **Engine-Agnostic Tree Traversal (`scheduler_walk_tree` & `Fiber_Visitor`)**:
+  - Added generic hierarchy tree walker utility in `src/coroutine/scheduler.odin`.
+  - Refactored live debugger HUDs across `src/main.odin`, `examples/showcase/main.odin`, and `examples/quest_ai/main.odin` to use `scheduler_walk_tree`.
+- **Unit Tests 127–130 (`src/coroutine/coroutine_test.odin`)**:
+  - Added unit tests for `with_mutex_val`, `with_semaphore_val`, zero-polling `chan_select_recv`, and `scheduler_walk_tree`.
+  - Test suite expanded to **130 / 130 unit tests passing** (100% with 0 memory leaks).
+
 ## [Critical Hardening, DRY Refactoring & Scoped Synchronization] - 2026-08-28
 
 ### Added

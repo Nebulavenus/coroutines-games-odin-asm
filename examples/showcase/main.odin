@@ -317,7 +317,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.status_color = rl.RAYWHITE
 }
 
-// --- 3. Energy Charger (Fiber_Mutex) ---
+// --- 3. Energy Charger (Fiber_Mutex & with_mutex) ---
 
 drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     pad_pos := g_world.station_charger.pos
@@ -325,28 +325,30 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
     // Move to charging pad entrance
     coroutine.tween(f, &d.pos, d.pos, pad_pos + {0, 30}, 0.8, coroutine.ease_in_out_quad)
 
-    // Request mutual exclusion on charging pad
-    coroutine.mutex_lock(f, &g_world.station_charger.mutex)
-    defer coroutine.mutex_unlock(f.sched, &g_world.station_charger.mutex)
+    // Request mutual exclusion on charging pad using deadlock-proof with_mutex
+    coroutine.with_mutex(f, &g_world.station_charger.mutex, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        pad_pos := g_world.station_charger.pos
+        // Entered charging pad
+        d.is_charging = true
+        coroutine.tween(f, &d.pos, d.pos, pad_pos, 0.3, coroutine.ease_out_quad)
 
-    // Entered charging pad
-    d.is_charging = true
-    coroutine.tween(f, &d.pos, d.pos, pad_pos, 0.3, coroutine.ease_out_quad)
+        // Charge battery for 1.2 seconds using precision Ticker pulses
+        charge_ticker: coroutine.Ticker
+        coroutine.ticker_init(&charge_ticker, 0.1)
+        for d.charge_level < 1.0 {
+            coroutine.ticker_wait(f, &charge_ticker)
+            d.charge_level = min(1.0, d.charge_level + 0.1 / 1.2)
+        }
+        d.charge_level = 1.0
 
-    // Charge battery for 1.2 seconds
-    for d.charge_level < 1.0 {
-        coroutine.yield_frame(f)
-        d.charge_level += coroutine.delta_time(f) / 1.2
-    }
-    d.charge_level = 1.0
-
-    // Return to home post
-    d.is_charging = false
-    coroutine.tween(f, &d.pos, d.pos, d.home_pos, 0.8, coroutine.ease_in_out_quad)
-    d.charge_level = 0.0
+        // Return to home post
+        d.is_charging = false
+        coroutine.tween(f, &d.pos, d.pos, d.home_pos, 0.8, coroutine.ease_in_out_quad)
+        d.charge_level = 0.0
+    }, d)
 }
 
-// --- 4. Alert Beacon (Signal & Cancel_Token) ---
+// --- 4. Alert Beacon (Signal & with_cancel_token) ---
 
 sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
     for {
@@ -355,19 +357,28 @@ sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
         // Suspends until alarm_signal is emitted! Zero CPU polling.
         coroutine.signal_wait(f, &g_world.station_beacon.alarm_signal)
 
-        // Alarm triggered! Wake up and flash
-        s.is_alerted = true
-        s.alert_timer = 2.5
+        // Run alert patrol, but cancel immediately if lockdown token trips
+        cancelled := coroutine.with_cancel_token(f, &g_world.lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Sentry) {
+            s.is_alerted = true
+            s.alert_timer = 2.5
 
-        // Move outwards in defensive perimeter
-        dir := linalg.normalize(s.home_pos - g_world.station_beacon.pos)
-        target := s.home_pos + dir * 30.0
-        coroutine.tween(f, &s.pos, s.home_pos, target, 0.3, coroutine.ease_out_back)
+            // Move outwards in defensive perimeter
+            dir := linalg.normalize(s.home_pos - g_world.station_beacon.pos)
+            target := s.home_pos + dir * 30.0
+            coroutine.tween(f, &s.pos, s.home_pos, target, 0.3, coroutine.ease_out_back)
 
-        coroutine.wait(f, 2.0)
+            coroutine.wait(f, 2.0)
 
-        // Return to resting position
-        coroutine.tween(f, &s.pos, s.pos, s.home_pos, 0.6, coroutine.ease_in_out_quad)
+            // Return to resting position
+            coroutine.tween(f, &s.pos, s.pos, s.home_pos, 0.6, coroutine.ease_in_out_quad)
+        }, s, name = "Sentry Alert Patrol"))
+
+        if cancelled {
+            s.is_alerted = true
+            s.alert_timer = 5.0
+            s.color = rl.RED
+            break
+        }
     }
 }
 
@@ -489,8 +500,10 @@ channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
 
 system_heartbeat_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
     count := 1
+    ticker: coroutine.Ticker
+    coroutine.ticker_init(&ticker, 3.5)
     for {
-        coroutine.wait(f, 3.5)
+        coroutine.ticker_wait(f, &ticker)
         coroutine.chan_send(f, &s.sys_channel, fmt.tprintf("Pulse #%d (Nominal)", count))
         count += 1
     }
@@ -1096,10 +1109,18 @@ showcase_render :: proc(w: ^Showcase_World) {
 
         rl.DrawLine(overlay_x + 10, overlay_y + 44, overlay_x + overlay_w - 10, overlay_y + 44, {60, 80, 120, 255})
 
-        tree_y := overlay_y + 54
+        Tree_Draw_Ctx :: struct {
+            cur_y: i32,
+            max_y: i32,
+        }
+        draw_ctx := Tree_Draw_Ctx{
+            cur_y = overlay_y + 54,
+            max_y = overlay_y + overlay_h - 25,
+        }
 
-        draw_fiber_node :: proc(f: ^coroutine.Fiber, depth: int, cur_y: ^i32, max_y: i32) {
-            if f == nil || cur_y^ > max_y do return
+        coroutine.scheduler_walk_tree(&w.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+            ctx := cast(^Tree_Draw_Ctx)user_data
+            if f == nil || ctx.cur_y > ctx.max_y do return
 
             indent := i32(depth * 18)
             name := f.debug_name != "" ? f.debug_name : "Fiber"
@@ -1152,21 +1173,9 @@ showcase_render :: proc(w: ^Showcase_World) {
 
             prefix := depth > 0 ? "├─ " : "▼ "
             row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct)
-            rl.DrawText(fmt.ctprintf("%s", row_text), 45 + indent, cur_y^, 11, status_col)
-            cur_y^ += 18
-
-            child := f.first_child
-            for child != nil {
-                draw_fiber_node(child, depth + 1, cur_y, max_y)
-                child = child.next_sibling
-            }
-        }
-
-        for f in w.sched.fiber_pool.all_fibers {
-            if f.status != .Unused && f.parent == nil {
-                draw_fiber_node(f, 0, &tree_y, overlay_y + overlay_h - 25)
-            }
-        }
+            rl.DrawText(fmt.ctprintf("%s", row_text), 45 + indent, ctx.cur_y, 11, status_col)
+            ctx.cur_y += 18
+        }, &draw_ctx)
     }
 
     rl.EndDrawing()

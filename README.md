@@ -186,12 +186,45 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_De
 coroutine.event_emit(&sched, &death_event, Player_Death_Info{killer_id = 42})
 ```
 
-### 4. Multi-Channel Select (`chan_select_recv`)
+### 4. Zero-Drift Gameplay Ticker (`Ticker`)
+
+```odin
+ticker: coroutine.Ticker
+coroutine.ticker_init(&ticker, interval_seconds = 0.5)
+
+// Guarantees zero cumulative timing drift over long match durations:
+for _ in 0 ..< 10 {
+    coroutine.ticker_wait(f, &ticker)
+    apply_damage_over_time(enemy, 15.0)
+}
+```
+
+### 5. Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)
+
+```odin
+// Guarantees unlock on return or abort:
+coroutine.with_mutex(f, &charger_mutex, proc(f: ^coroutine.Fiber, d: ^Drone) {
+    coroutine.tween(f, &d.pos, d.pos, pad_pos, 0.3)
+    coroutine.wait(f, 1.0)
+}, drone)
+```
+
+### 6. 1-Line Task Cancellation (`with_cancel_token`)
+
+```odin
+// Executes task, aborting immediately if lockdown alarm trips:
+interrupted := coroutine.with_cancel_token(f, &lockdown_token, coroutine.branch(hack_terminal, terminal))
+if interrupted {
+    fmt.println("Hacking aborted due to lockdown alarm!")
+}
+```
+
+### 7. Multi-Channel Select (`chan_select_recv`)
 
 ```odin
 ch_combat, ch_network: coroutine.Channel(Command)
 
-// Suspend fiber until ANY channel has a message ready:
+// $O(1)$ Event-driven suspension until ANY channel has a message ready:
 idx, cmd, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(Command){&ch_combat, &ch_network})
 if ok {
     switch idx {
@@ -199,23 +232,6 @@ if ok {
     case 1: process_network_packet(cmd)
     }
 }
-```
-
-### 5. Explicit Cancellation Token (`Cancel_Token`)
-
-```odin
-tok: coroutine.Cancel_Token
-coroutine.cancel_token_init(&tok)
-defer coroutine.cancel_token_destroy(&tok)
-
-// Independent worker awaits cancellation:
-coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t: ^coroutine.Cancel_Token) {
-    coroutine.cancel_token_wait(f, t)
-    fmt.println("Subsystem cancelled!")
-}, &tok)
-
-// Cancel token across all listeners:
-coroutine.cancel_token_cancel(&sched, &tok)
 ```
 
 ---
@@ -234,7 +250,7 @@ A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_
 # Run the 2D Boss Fight Demo
 .\build.ps1 run
 
-# Run All 90 Unit Tests
+# Run All 132 Unit Tests
 .\build.ps1 test
 
 # Run Full LLVM Optimization & Architecture Matrix (11 builds)
