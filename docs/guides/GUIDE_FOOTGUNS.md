@@ -1,23 +1,24 @@
-# The 8 Cooperative Fiber Footguns & Prevention Guide
+# The 10 Cooperative Fiber Footguns & Prevention Guide
 
 > **MANDATORY READING FOR ALL GAMEPLAY AND SYSTEMS ENGINEERS**:
 > Stackful cooperative coroutines provide unmatched clarity for complex gameplay state machines, hierarchical AI, cutscenes, and async pipelines. However, because fibers are **cooperative single-threaded execution contexts**, misuse can cause subtle deadlocks, memory corruption, or frame freezes.
-> This guide details the **8 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
+> This guide details the **10 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
 
 ---
 
-## The 8 Footguns Overview
+## The 10 Footguns Overview
 
-`
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          THE 8 FIBER FOOTGUNS                               │
+│                          THE 10 FIBER FOOTGUNS                              │
 ├──────────────────────────────────────┬──────────────────────────────────────┤
-│ 1. The Non-Yielding Infinite Loop    │ 5. The Deadlocked Mutex / Semaphore  │
-│ 2. The 32KB Stack Overflow           │ 6. The Orphaned Channel Receiver     │
-│ 3. The Dangling Ephemeral Pointer    │ 7. Cross-Fiber Temp Allocator Escape │
-│ 4. Stale Pointers Across Sleeps      │ 8. Save-Game Stack Serialization     │
+│ 1. The Non-Yielding Infinite Loop    │ 6. The Orphaned Channel Receiver     │
+│ 2. The 32KB Stack Overflow           │ 7. Cross-Fiber Temp Allocator Escape │
+│ 3. The Dangling Ephemeral Pointer    │ 8. Save-Game Stack Serialization     │
+│ 4. Stale Pointers Across Sleeps      │ 9. Cumulative Time Drift Loop        │
+│ 5. The Deadlocked Mutex / Semaphore  │ 10. Unstructured Task Slices (Orphans)│
 └──────────────────────────────────────┴──────────────────────────────────────┘
-`
+```
 
 ---
 
@@ -26,21 +27,21 @@
 ### The Trap
 Because fibers are **cooperative** (not preemptive OS threads), a fiber retains exclusive control of the CPU until it yields. If a `for` loop executes without a suspension point, the entire game engine freezes permanently:
 
-`odin
+```odin
 // DANGEROUS: Freezes the entire game window permanently!
 boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
     for !boss.is_ready {
         // Forgot coroutine.yield_frame(f) or coroutine.wait(f, dt)!
     }
 }
-`
+```
 
 ### How the Engine Mitigates It
 1. **Debug Watchdog Timer**: In debug builds (`when ODIN_DEBUG`), the scheduler measures the wall-clock execution duration of every fiber slice.
 2. If a single fiber slice exceeds the threshold (`watchdog_max_slice_ms = 100.0`), the engine immediately triggers a descriptive runtime panic naming the runaway fiber:
-   `
+   ```text
    [WATCHDOG PANIC] Runaway non-yielding fiber detected! Fiber [#4] 'boss_ai' executed for 103.42 ms without yielding! Did you write an infinite loop without wait() or yield_frame()?
-   `
+   ```
 3. Configurable via `coroutine.scheduler_set_watchdog(&sched, enabled = true, max_slice_ms = 50.0)`.
 
 ### The Rule
@@ -53,12 +54,12 @@ boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 ### The Trap
 Fibers use fixed-size memory stacks (default **32KB**). Allocating large local arrays directly on the stack blows past the stack bounds:
 
-`odin
+```odin
 // DANGEROUS: 10,000 floats = 40 KB (Exceeds 32KB stack!)
 calculate_path :: proc(f: ^coroutine.Fiber) {
     temp_grid: [10000]f32 // Stack overflow!
 }
-`
+```
 
 ### How the Engine Mitigates It
 1. **64-Byte Stack Canary Watermark (`0xDEAD_BEEF_CAFE_BABE`)**: Verified on every fiber recycling pass; corruptions trigger immediate panics.
@@ -75,23 +76,23 @@ calculate_path :: proc(f: ^coroutine.Fiber) {
 ### The Trap
 Passing a pointer to a temporary stack variable into `spawn`:
 
-`odin
+```odin
 // DANGEROUS:
 trigger_explosion :: proc(pos: [2]f32) {
     // &pos points to trigger_explosion's local stack frame!
     coroutine.spawn(&sched, explosion_coroutine, &pos) 
     // trigger_explosion returns immediately! &pos is destroyed!
 }
-`
+```
 
 ### How the Engine Mitigates It
 * **128-Byte By-Value Payloads (`spawn_val` / `branch_val` / overloaded `spawn`)**:
-  `odin
+  ```odin
   // SAFE: Automatically copied into fiber.payload_storage!
   trigger_explosion :: proc(pos: [2]f32) {
       coroutine.spawn(&sched, explosion_coroutine, pos) // Pass by value!
   }
-  `
+  ```
 
 ### The Rule
 > **Pass scalars, coordinates, and transient value structs by value. Pass pointers only to persistent heap entities (`^Boss`, `^Player`, `^World`).**
@@ -103,7 +104,7 @@ trigger_explosion :: proc(pos: [2]f32) {
 ### The Trap
 Game entities can be destroyed while a fiber is suspended in `wait(f, 2.0)`:
 
-`odin
+```odin
 // DANGEROUS:
 wizard_attack :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
     enemy.is_charging = true
@@ -112,11 +113,11 @@ wizard_attack :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
     // HAZARD: What if the enemy died and was freed during these 2 seconds?!
     enemy.is_charging = false // Use-After-Free CRASH!
 }
-`
+```
 
 ### How the Engine Mitigates It
 * **`Fiber_Scope` Structured Cancellation**:
-  `odin
+  ```odin
   // Bind fiber to the entity's scope:
   coroutine.spawn(&sched, wizard_attack, enemy, scope = &enemy.scope)
 
@@ -125,7 +126,7 @@ wizard_attack :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
       coroutine.scope_destroy(&sched, &e.scope) // Instantly cancels all active/sleeping fibers!
       free(e)
   }
-  `
+  ```
 
 ### The Rule
 > **Always bind entity-specific coroutines to that entity's `Fiber_Scope`. Call `scope_destroy` when the entity dies.**
@@ -137,7 +138,7 @@ wizard_attack :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
 ### The Trap
 Acquiring a lock or permit and returning early without unlocking:
 
-`odin
+```odin
 // DANGEROUS:
 charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
     coroutine.mutex_lock(f, m)
@@ -146,19 +147,19 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
     }
     coroutine.mutex_unlock(f.sched, m)
 }
-`
+```
 
 ### How the Engine Mitigates It
 1. **Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)**:
-   `odin
+   ```odin
    // BEST: 100% deadlock-proof! Automatically guarantees unlock on return or abort:
    coroutine.with_mutex(f, m, proc(f: ^coroutine.Fiber, data: ^Task_Data) {
        if player_is_too_far() do return // Safe!
        perform_exclusive_work(data)
    }, data)
-   `
+   ```
 2. **Native Odin `defer`**:
-   `odin
+   ```odin
    // SAFE: Guaranteed to unlock on return, break, or failure!
    charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
        coroutine.mutex_lock(f, m)
@@ -166,14 +167,14 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 
        if player_is_too_far() do return
    }
-   `
+   ```
 3. **Guaranteed Cancellation Cleanup (`fiber_set_cleanup`)**:
-   `odin
+   ```odin
    coroutine.fiber_set_cleanup(f, proc(user_data: rawptr) {
        m := (^coroutine.Fiber_Mutex)(user_data)
        coroutine.mutex_unlock(g_sched, m)
    }, m)
-   `
+   ```
 
 ### The Rule
 > **Prefer `with_mutex` / `with_semaphore` for all scoped operations, or write `defer mutex_unlock(f.sched, m)` immediately after acquiring a lock.**
@@ -185,23 +186,23 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 ### The Trap
 A sender fiber terminates without closing a channel, leaving receiver fibers blocked in `chan_recv` indefinitely:
 
-`odin
+```odin
 // DANGEROUS:
 producer_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(int)) {
     coroutine.chan_send(f, ch, 100)
     // Exited without closing! Receiver waits forever!
 }
-`
+```
 
 ### How the Engine Mitigates It
 1. **Auto-Wake on Destruction (`chan_destroy`)**: Calling `chan_destroy` automatically triggers `chan_close`, unblocking all waiting senders and receivers with `ok = false` before deleting memory.
 2. **Channel Deadline Reception (`chan_recv_timeout`)**:
-   `odin
+   ```odin
    val, ok, timed_out := coroutine.chan_recv_timeout(f, &g_channel, timeout_seconds = 2.0)
    if timed_out {
        log_warn("Producer hung or disappeared!")
    }
-   `
+   ```
 
 ### The Rule
 > **Always use `defer chan_close(&ch)` in producer fibers, or use `chan_recv_timeout` when reading from untrusted producers.**
@@ -213,14 +214,14 @@ producer_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(int)) {
 ### The Trap
 Allocating memory from `context.temp_allocator` inside Fiber A and passing the pointer to Fiber B:
 
-`odin
+```odin
 // DANGEROUS:
 fiber_a :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel([]int)) {
     data := make([]int, 10, context.temp_allocator) // Allocated in Fiber A's private temp arena!
     coroutine.chan_send(f, ch, data)
     // Fiber A finishes -> its 4KB temp arena is recycled/wiped! Fiber B reads garbage!
 }
-`
+```
 
 ### How the Engine Mitigates It
 * Each fiber has an **isolated 4KB `temp_arena`**. `context.temp_allocator` points to this private arena.
@@ -240,10 +241,10 @@ Attempting to serialize raw suspended fiber stack bytes directly to a disk save 
   1. Fibers are **transient runtime execution threads** (cutscene animations, camera tweens, attack choreography, AI behavior trees).
   2. High-level game state is saved to disk (`boss.hp = 350`, `boss.phase = 2`, `quest.stage = 3`).
   3. When loading a save file, entities re-spawn their coroutine from the saved phase checkpoint:
-     `odin
+     ```odin
      // On Game Load:
      coroutine.phase_switch(&boss.director, saved_phase, boss_phase2_fiber, &boss)
-     `
+     ```
 
 ### The Rule
 > **Save game data (structs, coordinates, health, inventory), never CPU stack frames. Re-spawn coroutines from phase checkpoints upon save reload.**
@@ -313,7 +314,7 @@ boss_spawn_minions :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    THE GAMEPLAY PROGRAMMER'S CHEAT SHEET                    │
 ├─────────────────────────────────────────────────────────────────────────────┤

@@ -46,7 +46,7 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
     for {
         // Fallback executes sequentially until the FIRST successful branch!
-        coroutine.fallback(f, {
+        coroutine.fallback(f,
             // Priority 1: Melee Slam
             coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
                 dx := n.pos.x - n.player_pos.x
@@ -61,7 +61,7 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
                 fmt.Printf("[AI] %s executing Heavy Melee Slam!\n", n.name)
                 coroutine.wait(f, 0.5)
-            }, npc),
+            }, npc, name = "Melee Priority"),
 
             // Priority 2: Ranged Snipe
             coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
@@ -73,15 +73,15 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
                 fmt.Printf("[AI] %s executing Ranged Sniper Shot!\n", n.name)
                 coroutine.wait(f, 0.8)
-            }, npc),
+            }, npc, name = "Ranged Priority"),
 
             // Priority 3: Fallback Patrol
             coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
                 fmt.Printf("[AI] %s patrolling to waypoint %d.\n", n.name, n.patrol_index)
                 n.patrol_index = (n.patrol_index + 1) % 4
                 coroutine.wait(f, 1.0)
-            }, npc),
-        })
+            }, npc, name = "Patrol Fallback"),
+        )
     }
 }
 
@@ -123,19 +123,19 @@ Unlike `race` (which aborts as soon as *any* branch finishes or fails), `rush` r
 
 ```odin
 // 3 Scouts search different cave entrances concurrently
-coroutine.rush(f, {
-    coroutine.branch(proc(f: ^coroutine.Fiber, d: rawptr) {
+coroutine.rush(f,
+    coroutine.branch(proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 0.5)
         fmt.println("[Scout North] Dead end!")
         coroutine.fail(f) // Ignored by rush!
-    }, nil),
+    }, name = "Scout North"),
 
-    coroutine.branch(proc(f: ^coroutine.Fiber, d: rawptr) {
+    coroutine.branch(proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 1.0)
         fmt.println("[Scout East] Found the secret dungeon entrance!")
         // Finishes successfully! Wins the rush!
-    }, nil),
-})
+    }, name = "Scout East"),
+)
 ```
 
 ---

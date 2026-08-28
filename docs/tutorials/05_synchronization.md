@@ -189,21 +189,21 @@ coroutine.event_emit(&sched, &death_event, Player_Death{"Knight", 42})
 
 ---
 
-## 5. Limiting Concurrency with `Fiber_Semaphore`
+## 5. Limiting Concurrency with `Fiber_Semaphore` & `with_semaphore`
 
-When you want to allow up to $N$ fibers to concurrently access a shared pool (e.g. max 2 concurrent audio voices or max 3 simultaneous A* searches):
+When you want to allow up to $N$ fibers to concurrently access a shared pool (e.g. max 2 concurrent audio voices or max 3 simultaneous A* searches), use `Fiber_Semaphore` or the deadlock-proof `with_semaphore` helper:
 
 ```odin
 pathfinding_sem: coroutine.Fiber_Semaphore
 coroutine.semaphore_init(&pathfinding_sem, initial_permits = 3, max_permits = 3)
 defer coroutine.semaphore_destroy(&pathfinding_sem)
 
-ai_pathfind_task :: proc(f: ^coroutine.Fiber, sem: ^coroutine.Fiber_Semaphore) {
-    coroutine.semaphore_acquire(f, sem) // Suspends if all 3 permits are in use
-    defer coroutine.semaphore_release(f.sched, sem)
-
-    // Compute heavy path...
-    coroutine.wait(f, 0.2)
+ai_pathfind_task :: proc(f: ^coroutine.Fiber, target_node: int) {
+    // Deadlock-proof scoped acquire & auto-release:
+    coroutine.with_semaphore(f, &pathfinding_sem, proc(f: ^coroutine.Fiber, node: int) {
+        fmt.printf("Calculating path to node #%d...\n", node)
+        coroutine.wait(f, 0.2)
+    }, target_node)
 }
 ```
 
@@ -253,7 +253,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cutscene: coroutine.Fiber_Hand
 
 ## 8. Multi-Channel Multiplexing with `chan_select_recv`
 
-When a consumer fiber needs to receive messages from whichever channel has data available first (similar to Go's `select` or CSP multiplexing), use `chan_select_recv`:
+When a consumer fiber needs to receive messages from whichever channel has data available first with **$O(1)$ zero-polling event-driven suspension**, use `chan_select_recv`:
 
 ```odin
 package main

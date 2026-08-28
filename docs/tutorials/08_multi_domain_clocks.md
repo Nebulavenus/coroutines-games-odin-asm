@@ -53,7 +53,7 @@ main :: proc() {
 
     for i := 0; i < 3; i += 1 {
         fmt.Printf("\n[Paused Tick %d] real_time: %.2fs, sim_time: %.2fs\n",
-            i, sched.real_time, sched.sim_time)
+            i, sched.clock.real_time, sched.clock.sim_time)
         coroutine.scheduler_step(&sched, 0.5)
     }
 
@@ -68,14 +68,14 @@ main :: proc() {
 
 ## 2. Bullet-Time Slow Motion with `time_scale`
 
-You can create cinematic Matrix-style slow-motion effects by setting `sched.time_scale`:
+You can create cinematic Matrix-style slow-motion effects by calling `coroutine.scheduler_set_time_scale`:
 
 ```odin
 // Normal Speed
-sched.time_scale = 1.0
+coroutine.scheduler_set_time_scale(&sched, 1.0)
 
 // Trigger 20% Speed Bullet-Time (e.g. during a sniper headshot)
-sched.time_scale = 0.20
+coroutine.scheduler_set_time_scale(&sched, 0.20)
 
 // A coroutine calling coroutine.wait(f, 1.0) will now take 5.0 real seconds to complete!
 // UI animations using wait_real remain at full 100% real-time speed!

@@ -75,7 +75,7 @@ coroutines_asm/
 ├── ASM.md                     # Odin Inline Assembly Reference & Grammar
 ├── CHANGELOG.md               # Version History & Release Notes
 ├── REPORTS.md                 # Verification Matrix & 81-Test Compliance Report
-├── COOKBOOK.md                # 9 Production Gameplay Architecture Recipes
+├── COOKBOOK.md                # 17 Production Gameplay Architecture Recipes
 │
 ├── docs/
 │   ├── tech/
@@ -97,7 +97,8 @@ coroutines_asm/
 │   │   └── 09_headless_ci_testing.md   # Headless Simulation with simulate_until
 │   │
 │   └── guides/
-│       ├── GUIDE_FOOTGUNS.md    # The 8 Fiber Footguns & Prevention Guide
+│       ├── GUIDE_TIMING_AND_DRIFT.md # Frame Quantization & Time Drift Prevention
+│       ├── GUIDE_FOOTGUNS.md    # The 10 Fiber Footguns & Prevention Guide
 │       ├── GUIDE_INTEGRATION.md # Engine Integration (Raylib, Sokol, Custom)
 │       ├── GUIDE_SCHEDULERS.md   # Multi-Scheduler Architecture (World vs. UI)
 │       ├── GUIDE_DETERMINISM.md  # Determinism, Physics & Rollback Netcode

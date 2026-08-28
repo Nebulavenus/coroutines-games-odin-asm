@@ -64,7 +64,7 @@ main :: proc() {
     // 3. Drive the Game Loop with Delta Time
     dt: f32 = 0.5
     for i := 0; i < 6; i += 1 {
-        fmt.printf("\n--- Engine Tick %d (sim_time: %.2fs) ---\n", i, sched.sim_time)
+        fmt.printf("\n--- Engine Tick %d (sim_time: %.2fs) ---\n", i, sched.clock.sim_time)
         coroutine.scheduler_step(&sched, dt)
     }
 }

@@ -23,15 +23,15 @@ trigger_fireball :: proc(sched: ^coroutine.Scheduler) {
 }
 ```
 
-To solve this problem elegantly, the engine provides two distinct parameter-passing strategies:
-1. **Strategy A: Pointer Passing (`spawn_ptr`)** for long-lived entities.
-2. **Strategy B: By-Value 128-Byte Inline Copy (`spawn_val`)** for transient parameters.
+To solve this problem elegantly, the engine provides two distinct parameter-passing strategies, unified under Odin's overloaded **`coroutine.spawn`** procedure group (`proc{spawn_ptr, spawn_val, spawn_nil}`):
+1. **Strategy A: Pointer Passing (`spawn_ptr` / `spawn`)** for long-lived entities.
+2. **Strategy B: By-Value 128-Byte Inline Copy (`spawn_val` / `spawn`)** for transient parameters.
 
 ---
 
-## 2. Strategy A: Pointer Passing (`spawn_ptr`)
+## 2. Strategy A: Pointer Passing (`spawn_ptr` / `spawn`)
 
-Use `spawn_ptr` when the target entity is long-lived and guaranteed to outlive the coroutine (for example, a `Boss`, `Player`, or `Game_World` allocated on the heap or in a global arena):
+Use pointer passing when the target entity is long-lived and guaranteed to outlive the coroutine (for example, a `Boss`, `Player`, or `Game_World` allocated on the heap or in a global arena):
 
 ```odin
 package main

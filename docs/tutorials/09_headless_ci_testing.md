@@ -37,14 +37,14 @@ Boss_Combat_State :: struct {
 
 boss_ai_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Combat_State) {
     // Phase 1: Fight for up to 10 seconds or until HP < 50
-    coroutine.race(f, {
+    coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Combat_State) {
             coroutine.wait(f, 10.0) // 10s timer
-        }, boss),
+        }, boss, name = "10s Timer"),
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Combat_State) {
             coroutine.wait_until(f, proc(b: ^Boss_Combat_State) -> bool { return b.hp <= 50 }, boss)
-        }, boss),
-    })
+        }, boss, name = "HP Trigger"),
+    )
 
     // Phase 2: Enter Enrage Phase
     boss.phase = 2
@@ -95,9 +95,9 @@ Congratulations! You have completed the 9-stage tutorial series:
 1. **[Tutorial 1: Hello Coroutines & Basic Yields](01_hello_coroutines.md)**
 2. **[Tutorial 2: State & Parameter Passing](02_parameter_passing.md)**
 3. **[Tutorial 3: Structured Concurrency (`sync` & `race`)](03_structured_concurrency.md)**
-4. **[Tutorial 4: Advanced Decision Trees (`rush`, `fallback`, `with_timeout`)](04_advanced_control_flow.md)**
-5. **[Tutorial 5: Synchronization & Communication (`Signal`, `Fiber_Mutex`, `Channel`)](05_synchronization.md)**
-6. **[Tutorial 6: Offloading Heavy Compute (`await_async`)](06_async_background_jobs.md)**
+4. **[Tutorial 4: Advanced Decision Trees (`rush`, `fallback`, `with_timeout`, `Ticker`, `with_cancel_token`)](04_advanced_control_flow.md)**
+5. **[Tutorial 5: Synchronization & Communication (`with_mutex`, `with_semaphore`, `Event`, `Latch`, `Channel`)](05_synchronization.md)**
+6. **[Tutorial 6: Offloading Heavy Compute (`await_async` & `fiber_join`)](06_async_background_jobs.md)**
 7. **[Tutorial 7: Stateful Iterators (`Generator(T)`)](07_stateful_generators.md)**
-8. **[Tutorial 8: The 3-Tier Clock in Practice](08_multi_domain_clocks.md)**
-9. **[Tutorial 9: Headless CI/CD Gameplay Testing](09_headless_ci_testing.md)**
+8. **[Tutorial 8: The 3-Tier Multi-Domain Clock Architecture](08_multi_domain_clocks.md)**
+9. **[Tutorial 9: Headless CI/CD Gameplay Testing (`simulate_until`)](09_headless_ci_testing.md)**

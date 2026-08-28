@@ -40,7 +40,7 @@ Loot_Item :: struct {
     value:  int,
 }
 
-loot_forge_procedure :: proc(f: ^coroutine.Fiber) {
+loot_forge_procedure :: proc(f: ^coroutine.Fiber, g: ^coroutine.Generator(Loot_Item)) {
     items := []Loot_Item{
         {"Rusty Iron Dagger",   .Common,    10},
         {"Reinforced Buckler",  .Uncommon,  45},
@@ -55,18 +55,14 @@ loot_forge_procedure :: proc(f: ^coroutine.Fiber) {
         index += 1
 
         // Yield value to caller and pause generator fiber!
-        coroutine.yield_value(f, item)
+        coroutine.yield_value(f, g, item)
     }
 }
 
 main :: proc() {
-    sched: coroutine.Scheduler
-    coroutine.scheduler_init(&sched)
-    defer coroutine.scheduler_destroy(&sched)
-
-    // Initialize Generator with lightweight 16KB stack
+    // Initialize Generator with dedicated lightweight 16KB stack slab
     forge: coroutine.Generator(Loot_Item)
-    coroutine.generator_init(&forge, &sched, loot_forge_procedure)
+    coroutine.generator_init(&forge, loot_forge_procedure)
     defer coroutine.generator_destroy(&forge)
 
     fmt.println("=== OPENING 5 DUNGEON CHESTS ===")
