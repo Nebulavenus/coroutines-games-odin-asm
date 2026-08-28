@@ -239,7 +239,7 @@ if ok {
 
 ## Building & Running
 
-A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_asm/build.ps1) is provided for all workflows:
+A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows:
 
 ```powershell
 # Run the Interactive All-Features Showcase Game
@@ -251,10 +251,13 @@ A PowerShell build script [`build.ps1`](file:///E:/OdinLang/Projects/coroutines_
 # Run the 2D Boss Fight Demo
 .\build.ps1 run
 
-# Run All 132 Unit Tests
+# Run the 6-Suite Performance Benchmark Runner
+.\build.ps1 run-bench
+
+# Run All 138 Unit Tests
 .\build.ps1 test
 
-# Run Full LLVM Optimization & Architecture Matrix (11 builds)
+# Run Full LLVM Optimization & Architecture Matrix (12 builds)
 .\build.ps1 matrix
 ```
 

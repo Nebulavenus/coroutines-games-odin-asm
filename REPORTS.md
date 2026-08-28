@@ -147,15 +147,51 @@ Finished 81 tests in ~307ms. All tests were successful.
 
 ---
 
-## 3. LLVM Optimization & Architecture Matrix Validation
+## 3. Performance Benchmark Suite Results (`.\build.ps1 run-bench`)
 
-All 11 build matrix targets pass with zero warnings:
+The engine includes a dedicated 6-suite benchmark runner ([`examples/bench/main.odin`](examples/bench/main.odin)) executed with host native optimizations (`-o:speed -microarch:native -no-bounds-check -disable-assert`):
+
+```
+================================================================================
+           ODIN STACKFUL COROUTINE ENGINE — PERFORMANCE BENCHMARKS               
+================================================================================
+
+[BENCH 1] Raw ASM Context Switch   : 19.35 ns / switch (51.7M switches/sec) [PASS]
+[BENCH 2] 10,000 Concurrent Fibers : 11.27 ms / 10k frame step (112.66 ms total) [PASS]
+[BENCH 3] 10,000 Timer Min-Heap     : 50.12 ms total (O(log N) min-heap) [PASS]
+[BENCH 4] CSP Channel Streaming     : 88.9 M msgs / sec (1M integers streamed) [PASS]
+[BENCH 5] Structured Tree Churn     : 24.15 us / sync tree (241.52 ms for 10k) [PASS]
+[BENCH 6] Headless Sim Fast-Forward : 30510x faster than real-time (60s in 2.0ms) [PASS]
+
+================================================================================
+ALL 6 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.
+================================================================================
+```
+
+| Benchmark Suite | Metric Measured | Result | Status |
+| :--- | :--- | :--- | :--- |
+| **Suite 1: Raw ASM Context Switch** | Direct `%rsp` + register swap latency | **19.35 ns / switch (51.7M/sec)** | **PASS** |
+| **Suite 2: 10k Concurrent Fibers** | Scheduler tick cost for 10,000 active fibers | **11.27 ms / frame step** | **PASS** |
+| **Suite 3: 10k Timer Min-Heap** | $O(\log N)$ push/pop min-heap waking | **50.12 ms total for 10,000 nodes** | **PASS** |
+| **Suite 4: CSP Channel Streaming** | Buffered channel throughput (1M integers) | **88.9 Million messages / sec** | **PASS** |
+| **Suite 5: Structured Tree Churn** | Intrusive coordinator setup & teardown | **24.15 µs / sync tree** | **PASS** |
+| **Suite 6: Headless Sim Fast-Forward** | Automated headless game simulation | **30,510x faster than real-time** | **PASS** |
+
+---
+
+## 4. LLVM Optimization & Architecture Matrix Validation
+
+All 12 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none` | `x86-64-v1` | Headless Test Runner | **PASS** (90/90) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (90/90) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (90/90) |
-| `boss_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
-| `showcase_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
-| `quest_ai_demo` | `-o:speed` | `x86-64-v2` | Raylib Window App | **PASS** (Zero Leaks) |
+| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (138/138 tests) |
+| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (138/138 tests) |
+| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (138/138 tests) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (138/138 tests) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (138/138 tests) |
+| `boss_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
+| `showcase_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
+| `quest_ai_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
+| `bench_binary` | `-o:speed` | `native` | Headless Benchmark App | **PASS** (Zero Leaks) |
+

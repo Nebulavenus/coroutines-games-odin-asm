@@ -1163,4 +1163,4 @@ The engine provides three distinct temporal domains:
 ### J. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
 - **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs > 100ms without yielding.
 - **Channel Auto-Wake & Timeouts**: `chan_destroy` automatically closes channels before memory deallocation to wake pending senders and receivers with `ok = false`, and `chan_recv_timeout` enables deadline-based message reception without hanging.
-- **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](file:///E:/OdinLang/Projects/coroutines_asm/docs/guides/GUIDE_FOOTGUNS.md).
+- **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md).

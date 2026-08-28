@@ -1,15 +1,17 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench")]
     [string]$Action
 )
 
 $OutExe = "build/game.exe"
 $ShowcaseExe = "build/showcase.exe"
 $QuestExe = "build/quest_ai.exe"
+$BenchExe = "build/bench.exe"
 $Source = "src"
 $ShowcaseSource = "examples/showcase"
 $QuestSource = "examples/quest_ai"
+$BenchSource = "examples/bench"
 $ProjectFile = "game.raddbg"
 
 function Invoke-OdinBuild
@@ -49,7 +51,8 @@ function Invoke-Matrix
         @{ Name = "Arch x86-64-v3 (AVX2/FMA)"; Args = @("-o:speed", "-microarch:x86-64-v3", "-use-single-module") },
         @{ Name = "Arch Native (Host Max)"; Args = @("-o:speed", "-microarch:native", "-use-single-module") },
         @{ Name = "Release Game Binary"; BuildOnly = $true; Source = "src"; Out = "build/game_release.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
-        @{ Name = "Showcase Binary"; BuildOnly = $true; Source = "examples/showcase"; Out = "build/showcase.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") }
+        @{ Name = "Showcase Binary"; BuildOnly = $true; Source = "examples/showcase"; Out = "build/showcase.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
+        @{ Name = "Bench Binary"; BuildOnly = $true; Source = "examples/bench"; Out = "build/bench.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") }
     )
 
     $Results = @()
@@ -164,6 +167,18 @@ switch ($Action)
         {
             Write-Host "Running $QuestExe..." -ForegroundColor Green
             & $QuestExe
+        }
+    }
+    "bench"
+    {
+        Invoke-OdinBuild $BenchSource $BenchExe @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert")
+    }
+    "run-bench"
+    {
+        if ((Invoke-OdinBuild $BenchSource $BenchExe @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert")) -eq 0)
+        {
+            Write-Host "Running $BenchExe..." -ForegroundColor Green
+            & $BenchExe
         }
     }
     "run"
