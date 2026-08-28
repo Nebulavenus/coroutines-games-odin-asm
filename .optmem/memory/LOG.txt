@@ -31,3 +31,6 @@
 #30 2026-08-28 Pruned redundant fiber_join_all/any to preserve strict structured concurrency; kept single fiber_join, zero-drift Ticker, and with_cancel_token (132/132 tests passing).
 #31 2026-08-28 Updated all 3 demo applications with Ticker, with_mutex, with_cancel_token and refreshed all documentation, cookbook recipes, guides, and tutorials (132/132 unit tests passing).
 #32 2026-08-28 GFM KaTeX rule: avoid underscores in LaTeX text mode; use standard math subscripts like t_next or code font for variables.
+#33 2026-08-29 Hardened Event(T) compile asserts, sync deallocator fidelity, simulate_until watchdog bypass, and zero-allocation fiber inline payload damage text (134/134 tests passing).
+#34 2026-08-29 Added wait_until_timeout / wait_while_timeout overloaded groups, dynamic fiber_set_name / fiber_name accessors, and chan_cap inspector (138/138 tests passing).
+#35 2026-08-29 Integrated dynamic fiber renaming (fiber_set_name) and chan_cap telemetry across Boss Fight, Showcase, and Quest AI examples.

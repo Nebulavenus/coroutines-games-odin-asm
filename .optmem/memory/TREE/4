@@ -6,3 +6,4 @@ Built fallback, rush, fail, Phase_Director, simulate_until, COOKBOOK.md, quest_a
 Synchronized pause flags, added clock helpers, multi-domain HUDs, and authored comprehensive 19-doc suite with math models, register layouts, disassembly analysis, and blueprints.
 Enriched 9 runnable tutorials, implemented pure sync primitives, pool telemetry, cleaned legacy clock fields, hardened aborted waiters, expanded history to 2048, and added scoped locks.
 Implemented event-driven chan_select_recv, by-value scoped locks, scheduler_walk_tree diagnostics, zero-drift Ticker, and with_cancel_token; integrated across all 3 demos and updated all documentation.
+Hardened engine with Event(T) compile asserts, sync allocator fidelity, simulate_until watchdog bypass, condition timeouts, dynamic fiber naming, chan_cap, and zero-alloc VFX across all 3 games.

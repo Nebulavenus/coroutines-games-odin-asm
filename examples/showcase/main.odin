@@ -274,10 +274,11 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.progress = 0.0
     s.status_text = "Contesting: Hold position in circle!"
     s.status_color = rl.YELLOW
+    coroutine.fiber_set_name(f, "Capture Contest: Active (3.5s limit)")
 
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3s timeout (race)", rl.YELLOW})
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW})
 
-    // Preemptive race: Capture task vs. 3.0s timeout
+    // Preemptive race: Capture task vs. 3.5s timeout
     won_index := coroutine.race(f,
         // Branch 0: Player must stay inside radius for 1.8 accumulated seconds
         coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
@@ -302,11 +303,13 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         s.capture_success = true
         s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
+        coroutine.fiber_set_name(f, "Capture Contest: Captured!")
         coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Point Captured", "Player secured the zone in time!", rl.GREEN})
     } else {
         s.capture_success = false
         s.status_text = "FAILED: Timeout Expired!"
         s.status_color = rl.RED
+        coroutine.fiber_set_name(f, "Capture Contest: Timed Out")
         coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Failed", "Timeout expired before completion!", rl.RED})
     }
 
@@ -353,9 +356,11 @@ drone_charge_fiber :: proc(f: ^coroutine.Fiber, d: ^Drone) {
 sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
     for {
         s.is_alerted = false
+        coroutine.fiber_set_name(f, "Sentry: Idle Perimeter Watch")
 
         // Suspends until alarm_signal is emitted! Zero CPU polling.
         coroutine.signal_wait(f, &g_world.station_beacon.alarm_signal)
+        coroutine.fiber_set_name(f, "Sentry: Active Alarm Patrol")
 
         // Run alert patrol, but cancel immediately if lockdown token trips
         cancelled := coroutine.with_cancel_token(f, &g_world.lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Sentry) {
@@ -377,6 +382,7 @@ sentry_watch_fiber :: proc(f: ^coroutine.Fiber, s: ^Sentry) {
             s.is_alerted = true
             s.alert_timer = 5.0
             s.color = rl.RED
+            coroutine.fiber_set_name(f, "Sentry: Lockdown Cancelled")
             break
         }
     }
@@ -1023,7 +1029,7 @@ showcase_render :: proc(w: ^Showcase_World) {
     panel_h: i32 = 170
     rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 16, 24, 220})
     rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {60, 100, 150, 255})
-    rl.DrawText("7. MULTI-CHANNEL SELECT", panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
+    rl.DrawText(fmt.ctprintf("7. MULTI-CHANNEL SELECT (Cap: %d)", coroutine.chan_cap(&w.station_channel.user_channel)), panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
     rl.DrawLine(panel_x + 10, panel_y + 24, panel_x + panel_w - 10, panel_y + 24, {50, 70, 100, 255})
 
     log_y := panel_y + 30

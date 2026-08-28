@@ -14,3 +14,5 @@ Enriched 9 runnable tutorials with architectural diagrams, and implemented pure 
 Cleaned obsolete aliases and clock mirror fields, hardened sync primitives against stale aborted waiters, expanded handle history to 2048, unified branch spawning, and added scoped locks.
 Implemented event-driven chan_select_recv, by-value scoped locks, scheduler_walk_tree diagnostics, dynamic batch joins (fiber_join_all/any), zero-drift Ticker, and with_cancel_token.
 Pruned redundant slice joiners for strict structured concurrency; integrated Ticker, with_mutex, and with_cancel_token across all 3 demos, updating all cookbook recipes and tech guides.
+GFM KaTeX math underscore rule; Event(T) compile-time size asserts, sync allocator fidelity, simulate_until watchdog bypass, and zero-allocation by-value inline payload VFX.
+Added wait_until_timeout/wait_while_timeout, dynamic fiber_set_name/fiber_name, and chan_cap inspector, integrated across all 3 interactive demo games.

@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Condition Timeouts, Dynamic Fiber Renaming & Channel Capacity] - 2026-08-29
+
+### Added
+- **Condition Timeouts (`wait_until_timeout` & `wait_while_timeout`) (`src/coroutine/api.odin`)**:
+  - Added 1-line auto-cancelling condition waiting primitives (`wait_until_timeout`, `wait_while_timeout`) with overloaded procedure groups supporting pointer data (`_ptr`), by-value inline payloads (`_val`), and parameterless predicates (`_nil`).
+  - Automatically races condition evaluation against timeout deadline, ensuring zero leaked branches or dangling waiter fibers upon timeout.
+- **Dynamic Fiber Renaming (`fiber_set_name` & `fiber_name`) (`src/coroutine/api.odin`)**:
+  - Added real-time dynamic fiber renaming accessors (`fiber_set_name`, `fiber_name`) allowing stateful coroutines (Boss AI, cutscenes, behavior trees) to update their debug label on the fly for in-game debugger hierarchy display.
+- **Channel Capacity Inspector (`chan_cap`) (`src/coroutine/api.odin`)**:
+  - Added `#force_inline proc "contextless" chan_cap(ch) -> int` completing the Channel inspection API alongside `chan_count`, `chan_is_empty`, and `chan_is_full`.
+- **Compile-Time Size Assertion for `Event(T)` (`src/coroutine/api.odin`)**:
+  - Added `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)` across `event_init`, `event_wait`, and `event_emit`, enforcing payload constraints at compile time instead of silent runtime data truncation.
+- **Allocator Fidelity in Synchronization Deallocation (`src/coroutine/api.odin`)**:
+  - Hardened `event_destroy`, `semaphore_destroy`, `latch_destroy`, `cancel_token_destroy`, `signal_destroy`, and `mutex_destroy` with nil checks and guaranteed custom allocator deletion.
+- **Headless Simulation Watchdog Safety (`simulate_until`)**:
+  - Automatically suppresses and restores `sched.watchdog_enabled` during `simulate_until_ptr` and `simulate_until_nil` to eliminate false watchdog panics during multi-thousand-step headless benchmarks.
+  - Expanded simulation idle checks across all timer and waiter queues (`real_timer_heap`, `tick_waiters`, `frame_waiters`, `condition_waiters`).
+- **Zero-Allocation Floating Damage Text (`src/main.odin`)**:
+  - Refactored floating damage and combat text to use by-value inline fiber payload storage (`TAG_FLOATING_TEXT`), eliminating all dynamic array heap allocations and `new()`/`free()` overhead during combat.
+- **Unit Tests 133–138 (`src/coroutine/coroutine_test.odin`)**:
+  - Added Test 133 (custom tracking arena allocation fidelity for all sync primitives), Test 134 (headless simulation with active watchdog), Test 135 (`wait_until_timeout`), Test 136 (`wait_while_timeout`), Test 137 (`fiber_set_name` / `fiber_name`), and Test 138 (`chan_cap`).
+  - Test suite expanded to **138 / 138 unit tests passing** (100% with 0 memory leaks).
+
 ## [Orthogonal API Streamlining, Precision Ticker & Task Ergonomics] - 2026-08-28
 
 ### Added

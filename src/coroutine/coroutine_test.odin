@@ -4,6 +4,7 @@ import "core:testing"
 import "core:fmt"
 import "core:math/rand"
 import "core:math"
+import "core:mem"
 
 // ============================================================================
 // Test 1: Basic Fiber Execution
@@ -5474,4 +5475,277 @@ test_with_cancel_token_interruption :: proc(t: ^testing.T) {
 
     testing.expect(t, was_cancelled)
     testing.expect(t, !task_completed)
+}
+
+// ============================================================================
+// Test 133: Custom Allocator Fidelity for Synchronization Primitives
+// ============================================================================
+
+@(test)
+test_primitives_custom_arena_allocation_fidelity :: proc(t: ^testing.T) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator)
+    defer mem.tracking_allocator_destroy(&track)
+    arena_alloc := mem.tracking_allocator(&track)
+
+    // 1. Event(T)
+    {
+        ev: Event(int)
+        event_init(&ev, allocator = arena_alloc)
+        event_destroy(&ev)
+    }
+
+    // 2. Fiber_Semaphore
+    {
+        sem: Fiber_Semaphore
+        semaphore_init(&sem, 2, 4, allocator = arena_alloc)
+        semaphore_destroy(&sem)
+    }
+
+    // 3. Fiber_Latch
+    {
+        latch: Fiber_Latch
+        latch_init(&latch, 3, allocator = arena_alloc)
+        latch_destroy(&latch)
+    }
+
+    // 4. Cancel_Token
+    {
+        tok: Cancel_Token
+        cancel_token_init(&tok, allocator = arena_alloc)
+        cancel_token_destroy(&tok)
+    }
+
+    // 5. Signal
+    {
+        sig: Signal
+        signal_init(&sig, allocator = arena_alloc)
+        signal_destroy(&sig)
+    }
+
+    // 6. Mutex
+    {
+        m: Fiber_Mutex
+        mutex_init(&m, allocator = arena_alloc)
+        mutex_destroy(&m)
+    }
+
+    // Verify zero leaks on custom allocator
+    testing.expect_value(t, len(track.allocation_map), 0)
+    testing.expect_value(t, track.current_memory_allocated, 0)
+}
+
+// ============================================================================
+// Test 134: Headless Simulation Runner with Active Watchdog
+// ============================================================================
+
+@(test)
+test_simulate_until_with_active_watchdog :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sched.watchdog_enabled = true
+
+    counter := 0
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^int) {
+        for _ in 0 ..< 500 {
+            yield_frame(f)
+            c^ += 1
+        }
+    }, &counter)
+
+    done, sim_time := simulate_until(&sched, 0.016, 10.0, proc(c: ^int) -> bool {
+        return c^ >= 500
+    }, &counter)
+
+    testing.expect(t, done)
+    testing.expect_value(t, counter, 500)
+    testing.expect(t, sched.watchdog_enabled) // Watchdog should be restored after simulation
+}
+
+// ============================================================================
+// Test 135: Condition Timeout (wait_until_timeout)
+// ============================================================================
+
+@(test)
+test_wait_until_timeout_mechanics :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    door_unlocked := false
+    success_met := false
+    success_timeout := false
+
+    timeout_met := false
+    timeout_timed_out := false
+
+    // Fiber 1: Condition met in 0.05s, timeout is 0.20s -> should succeed
+    spawn_ptr(&sched, proc(f: ^Fiber, door: ^bool) {
+        wait(f, 0.05)
+        door^ = true
+    }, &door_unlocked)
+
+    Ctx1 :: struct {
+        door:      ^bool,
+        met:       ^bool,
+        timed_out: ^bool,
+    }
+    ctx1 := Ctx1{door = &door_unlocked, met = &success_met, timed_out = &success_timeout}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx1) {
+        met, timed_out := wait_until_timeout(f, proc(d: ^bool) -> bool {
+            return d^
+        }, c.door, 0.20)
+        c.met^ = met
+        c.timed_out^ = timed_out
+    }, &ctx1)
+
+    // Fiber 2: Condition never met, timeout is 0.05s -> should time out
+    Ctx2 :: struct {
+        met:       ^bool,
+        timed_out: ^bool,
+    }
+    ctx2 := Ctx2{met = &timeout_met, timed_out = &timeout_timed_out}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx2) {
+        met, timed_out := wait_until_timeout(f, proc() -> bool {
+            return false
+        }, 0.05)
+        c.met^ = met
+        c.timed_out^ = timed_out
+    }, &ctx2)
+
+    // Step 0.10s
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, success_met, "Fiber 1 condition should have been met")
+    testing.expect(t, !success_timeout, "Fiber 1 should not have timed out")
+
+    testing.expect(t, !timeout_met, "Fiber 2 condition should not be met")
+    testing.expect(t, timeout_timed_out, "Fiber 2 should have timed out")
+}
+
+// ============================================================================
+// Test 136: Condition While Timeout (wait_while_timeout)
+// ============================================================================
+
+@(test)
+test_wait_while_timeout_mechanics :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    busy := true
+    cleared_met := false
+    cleared_timed_out := false
+
+    timeout_met := false
+    timeout_timed_out := false
+
+    // Fiber 1: Busy clears in 0.04s, timeout is 0.20s -> should complete without timeout
+    spawn_ptr(&sched, proc(f: ^Fiber, b: ^bool) {
+        wait(f, 0.04)
+        b^ = false
+    }, &busy)
+
+    Ctx1 :: struct {
+        busy:      ^bool,
+        met:       ^bool,
+        timed_out: ^bool,
+    }
+    ctx1 := Ctx1{busy = &busy, met = &cleared_met, timed_out = &cleared_timed_out}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx1) {
+        met, timed_out := wait_while_timeout(f, proc(b: ^bool) -> bool {
+            return b^
+        }, c.busy, 0.20)
+        c.met^ = met
+        c.timed_out^ = timed_out
+    }, &ctx1)
+
+    // Fiber 2: Always busy, timeout is 0.05s -> should time out
+    Ctx2 :: struct {
+        met:       ^bool,
+        timed_out: ^bool,
+    }
+    ctx2 := Ctx2{met = &timeout_met, timed_out = &timeout_timed_out}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx2) {
+        met, timed_out := wait_while_timeout(f, proc() -> bool {
+            return true
+        }, 0.05)
+        c.met^ = met
+        c.timed_out^ = timed_out
+    }, &ctx2)
+
+    // Step 0.10s
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, cleared_met, "Fiber 1 wait_while should have completed")
+    testing.expect(t, !cleared_timed_out, "Fiber 1 should not have timed out")
+
+    testing.expect(t, !timeout_met, "Fiber 2 wait_while should not have completed naturally")
+    testing.expect(t, timeout_timed_out, "Fiber 2 should have timed out")
+}
+
+// ============================================================================
+// Test 137: Dynamic Fiber Renaming (fiber_set_name & fiber_name)
+// ============================================================================
+
+@(test)
+test_fiber_dynamic_renaming :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    recorded_names: [dynamic]string
+    defer delete(recorded_names)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, names: ^[dynamic]string) {
+        append(names, fiber_name(f))
+
+        fiber_set_name(f, "Phase 2: Nova Charge")
+        append(names, fiber_name(f))
+
+        fiber_set_name(f, "Phase 3: Enraged")
+        append(names, fiber_name(f))
+    }, &recorded_names, name = "Phase 1: Patrol")
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, len(recorded_names), 3)
+    testing.expect_value(t, recorded_names[0], "Phase 1: Patrol")
+    testing.expect_value(t, recorded_names[1], "Phase 2: Nova Charge")
+    testing.expect_value(t, recorded_names[2], "Phase 3: Enraged")
+}
+
+// ============================================================================
+// Test 138: Channel Capacity Inspection (chan_cap)
+// ============================================================================
+
+@(test)
+test_chan_cap_inspection :: proc(t: ^testing.T) {
+    // Unbuffered channel (rendezvous)
+    ch_unbuf: Channel(int)
+    chan_init(&ch_unbuf, 0)
+    defer chan_destroy(&ch_unbuf)
+
+    testing.expect_value(t, chan_cap(&ch_unbuf), 0)
+    testing.expect_value(t, chan_count(&ch_unbuf), 0)
+
+    // Buffered channel (capacity 16)
+    ch_buf: Channel(f32)
+    chan_init(&ch_buf, 16)
+    defer chan_destroy(&ch_buf)
+
+    testing.expect_value(t, chan_cap(&ch_buf), 16)
+    testing.expect_value(t, chan_count(&ch_buf), 0)
+    testing.expect(t, chan_is_empty(&ch_buf))
+    testing.expect(t, !chan_is_full(&ch_buf))
 }

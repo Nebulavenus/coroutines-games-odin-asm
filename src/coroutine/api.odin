@@ -319,6 +319,16 @@ fiber_join :: proc(f: ^Fiber, target_handle: Fiber_Handle) -> (ok: bool) {
     return found ? (status == .Completed) : true
 }
 
+fiber_set_name :: #force_inline proc(f: ^Fiber, name: string) {
+    if f != nil {
+        f.debug_name = name
+    }
+}
+
+fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
+    return f != nil ? f.debug_name : ""
+}
+
 wait_ptr :: proc(f: ^Fiber, seconds_ptr: ^f32) {
     if seconds_ptr == nil {
         yield_frame(f)
@@ -920,6 +930,224 @@ with_timeout_nil :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber), name: 
 with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, with_timeout_nil}
 
 // ============================================================================
+// Condition Timeouts (wait_until_timeout & wait_while_timeout)
+// ============================================================================
+
+wait_until_timeout_ptr :: proc(
+    f: ^Fiber,
+    condition: proc(data: ^$T) -> bool,
+    data: ^T,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) {
+    if f == nil || f.sched == nil do return false, false
+    if condition != nil && condition(data) do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc(data: ^T) -> bool,
+        data:      ^T,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_until(f, s.cond, s.data)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+wait_until_timeout_val :: proc(
+    f: ^Fiber,
+    condition: proc(data: $T) -> bool,
+    data: T,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "wait_until_timeout_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || f.sched == nil do return false, false
+    if condition != nil && condition(data) do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc(data: T) -> bool,
+        data:      T,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_until(f, s.cond, s.data)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+wait_until_timeout_nil :: proc(
+    f: ^Fiber,
+    condition: proc() -> bool,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) {
+    if f == nil || f.sched == nil do return false, false
+    if condition != nil && condition() do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc() -> bool,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_until(f, s.cond)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+// Unified overloaded entry point
+wait_until_timeout :: proc{wait_until_timeout_ptr, wait_until_timeout_val, wait_until_timeout_nil}
+
+wait_while_timeout_ptr :: proc(
+    f: ^Fiber,
+    condition: proc(data: ^$T) -> bool,
+    data: ^T,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) {
+    if f == nil || f.sched == nil do return false, false
+    if condition == nil || !condition(data) do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc(data: ^T) -> bool,
+        data:      ^T,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_while(f, s.cond, s.data)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+wait_while_timeout_val :: proc(
+    f: ^Fiber,
+    condition: proc(data: $T) -> bool,
+    data: T,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) where !intrinsics.type_is_pointer(T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "wait_while_timeout_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || f.sched == nil do return false, false
+    if condition == nil || !condition(data) do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc(data: T) -> bool,
+        data:      T,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_while(f, s.cond, s.data)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+wait_while_timeout_nil :: proc(
+    f: ^Fiber,
+    condition: proc() -> bool,
+    timeout_seconds: f32,
+) -> (condition_met: bool, timed_out: bool) {
+    if f == nil || f.sched == nil do return false, false
+    if condition == nil || !condition() do return true, false
+    if timeout_seconds <= 0.0 do return false, true
+
+    State :: struct {
+        cond:      proc() -> bool,
+        timeout:   f32,
+        met:       bool,
+        timed_out: bool,
+    }
+    s := State{cond = condition, timeout = timeout_seconds, met = false, timed_out = false}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait_while(f, s.cond)
+            s.met = true
+        }, &s, name = "Cond Wait Branch"),
+
+        branch(proc(f: ^Fiber, s: ^State) {
+            wait(f, s.timeout)
+            s.timed_out = true
+        }, &s, name = "Cond Timeout Branch"),
+    )
+
+    if winner == 1 do return false, true
+    return s.met, s.timed_out
+}
+
+// Unified overloaded entry point
+wait_while_timeout :: proc{wait_while_timeout_ptr, wait_while_timeout_val, wait_while_timeout_nil}
+
+// ============================================================================
 // Signal (Event Broadcast)
 // ============================================================================
 
@@ -928,6 +1156,7 @@ signal_init :: proc(sig: ^Signal, allocator := context.allocator) {
 }
 
 signal_destroy :: proc(sig: ^Signal) {
+    if sig == nil do return
     delete(sig.waiters)
 }
 
@@ -963,6 +1192,7 @@ mutex_init :: proc(m: ^Fiber_Mutex, allocator := context.allocator) {
 }
 
 mutex_destroy :: proc(m: ^Fiber_Mutex) {
+    if m == nil do return
     delete(m.waiters)
 }
 
@@ -1040,15 +1270,18 @@ with_mutex :: proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}
 // ============================================================================
 
 event_init :: proc(ev: ^Event($T), allocator := context.allocator) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     ev.waiters = make([dynamic]^Fiber, allocator)
     ev.allocator = allocator
 }
 
 event_destroy :: proc(ev: ^Event($T)) {
+    if ev == nil do return
     delete(ev.waiters)
 }
 
 event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || ev == nil || f.sched == nil do return {}, false
 
     append(&ev.waiters, f)
@@ -1065,6 +1298,7 @@ event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
 }
 
 event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if sched == nil || ev == nil do return
 
     for f in ev.waiters {
@@ -1099,6 +1333,7 @@ semaphore_init :: proc(sem: ^Fiber_Semaphore, initial_permits: int, max_permits:
 }
 
 semaphore_destroy :: proc(sem: ^Fiber_Semaphore) {
+    if sem == nil do return
     delete(sem.waiters)
 }
 
@@ -1185,6 +1420,7 @@ latch_init :: proc(latch: ^Fiber_Latch, initial_count: int, allocator := context
 }
 
 latch_destroy :: proc(latch: ^Fiber_Latch) {
+    if latch == nil do return
     delete(latch.waiters)
 }
 
@@ -1234,6 +1470,7 @@ cancel_token_init :: proc(tok: ^Cancel_Token, allocator := context.allocator) {
 }
 
 cancel_token_destroy :: proc(tok: ^Cancel_Token) {
+    if tok == nil do return
     delete(tok.waiters)
 }
 
@@ -1349,6 +1586,10 @@ chan_destroy :: proc(ch: ^Channel($T)) {
 
 chan_count :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
     return ch != nil ? ch.count : 0
+}
+
+chan_cap :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
+    return ch != nil ? ch.capacity : 0
 }
 
 chan_is_empty :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
@@ -1793,6 +2034,11 @@ simulate_until_ptr :: proc(
     dt := step_dt > 0.0 ? step_dt : 0.016
     start_time := sched.clock.sim_time
 
+    // Temporarily disable watchdog for high-speed headless simulation
+    prev_watchdog := sched.watchdog_enabled
+    sched.watchdog_enabled = false
+    defer sched.watchdog_enabled = prev_watchdog
+
     for {
         if condition != nil && condition(data) {
             return true, sched.clock.sim_time - start_time
@@ -1800,7 +2046,7 @@ simulate_until_ptr :: proc(
         if sched.clock.sim_time - start_time >= max_sim_seconds {
             return false, sched.clock.sim_time - start_time
         }
-        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
+        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.real_timer_heap) == 0 && len(sched.tick_waiters) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
             return (condition != nil && condition(data)), sched.clock.sim_time - start_time
         }
         scheduler_step(sched, dt)
@@ -1817,6 +2063,11 @@ simulate_until_nil :: proc(
     dt := step_dt > 0.0 ? step_dt : 0.016
     start_time := sched.clock.sim_time
 
+    // Temporarily disable watchdog for high-speed headless simulation
+    prev_watchdog := sched.watchdog_enabled
+    sched.watchdog_enabled = false
+    defer sched.watchdog_enabled = prev_watchdog
+
     for {
         if condition != nil && condition() {
             return true, sched.clock.sim_time - start_time
@@ -1824,7 +2075,7 @@ simulate_until_nil :: proc(
         if sched.clock.sim_time - start_time >= max_sim_seconds {
             return false, sched.clock.sim_time - start_time
         }
-        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
+        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.real_timer_heap) == 0 && len(sched.tick_waiters) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
             return (condition != nil && condition()), sched.clock.sim_time - start_time
         }
         scheduler_step(sched, dt)

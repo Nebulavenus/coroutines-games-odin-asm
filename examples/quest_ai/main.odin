@@ -138,6 +138,7 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 if dist > 85.0 || k.stamina < 60.0 {
                     coroutine.fail(f) // Fallthrough to Priority B
                 }
+                coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
                 k.current_action = "Whirlwind Attack! (Priority A)"
                 k.action_color = rl.RED
                 k.stamina -= 50.0
@@ -150,6 +151,7 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
                 if dist > 180.0 || k.stamina < 30.0 {
                     coroutine.fail(f) // Fallthrough to Priority C
                 }
+                coroutine.fiber_set_name(f, "Knight AI: Shield Bash (B)")
                 k.current_action = "Shield Bash Dash! (Priority B)"
                 k.action_color = rl.ORANGE
                 k.stamina -= 30.0
@@ -160,6 +162,7 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
 
             // 3. Priority C: Guaranteed Fallback (Patrol & Recover Stamina)
             coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+                coroutine.fiber_set_name(f, "Knight AI: Tactical Patrol & Rest (C)")
                 k.current_action = "Tactical Patrol & Rest (Fallback C)"
                 k.action_color = rl.SKYBLUE
                 k.stamina = min(100.0, k.stamina + 20.0)
@@ -183,6 +186,7 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     q.keycard_found = false
     q.status_text = "Quest Running: 3 Parallel Objectives (rush)..."
     q.status_color = rl.YELLOW
+    coroutine.fiber_set_name(f, "Quest Director (Active rush)")
 
     // Broadcast Quest Start via Event(T)
     coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{"Outpost Quest Started: Hack, Slay, or Retrieve!", rl.YELLOW})
@@ -226,11 +230,13 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         q.winner_name = names[winner]
         q.status_text = fmt.tprintf("SUCCESS: %s (rush won by Option %d)", q.winner_name, winner)
         q.status_color = rl.GREEN
+        coroutine.fiber_set_name(f, "Quest Director: Completed")
         // Broadcast Victory Event
         coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fmt.tprintf("VICTORY: %s", q.winner_name), rl.GREEN})
     } else {
         q.status_text = "QUEST FAILED"
         q.status_color = rl.RED
+        coroutine.fiber_set_name(f, "Quest Director: Failed")
     }
 }
 
@@ -239,6 +245,7 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
 // ============================================================================
 
 sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
+    coroutine.fiber_set_name(f, "Sentinel: Phase 1 (Laser Patrol)")
     s.color = rl.GOLD
     center := s.pos
     for {
@@ -250,6 +257,7 @@ sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 
 // Phase 2: Spawns independent Crystal Minion and uses fiber_join to wait for it!
 sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
+    coroutine.fiber_set_name(f, "Sentinel: Phase 2 (Shield & Minion)")
     s.color = rl.SKYBLUE
     for {
         s.shield_alpha = 0.95
@@ -258,6 +266,7 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 
         // Spawn independent Crystal Minion task using Ticker
         minion_handle := coroutine.spawn(&g_world.sched, proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
+            coroutine.fiber_set_name(f, "Crystal Minion: Active")
             ticker: coroutine.Ticker
             coroutine.ticker_init(&ticker, 0.5)
             for i := 0; i < 4; i += 1 {
@@ -277,6 +286,7 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 }
 
 sentinel_phase3_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
+    coroutine.fiber_set_name(f, "Sentinel: Phase 3 (Enraged Stalk)")
     s.color = rl.RED
     for {
         target := g_world.player.pos

@@ -18,20 +18,22 @@ SCREEN_WIDTH  :: 1280
 SCREEN_HEIGHT :: 720
 
 Projectile :: struct {
-    pos:    rl.Vector2,
-    vel:    rl.Vector2,
-    radius: f32,
-    color:  rl.Color,
+    pos:      rl.Vector2,
+    vel:      rl.Vector2,
+    radius:   f32,
+    color:    rl.Color,
     is_enemy: bool,
-    alive:  bool,
+    alive:    bool,
 }
 
+TAG_FLOATING_TEXT : u32 : 0xF10A7
+
 Floating_Text :: struct {
-    text:     string,
-    pos:      rl.Vector2,
-    color:    rl.Color,
-    alpha:    f32,
-    scale:    f32,
+    text:  string,
+    pos:   rl.Vector2,
+    color: rl.Color,
+    alpha: f32,
+    scale: f32,
 }
 
 Particle :: struct {
@@ -75,7 +77,6 @@ Game :: struct {
     player:         Player,
     boss:           Boss,
     projectiles:    [dynamic]Projectile,
-    floating_texts: [dynamic]^Floating_Text,
     particles:      [dynamic]Particle,
     camera_offset:           rl.Vector2,
     game_time:               f32,
@@ -155,10 +156,9 @@ trigger_camera_shake :: proc(intensity: f32) {
     coroutine.spawn(&g_game.sched, camera_shake_coroutine, intensity)
 }
 
-floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {
-    if ft == nil do return
-
-    start_y := ft.pos.y
+floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
+    curr_ft := ft
+    start_y := curr_ft.pos.y
     target_y := start_y - 45.0
 
     // Tween upward position with juicy back-easing and fade out
@@ -169,30 +169,21 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {
         elapsed += coroutine.delta_time(f)
         t := clamp(elapsed / dur, 0.0, 1.0)
         eased_t := coroutine.ease_out_back(t)
-        ft.pos.y = start_y + (target_y - start_y) * eased_t
-        ft.alpha = 1.0 - t
+        curr_ft.pos.y = start_y + (target_y - start_y) * eased_t
+        curr_ft.alpha = 1.0 - t
+        (cast(^Floating_Text)&f.payload_storage[0])^ = curr_ft
     }
-
-    // Remove pointer from list and free
-    for i in 0 ..< len(g_game.floating_texts) {
-        if g_game.floating_texts[i] == ft {
-            unordered_remove(&g_game.floating_texts, i)
-            break
-        }
-    }
-    free(ft)
 }
 
 spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color) {
-    ft := new(Floating_Text)
-    ft.text = text
-    ft.pos = pos
-    ft.color = color
-    ft.alpha = 1.0
-    ft.scale = 20
-    append(&g_game.floating_texts, ft)
-
-    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft)
+    ft := Floating_Text{
+        text  = text,
+        pos   = pos,
+        color = color,
+        alpha = 1.0,
+        scale = 20,
+    }
+    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft, name = "Floating Text", tag = TAG_FLOATING_TEXT)
 }
 
 player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
@@ -308,6 +299,7 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // ========================================================================
     // PHASE 1: Patrol + Spiral Bullet Barrage (Runs until HP < 700)
     // ========================================================================
+    coroutine.fiber_set_name(f, "Boss AI: Phase 1 (Spiral Barrage)")
     b.phase = 1
     b.phase_name = "Phase 1: Spiral Barrage"
     b.color = rl.GOLD
@@ -336,6 +328,7 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // ========================================================================
     // PHASE 2: Super Shield Charge & Radial Nova (Runs until HP < 350)
     // ========================================================================
+    coroutine.fiber_set_name(f, "Boss AI: Phase 2 (Shield & Nova)")
     b.phase = 2
     b.phase_name = "Phase 2: Super Nova Charge"
     b.color = rl.SKYBLUE
@@ -391,6 +384,7 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // ========================================================================
     // PHASE 3: Enraged Berserk Mode (HP <= 350)
     // ========================================================================
+    coroutine.fiber_set_name(f, "Boss AI: Phase 3 (Enraged Berserk)")
     b.phase = 3
     b.phase_name = "Phase 3: BERSERK ENRAGED"
     b.color = rl.RED
@@ -436,7 +430,6 @@ game_init :: proc(g: ^Game) {
     }
 
     g.projectiles = make([dynamic]Projectile)
-    g.floating_texts = make([dynamic]^Floating_Text)
     g.particles = make([dynamic]Particle)
     g.camera_offset = {0, 0}
     g.game_time = 0.0
@@ -456,10 +449,6 @@ game_destroy :: proc(g: ^Game) {
     coroutine.scope_destroy(&g.sched, &g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
     delete(g.projectiles)
-    for ft in g.floating_texts {
-        free(ft)
-    }
-    delete(g.floating_texts)
     delete(g.particles)
 }
 
@@ -746,13 +735,22 @@ game_render :: proc(g: ^Game) {
         rl.DrawCircleV(p.pos + g.camera_offset, p.radius, p.color)
     }
 
-    // --- Draw Floating Texts ---
-    for ft in g.floating_texts {
-        c := ft.color
-        c.a = u8(clamp(ft.alpha * 255.0, 0, 255))
-        cstr := fmt.ctprintf(ft.text)
-        rl.DrawText(cstr, i32(ft.pos.x) + cam_x, i32(ft.pos.y) + cam_y, i32(ft.scale), c)
+    // --- Draw Floating Texts (Zero-Allocation via Fiber Payloads) ---
+    Floating_Draw_Ctx :: struct {
+        cam_x: i32,
+        cam_y: i32,
     }
+    draw_ctx := Floating_Draw_Ctx{cam_x = cam_x, cam_y = cam_y}
+    coroutine.scheduler_walk_tree(&g.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
+        if f != nil && f.user_tag == TAG_FLOATING_TEXT && f.status != .Unused && f.status != .Completed && f.status != .Aborted && f.status != .Failed {
+            ft := (cast(^Floating_Text)&f.payload_storage[0])^
+            ctx := (cast(^Floating_Draw_Ctx)user_data)^
+            c := ft.color
+            c.a = u8(clamp(ft.alpha * 255.0, 0, 255))
+            cstr := fmt.ctprintf(ft.text)
+            rl.DrawText(cstr, i32(ft.pos.x) + ctx.cam_x, i32(ft.pos.y) + ctx.cam_y, i32(ft.scale), c)
+        }
+    }, &draw_ctx)
 
     // ========================================================================
     // UI OVERLAY
