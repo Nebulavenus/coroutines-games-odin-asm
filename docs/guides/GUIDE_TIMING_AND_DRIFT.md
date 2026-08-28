@@ -34,7 +34,7 @@ for {
 1. **Target:** Wake at $t = 0.5000\text{ s}$.
 2. **Frame Quantization:** At 60 FPS ($16.666\text{ ms}$ per frame), the engine lands on Frame 31 ($t = 0.5166\text{ s}$).
 3. **The Trap:** When the fiber resumes, it computes `next_wake` relative to the *current* overshoot time:
-   $$\text{next\_wake} = 0.5166 + 0.5000 = \mathbf{1.0166\text{ s}}$$
+   $$t_{\text{next}} = 0.5166 + 0.5000 = \mathbf{1.0166\text{ s}}$$
 4. The next wakeup lands on Frame 62 ($t = 1.0333\text{ s}$).
 5. **The Error Accumulates:** The $+16.666\text{ ms}$ frame overshoot is **permanently added to the timeline on EVERY single iteration**.
 6. **Result:** After 60 iterations (intended 30.0 seconds), the loop has drifted by **$+1.0\text{ to } +2.0\text{ full seconds}$!**
@@ -54,9 +54,9 @@ for {
 }
 ```
 
-1. **Target 1:** $\text{target}_1 = 0.5000\text{ s} \rightarrow$ Wakes at $t = 0.5166\text{ s}$.
+1. **Target 1:** $t_1 = 0.5000\text{ s} \rightarrow$ Wakes at $t = 0.5166\text{ s}$.
 2. **The Self-Correction:** Next target is calculated by **adding the interval to the previous target anchor**, NOT the current overshoot time:
-   $$\text{next\_wake} = 0.5000 + 0.5000 = \mathbf{1.0000\text{ s}}$$
+   $$t_{\text{next}} = 0.5000 + 0.5000 = \mathbf{1.0000\text{ s}}$$
 3. It asks the scheduler to wait for the exact difference:
    $$\Delta t_{\text{wait}} = 1.0000 - 0.5166 = \mathbf{0.4834\text{ s}}$$
 4. The next wakeup lands at Frame 61 ($t = 1.0166\text{ s}$).

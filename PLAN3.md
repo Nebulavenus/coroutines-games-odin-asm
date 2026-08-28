@@ -28,7 +28,7 @@ An IEEE-754 32-bit float (`f32`) has a **24-bit significand** (approx. 7 decimal
 * **At 18.2 hours ($65,536\text{ s} = 2^{16}\text{ s}$):** The machine epsilon is $\approx 7.8\text{ ms}$. Adding a normal $16.6\text{ ms}$ ($60\text{ FPS}$) frame loses nearly half its precision bits. Adding small sub-frame deltas is **completely ignored**.
 
 #### The SkookumScript Solution:
-1. **`f64` for Simulation Seconds:** A 64-bit float has a **53-bit significand** ($\approx 15\text{–}17$ decimal digits). It can run continuously for **thousands of years** with microsecond precision.
+1. **`f64` for Simulation Seconds:** A 64-bit float has a **53-bit significand** ($\approx 15\text{-}17\text{ decimal digits}$). It can run continuously for **thousands of years** with microsecond precision.
 2. **`u64` for Integer Ticks:** 64-bit integer ticks (milliseconds or microseconds) **never suffer from floating-point rounding errors**, never drift between different CPU architectures, and overflow only after **584 million years**.
 3. **Absolute Timestamps vs. Relative Delta Subtraction:**
    * *Anti-Pattern:* Decrementing `timer -= dt` every frame. Floating-point subtraction accumulates compounding rounding errors over thousands of frames.

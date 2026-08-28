@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 - **Unit Tests 131–132 (`src/coroutine/coroutine_test.odin`)**:
   - Added unit tests verifying zero-drift `Ticker` and `with_cancel_token` cancellation.
   - Test suite stands at **132 / 132 unit tests passing** (100% with 0 memory leaks).
+- **GitHub Flavored Markdown KaTeX Compatibility**:
+  - Normalized LaTeX math blocks across all documentation, guides, and tech specs to eliminate KaTeX text-mode underscore parsing errors (`\text{..._...}`) and ensure crisp rendering on GitHub.
 
 ### Removed
 - **Unstructured Slice Joiners (`fiber_join_all` / `fiber_join_any`)**:
@@ -75,7 +77,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - **Debug Infinite Loop Watchdog (`Scheduler.watchdog_enabled`, `scheduler_set_watchdog`)**:
   - In debug builds (`when ODIN_DEBUG`), measures the duration of each fiber execution slice.
-  - Automatically panics with descriptive diagnostics (`[WATCHDOG PANIC]`) naming the offending fiber handle and debug name if a fiber runs for $>100\text{ms}$ without yielding.
+  - Automatically panics with descriptive diagnostics (`[WATCHDOG PANIC]`) naming the offending fiber handle and debug name if a fiber runs for > 100ms without yielding.
 - **Channel Auto-Wake on Destruction (`chan_destroy`)**:
   - Automatically invokes `chan_close(ch)` before freeing backing arrays, waking all pending senders and receivers with `ok = false`.
 - **Channel Receive with Deadline / Timeout (`chan_recv_timeout`)**:

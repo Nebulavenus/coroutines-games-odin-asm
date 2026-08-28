@@ -1161,6 +1161,6 @@ The engine provides three distinct temporal domains:
 - **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_GUARD`.
 
 ### J. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
-- **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs $>100\text{ms}$ without yielding.
+- **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs > 100ms without yielding.
 - **Channel Auto-Wake & Timeouts**: `chan_destroy` automatically closes channels before memory deallocation to wake pending senders and receivers with `ok = false`, and `chan_recv_timeout` enables deadline-based message reception without hanging.
 - **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](file:///E:/OdinLang/Projects/coroutines_asm/docs/guides/GUIDE_FOOTGUNS.md).

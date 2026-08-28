@@ -77,8 +77,8 @@ if pct > 80.0 {
 ```
 
 ### Best Practices for Fiber Stack Economy:
-- **Avoid large stack arrays:** Declare buffers $> 4\text{KB}$ in your entity struct or allocate them through an arena rather than placing them as local variables on the fiber stack.
-- **Pass structs by pointer or by-value inline payload:** Use `spawn_val` for small structures ($\le 128\text{B}$) and pointer references `spawn_ptr` for larger game state objects.
+- **Avoid large stack arrays:** Declare buffers > 4KB in your entity struct or allocate them through an arena rather than placing them as local variables on the fiber stack.
+- **Pass structs by pointer or by-value inline payload:** Use `spawn_val` for small structures ($\le 128\text{ bytes}$) and pointer references `spawn_ptr` for larger game state objects.
 - **Keep recursion bounded:** Prefer iterative loops with `yield_frame(f)` or `wait(f, dt)` over deep recursive procedures.
 
 ---

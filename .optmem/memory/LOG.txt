@@ -30,3 +30,4 @@
 #29 2026-08-28 Implemented dynamic batch joining (fiber_join_all/fiber_join_any), zero-drift periodic Ticker, and with_cancel_token task wrapper (134/134 tests passing).
 #30 2026-08-28 Pruned redundant fiber_join_all/any to preserve strict structured concurrency; kept single fiber_join, zero-drift Ticker, and with_cancel_token (132/132 tests passing).
 #31 2026-08-28 Updated all 3 demo applications with Ticker, with_mutex, with_cancel_token and refreshed all documentation, cookbook recipes, guides, and tutorials (132/132 unit tests passing).
+#32 2026-08-28 GFM KaTeX rule: avoid underscores in LaTeX text mode; use standard math subscripts like t_next or code font for variables.

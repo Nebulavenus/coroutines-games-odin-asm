@@ -26,7 +26,7 @@ $$\epsilon(T) = 2^{\lfloor \log_2(T) \rfloor - 23}$$
 | **$32,768\text{ s}$** | 9.1 Hours | $0.001953\text{ s}$ ($1.95\text{ms}$) | **$11.72\%$** | Noticeable animation stutter |
 | **$65,536\text{ s}$** | 18.2 Hours | $0.003906\text{ s}$ ($3.90\text{ms}$) | **$23.44\%$** | Severe frame drops and timer skipping |
 | **$131,072\text{ s}$** | 36.4 Hours | $0.007812\text{ s}$ ($7.81\text{ms}$) | **$46.87\%$** | Physics breakdown |
-| **$1,048,576\text{ s}$**| 12.1 Days | $0.062500\text{ s}$ ($62.5\text{ms}$) | **$>300\%$** | Time completely freezes |
+| **$1,048,576\text{ s}$**| 12.1 Days | $0.062500\text{ s}$ ($62.5\text{ms}$) | **> 300%** | Time completely freezes |
 
 ### Why $f64$ + $u64$ Guarantees Multi-Year Zero-Drift
 
@@ -66,7 +66,7 @@ $$\epsilon(T) = 2^{\lfloor \log_2(T) \rfloor - 23}$$
 | :--- | :--- | :--- | :--- | :--- |
 | **Simulation** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
 | **Real-Time** | `coroutine.wait_real(f, seconds)` | `coroutine.spawn_real(&sched, proc)` | `coroutine.real_time(f)` | `coroutine.delta_real(f)` |
-| **Discrete Ticks** | `coroutine.wait_ticks(f, ticks)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_ticks(f)` | $1 / \text{tick\_rate\_hz}$ |
+| **Discrete Ticks** | `coroutine.wait_ticks(f, ticks)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_ticks(f)` | $1 / f_{\text{tick}}$ |
 
 ---
 

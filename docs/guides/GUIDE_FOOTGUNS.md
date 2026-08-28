@@ -267,7 +267,7 @@ poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
 ```
 
 ### How the Engine Mitigates It
-Use the built-in **`coroutine.Ticker`** (`ticker_init`, `ticker_wait`). The ticker advances target timestamps via absolute interval arithmetic ($\text{target\_time} += \text{interval}$), guaranteeing zero cumulative time drift regardless of frame execution variations.
+Use the built-in **`coroutine.Ticker`** (`ticker_init`, `ticker_wait`). The ticker advances target timestamps via absolute interval arithmetic ($t_{\text{target}} += \Delta t$), guaranteeing zero cumulative time drift regardless of frame execution variations.
 
 ```odin
 // SAFE & DRIFT-FREE:

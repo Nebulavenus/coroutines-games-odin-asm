@@ -205,7 +205,7 @@ ticker_wait(f, &ticker)
 ```
 
 ### Mathematical Time Anchoring:
-- Calculates target wake timestamps via absolute interval addition: $\text{target\_time}_{k+1} = \text{target\_time}_k + \Delta t$
+- Calculates target wake timestamps via absolute interval addition: $t_{k+1} = t_k + \Delta t$
 - If the game drops frames or stalls, the ticker catches up without cascading bursts by clamping forward to $\text{now} + \Delta t$.
 - Guarantees exact frequency (e.g. exactly 120 ticks in 60.0s) across both simulation and real-time clock domains.
 
