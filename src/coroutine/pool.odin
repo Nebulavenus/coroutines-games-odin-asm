@@ -211,7 +211,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     pool.next_handle_id += 1
     if pool.next_handle_id == 0 do pool.next_handle_id = 1 // Avoid 0
 
-    pool.handle_history[fiber.handle % 256] = Handle_Entry{
+    pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
         handle = fiber.handle,
         status = .Ready,
     }

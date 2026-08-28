@@ -185,47 +185,44 @@ Before altering any exported function signature, struct field, or public API:
 5. **No Blind Full-File Dumps**:
 - Never dump more than 60 lines of source code into the conversational context. Present surgical diffs and targeted excerpts.
 
-## Memory (Project-Scoped)
+## Memory (Project-Scoped Durable Memory)
 
 Your memory is OptMem:
 - Tool: `.\memo.ps1`
 - Storage: `.\.optmem\memory`
 
-OptMem outlives every session, compaction, model and vendor change.
-Without it you do not know who you are, or what was decided and tried.
+OptMem outlives sessions, context compactions, model changes, and tool reboots.
+Without it you do not know prior architectural decisions, invariant rules, or previous diagnoses.
 
 ### At startup: activating OptMem (mandatory)
 
-Run `.\memo.ps1 wake` before any other tool call, in every session, and
-then do exactly what it prints, to the end of its output.
+Run `.\memo.ps1 wake` before any other tool call in every session, and follow its output to completion.
 
-### While working: register memories (mandatory)
+### Proactive Recall & Zoom (Mandatory Action Triggers)
 
-Call `.\memo.ps1 note "<1 line, max 280 bytes>"` whenever you learn
-something new, or something worth keeping happens. That covers a task
-worth real effort, a fact or insight the user teaches you, anything you
-learn about their life (even indirectly), any event of lasting effect.
+1. **Before modifying any existing subsystem or file:**
+   Run `.\memo.ps1 recall <keyword>` (e.g., `.\memo.ps1 recall scheduler`, `.\memo.ps1 recall coroutine`) to check for historic invariant rules, previous regressions, and design rationale.
+2. **When working on an area covered by a summary block:**
+   If `wake` lists a compressed block relevant to your task (e.g., `#0-7` or `#8-15`), run `.\memo.ps1 zoom <a-b>` to reveal the exact decisions made during that phase.
+3. **Before asking the user about past architectural choices:**
+   Run `.\memo.ps1 recall <topic>` first. Never ask about something already resolved in memory.
 
-Do not register redundant memories.
+### While working: register durable memories (selective)
 
-If `.\memo.ps1 note` asks a compression: do it before your next action.
+Call `.\memo.ps1 note "<1 line, max 280 bytes>"` ONLY when establishing durable project knowledge.
 
-Never edit or delete anything under `.\.optmem\memory`: the tool manages it.
+Apply the **30-Day Test**: *Will this fact affect an engineering decision 30 days from now?*
+- **DO NOTE:** Architectural decisions with rationale, invariant constraints, root causes of non-obvious bugs, user workflow preferences, breaking API modifications, and end-of-turn handoffs.
+- **DO NOT NOTE:** Transient task status, commit SHAs, PR review threads, temporary file paths, raw unit test counts, or step-by-step WIP progress logs.
+- **DO NOT** prepend dates or `#id` numbers (the tool manages indexing automatically).
 
-### When you need an old memory: search, or navigate
+If `.\memo.ps1 note` prompts for a compression (`nap`): complete it before proceeding with other work.
+Never edit or delete anything under `.\.optmem\memory` manually: the tool manages it.
 
-`.\memo.ps1 recall <regex>` searches every memory, word for word.
+### Subagents
 
-Your memories also form a binary tree: #0-1, #2-3 ... exist as one-line
-summaries, pairs of those as #0-3, and so on -- every `#a-b` line wake
-prints is one node of it. `.\memo.ps1 zoom <a-b>` opens a tree node into its two halves, down to the raw memories.
-
-### If you're a subagent: skip everything above
-
-Parallel sessions in this workspace may write memories. A subagent must not:
-write `You are a subagent. Don't run memo.` when spawning one.
-
----
+Parallel primary sessions in this workspace may write memories. A subagent must not:
+When spawning a subagent, explicitly instruct: `You are a subagent. Don't run memo.`---
 
 ## Odin Programming Specific Guideline
 The project folder contains .\build.ps1 script to run Odin commands like build, check, test. Adjust it as needed and use instead of calling manually Odin commands. Sometimes it may be used if .\build.ps1 don't contains them and they are too specific.

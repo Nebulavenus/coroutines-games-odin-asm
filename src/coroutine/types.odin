@@ -269,6 +269,8 @@ Fiber_Pool_Config :: struct {
     allocator:       mem.Allocator,
 }
 
+FIBER_HANDLE_HISTORY_CAPACITY :: 2048
+
 Handle_Entry :: struct {
     handle: Fiber_Handle,
     status: Fiber_Status,
@@ -282,7 +284,7 @@ Fiber_Pool :: struct {
     free_fibers:     [dynamic]^Fiber,
     all_fibers:      [dynamic]^Fiber,
     next_handle_id:  u32,
-    handle_history:  [256]Handle_Entry,
+    handle_history:  [FIBER_HANDLE_HISTORY_CAPACITY]Handle_Entry,
 }
 
 // ============================================================================

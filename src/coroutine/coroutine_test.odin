@@ -4908,6 +4908,309 @@ test_temp_allocator_isolation_invariants :: proc(t: ^testing.T) {
     testing.expect(t, f2_alloc_ok)
 }
 
+// ============================================================================
+// Test 121: Stale Waiter Abort Immunity in Mutex
+// ============================================================================
 
+@(test)
+test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
 
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
 
+    F1_Ctx :: struct {
+        m:    ^Fiber_Mutex,
+        done: bool,
+    }
+    f1_ctx := F1_Ctx{ m = &m, done = false }
+
+    f2_handle: Fiber_Handle
+
+    F3_Ctx :: struct {
+        done: bool,
+    }
+    f3_ctx := F3_Ctx{ done = false }
+
+    // Fiber 1 holds lock
+    spawn_ptr(&sched, proc(f: ^Fiber, p: ^F1_Ctx) {
+        mutex_lock(f, p.m)
+        wait(f, 0.04)
+        mutex_unlock(f.sched, p.m)
+        p.done = true
+    }, &f1_ctx)
+
+    // Fiber 2 blocks waiting for lock
+    f2_handle = spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
+        mutex_lock(f, m)
+    }, &m)
+
+    // Run 1 frame so f1 locks and f2 suspends into m.waiters
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(m.waiters), 1)
+
+    // Cancel fiber 2 externally while in waiters queue
+    fiber_cancel(&sched, f2_handle)
+    testing.expect(t, !fiber_is_alive(&sched, f2_handle))
+
+    // Fiber 3 is spawned (recycles fiber slot) and sleeps for 0.10s
+    spawn_ptr(&sched, proc(f: ^Fiber, p: ^F3_Ctx) {
+        wait(f, 0.10)
+        p.done = true
+    }, &f3_ctx)
+
+    // Step past f1's release (0.04s + 0.01s initial = 0.05s)
+    for _ in 0 ..< 6 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    // Fiber 1 finished and unlocked
+    testing.expect(t, f1_ctx.done)
+    // Fiber 3 should NOT have finished yet (needs 0.10s, only ~0.07s elapsed)
+    testing.expect(t, !f3_ctx.done)
+
+    // Step until Fiber 3 completes naturally
+    for _ in 0 ..< 8 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect(t, f3_ctx.done)
+}
+
+// ============================================================================
+// Test 122: Scoped Mutex and Semaphore (with_mutex & with_semaphore)
+// ============================================================================
+
+@(test)
+test_scoped_mutex_and_semaphore :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, 1, 1)
+    defer semaphore_destroy(&sem)
+
+    Mutex_Test_Data :: struct {
+        m:       ^Fiber_Mutex,
+        counter: int,
+    }
+    m_data := Mutex_Test_Data{ m = &m, counter = 0 }
+
+    // Spawn 2 fibers updating counter via with_mutex
+    for _ in 0 ..< 2 {
+        spawn_ptr(&sched, proc(f: ^Fiber, d: ^Mutex_Test_Data) {
+            with_mutex(f, d.m, proc(f: ^Fiber, data: ^Mutex_Test_Data) {
+                wait(f, 0.02)
+                data.counter += 1
+            }, d)
+        }, &m_data)
+    }
+
+    // Run until mutex tasks finish
+    for _ in 0 ..< 6 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect_value(t, m_data.counter, 2)
+    testing.expect(t, !m.locked)
+
+    // Test with_semaphore
+    sem_executed := false
+    spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { sem: ^Fiber_Semaphore, done: ^bool }) {
+        with_semaphore(f, p.sem, proc(f: ^Fiber, done: ^bool) {
+            wait(f, 0.02)
+            done^ = true
+        }, p.done)
+    }, &struct { sem: ^Fiber_Semaphore, done: ^bool }{ &sem, &sem_executed })
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.01)
+    }
+    testing.expect(t, sem_executed)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+// ============================================================================
+// Test 123: Multi-Channel Select (chan_try_select_recv & chan_select_recv)
+// ============================================================================
+
+@(test)
+test_multi_channel_select :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch1, ch2, ch3: Channel(int)
+    chan_init(&ch1, 4)
+    chan_init(&ch2, 4)
+    chan_init(&ch3, 4)
+    defer {
+        chan_destroy(&ch1)
+        chan_destroy(&ch2)
+        chan_destroy(&ch3)
+    }
+
+    channels := [3]^Channel(int){&ch1, &ch2, &ch3}
+
+    // 1. Try-select on empty channels
+    idx, val, ok := chan_try_select_recv(channels[:])
+    testing.expect_value(t, ok, false)
+    testing.expect_value(t, idx, -1)
+
+    // Push into channel 2
+    chan_try_send(&ch2, 42)
+    idx, val, ok = chan_try_select_recv(channels[:])
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, idx, 1)
+    testing.expect_value(t, val, 42)
+
+    // 2. Blocking chan_select_recv in a fiber
+    Select_Context :: struct {
+        channels:       []^Channel(int),
+        received_idx:   int,
+        received_val:   int,
+        received_ok:    bool,
+    }
+    ctx := Select_Context{
+        channels     = channels[:],
+        received_idx = -1,
+        received_val = 0,
+        received_ok  = false,
+    }
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Context) {
+        idx, v, ok_recv := chan_select_recv(f, c.channels)
+        c.received_idx = idx
+        c.received_val = v
+        c.received_ok = ok_recv
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, !ctx.received_ok)
+
+    // Producer sends to ch3
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        wait(f, 0.02)
+        chan_send(f, ch, 999)
+    }, &ch3)
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect(t, ctx.received_ok)
+    testing.expect_value(t, ctx.received_idx, 2)
+    testing.expect_value(t, ctx.received_val, 999)
+}
+
+// ============================================================================
+// Test 124: Cancellation Token (Cancel_Token)
+// ============================================================================
+
+@(test)
+test_cancellation_token_broadcast :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok: Cancel_Token
+    cancel_token_init(&tok)
+    defer cancel_token_destroy(&tok)
+
+    woken_count := 0
+
+    // Spawn 3 waiting fibers
+    for _ in 0 ..< 3 {
+        spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { tok: ^Cancel_Token, count: ^int }) {
+            cancel_token_wait(f, p.tok)
+            p.count^ += 1
+        }, &struct { tok: ^Cancel_Token, count: ^int }{ &tok, &woken_count })
+    }
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, woken_count, 0)
+    testing.expect(t, !cancel_token_is_cancelled(&tok))
+
+    // Broadcast cancellation
+    cancel_token_cancel(&sched, &tok)
+    testing.expect(t, cancel_token_is_cancelled(&tok))
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, woken_count, 3)
+
+    // Wait on already-cancelled token returns immediately without blocking
+    instant_woken := false
+    spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { tok: ^Cancel_Token, done: ^bool }) {
+        cancel_token_wait(f, p.tok)
+        p.done^ = true
+    }, &struct { tok: ^Cancel_Token, done: ^bool }{ &tok, &instant_woken })
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, instant_woken)
+}
+
+// ============================================================================
+// Test 125: Generational Handle History Capacity (>256 slots)
+// ============================================================================
+
+@(test)
+test_generational_handle_history_capacity :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    handles: [300]Fiber_Handle
+
+    // Rapidly spawn and complete 300 fibers
+    for i in 0 ..< 300 {
+        handles[i] = spawn_nil(&sched, proc(f: ^Fiber) {
+            // Immediate completion
+        })
+    }
+
+    // Step once to complete all
+    scheduler_step(&sched, 0.01)
+
+    // Verify all 300 handles record .Completed correctly in history
+    for h, i in handles {
+        status, found := fiber_status(&sched, h)
+        testing.expect(t, found, "Handle must be found in extended history")
+        testing.expect_value(t, status, Fiber_Status.Completed)
+    }
+}
+
+// ============================================================================
+// Test 126: Channel Stale Waiter Abort Immunity
+// ============================================================================
+
+@(test)
+test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, 0) // Rendezvous
+    defer chan_destroy(&ch)
+
+    f_recv_handle := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Channel(int)) {
+        chan_recv(f, c)
+    }, &ch)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, len(ch.recv_waiters), 1)
+
+    // Cancel receiver while waiting in recv_waiters
+    fiber_cancel(&sched, f_recv_handle)
+
+    // Send value to channel - should skip dead waiter and not panic/hang
+    sent := chan_try_send(&ch, 100)
+    testing.expect(t, !sent)
+    testing.expect_value(t, len(ch.recv_waiters), 0)
+}

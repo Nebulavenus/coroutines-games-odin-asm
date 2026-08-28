@@ -593,7 +593,7 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
 
     // 4. Record status in history before recycling
     if fiber.handle != 0 {
-        sched.fiber_pool.handle_history[fiber.handle % 256].status = fiber.status
+        sched.fiber_pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY].status = fiber.status
     }
 
     // 5. Return to pool

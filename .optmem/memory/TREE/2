@@ -1,13 +1,14 @@
-Initialized OptMem; starting TDD implementation of SkookumScript-inspired ASM coroutine engine with structured concurrency
-Completed stackful coroutine engine with structured concurrency (sync/race), ASM context switch, boss AI demo, zero leaks, all tests passing
-Documented test matrix in REPORTS.md and added interactive Raylib 2D Boss Fight game with visual coroutines (tweens, shakes, dashes)
-Fixed camera shake rand range assertion and converted floating texts to stable heap pointers self-managed by coroutines
-Hardened scope_destroy & sync; verified all 27 comprehensive edge-case tests with ASM caller-saved clobbers and zero leaks
-Validated 10 LLVM optimization & microarchitecture matrix builds and authored comprehensive README.md
-Implemented PLAN & PLAN2 features: per-fiber temp arena, timeouts, signals, fiber mutex, profiler/tree UI, Async_Token, Channel, Generator, VM guard pages (39 tests passing)
-Built standalone interactive showcase game (7 stations) and completed ergonomic API refactor (proc groups, mutex_ naming, scope_destroy guards)
-Implemented fallback, rush, fail, Phase_Director, simulate_until, COOKBOOK.md, quest_ai (65 tests), and unified simulation pause/step debugger UI
-Fixed debugger stepping with scheduler_single_step and input latching; implemented 3-tier engine clock with pluggable drivers (70 tests passing)
-Synced F3 pause flag between scheduler & clock, added clock helpers, multi-domain visualizer displays, and Recipe 6 to COOKBOOK.md
-Completed and enriched PLAN4.md documentation suite (19 docs with math models, register layouts, disassembly, blueprints) and synced repo docs
-Expanded 9 tutorials with full runnable code; added pure primitives (fiber_join, Event, Semaphore, Latch), pool prewarming, telemetry (81 tests passing)
+Initialized project-scoped OptMem and started TDD development of SkookumScript-inspired ASM coroutine engine with structured concurrency.
+Completed core implementation of stackful coroutine engine with structured concurrency (sync/race), ASM context switch, and boss AI demonstration with zero memory leaks.
+Documented full verification matrix in REPORTS.md and built interactive 2D Boss Fight showcase using vendor:raylib with camera shake, tweens, and visual coroutines.
+Hardened boss demo stability: clamped decay in camera shake and switched floating text persistence to stable heap pointers self-managed by coroutines.
+Hardened scope_destroy with scheduler cancel, added bool return to sync, and verified ASM caller-saved clobbers across 27 comprehensive edge-case tests.
+Validated full 10-config LLVM optimization/microarchitecture build matrix and authored comprehensive README.md with architecture overview, API quickstart, and build guide.
+Implemented fiber temp arenas, with_timeout, signals, fiber mutex, watermark profiler, F1 tree visualizer, Async_Token, Channel(T), Generator(T), and VM guard pages.
+Built 7-station interactive showcase demo and completed ergonomic API refactor with overloaded procedure groups (spawn/branch/wait_until), mutex_ rename, and scope guards.
+Implemented fallback, rush, fail, Phase_Director, simulate_until, COOKBOOK.md, quest_ai demo, and unified debugger pause/single-step controls (F3/F4/F5) across all demos.
+Fixed paused debugger stepping with scheduler_single_step/input latching, and built 3-Tier Multi-Domain Clock (Real Clock, Scaled Sim Clock, Integer Ticks) with pluggable drivers.
+Synchronized F3 pause toggle flags, added scheduler clock helper accessors, integrated multi-domain clock visualizers into debug HUDs, and authored COOKBOOK Recipe 6.
+Completed comprehensive 19-document documentation suite (guides, tech deep-dives, tutorials) enriched with mathematical models, register layout tables, and game blueprints.
+Enriched 9 runnable tutorials with architectural diagrams, and implemented pure primitives (fiber_join, Event(T), Fiber_Semaphore, Fiber_Latch), pool prewarming, and telemetry.
+Cleaned obsolete aliases and clock mirror fields, hardened sync primitives against stale aborted waiters, expanded handle history to 2048, unified branch spawning, and added scoped locks.

@@ -11,7 +11,7 @@
   {memo} config [NAME=N]   show this memory's sizes, or change one.
   {memo} import <file>     bulk-load dated memories (bootstrap only).
 
-Memories default to the project-local './memory' directory next to this script.
+Memories default to the project-local './.optmem/memory' directory.
 """
 
 import datetime
@@ -31,7 +31,7 @@ for _s in (sys.stdout, sys.stderr):
 
 
 def pretty(p):
-    """Formats paths cleanly: project-relative (.\path) if inside cwd, otherwise ~ or absolute."""
+    """Formats paths cleanly: project-relative (.\\path) if inside cwd, otherwise ~ or absolute."""
     p = os.path.abspath(p)
     try:
         rel = os.path.relpath(p, os.getcwd())
@@ -44,19 +44,21 @@ def pretty(p):
 
 
 def get_invocation():
-    """Detects best execution command, prioritizing PowerShell wrappers."""
+    """Detects best execution command, prioritizing the root PowerShell wrapper."""
     cwd = os.getcwd()
     root_ps1 = os.path.join(cwd, "memo.ps1")
     root_cmd = os.path.join(cwd, "memo.cmd")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    script_ps1 = os.path.join(script_dir, "memo.ps1")
 
     if os.path.exists(root_ps1):
-        return ".\\memo.ps1"
+        return ".\\memo.ps1" if sys.platform.startswith("win") else "./memo.ps1"
     if os.path.exists(root_cmd):
-        return ".\\memo.cmd"
-    if os.path.exists(script_ps1):
-        return pretty(script_ps1)
+        return ".\\memo.cmd" if sys.platform.startswith("win") else "./memo.cmd"
+
+    # Check parent directory if script is inside .optmem/
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    parent_ps1 = os.path.join(parent_dir, "memo.ps1")
+    if os.path.exists(parent_ps1):
+        return ".\\memo.ps1" if sys.platform.startswith("win") else "./memo.ps1"
 
     script_pretty = pretty(__file__)
     if sys.platform.startswith("win"):
@@ -128,10 +130,17 @@ def cover(T, budget):
 # ---------------------------------------------------------------- store
 
 def memory_dir():
+    """Resolves storage location to .optmem/memory."""
     if "MEMORY_DIR" in os.environ:
         return os.path.expanduser(os.environ["MEMORY_DIR"])
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(script_dir, "memory")
+
+    # If memo.py is inside .optmem\, storage is script_dir\memory
+    if os.path.basename(script_dir).lower() == ".optmem":
+        return os.path.join(script_dir, "memory")
+
+    # Fallback if script is in project root
+    return os.path.join(script_dir, ".optmem", "memory")
 
 
 def store():
@@ -274,9 +283,21 @@ def locked(d):
 def log_append(d, items):
     lock = locked(d)
     try:
-        lines = read_lines(log_path(d))
+        p = log_path(d)
+        lines = read_lines(p)
         base = len(lines)
-        with open(log_path(d), "a", encoding="utf-8") as f:
+
+        # Check if file has trailing newline before appending
+        needs_newline = False
+        if os.path.exists(p) and os.path.getsize(p) > 0:
+            with open(p, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    needs_newline = True
+
+        with open(p, "a", encoding="utf-8") as f:
+            if needs_newline:
+                f.write("\n")
             for k, (date, text) in enumerate(items):
                 f.write("#%d %s %s\n" % (base + k, date, text.strip()))
         return base
@@ -349,8 +370,10 @@ def check(text):
     text = text.strip()
     if not text:
         die("Empty. A memory is one line of text.")
-    if "\n" in text or "\r" in text:
-        die("%d lines. A memory is one line: merge them, or note them separately." % (text.count("\n") + 1))
+    # Reject all 10 Unicode line break boundaries
+    lines = text.splitlines()
+    if len(lines) > 1:
+        die("%d lines. A memory is one line: merge them, or note them separately." % len(lines))
     n = len(text.encode("utf-8"))
     if n > ENTRY_CHARS:
         die("Too long: %d bytes, limit %d. Accented characters cost 2 bytes. Compress it further." % (n, ENTRY_CHARS))
@@ -395,7 +418,8 @@ def nap_prompt(d, lo, hi, left):
         "1 compression remains" if left == 1 else
         "%d compressions remain" % left)
     return ("Compress memories #%d-%d into one line of at most %d bytes.\n"
-            "Keep what has lasting effect, drop what does not. Invent nothing.\n\n"
+            "Keep durable architecture decisions and lasting effects; drop transient status and test counts.\n"
+            "Do NOT include dates, #IDs, or metadata in your summary—OptMem handles indexing.\n\n"
             "%s\n%s\n"
             "Run: %s nap %d-%d \"<your line>\""
             % (lo, hi - 1, ENTRY_CHARS, body, tail, ME, lo, hi - 1))
@@ -412,37 +436,35 @@ def next_nap(d, T):
 # ---------------------------------------------------------------- commands
 
 TEMPLATE = """\
-## Memory (Project-Scoped)
+## Memory (Project-Scoped Durable Memory)
 
 Your memory is OptMem:
 - Tool: `{memo}`
 - Storage: `{data}`
 
-OptMem outlives every session, compaction, model and vendor change.
-Without it you do not know who you are, or what was decided and tried.
+OptMem outlives sessions, context compactions, and model changes.
 
 ### At startup: activating OptMem (mandatory)
+Run `{memo} wake` before any other tool call in every session, and follow its output.
 
-Run `{memo} wake` before any other tool call, in every session, and
-then do exactly what it prints, to the end of its output.
+### Proactive Recall & Zoom (Mandatory Action Triggers)
+1. Before modifying any subsystem: Run `{memo} recall <keyword>` to check historic invariants.
+2. When touching older areas: Run `{memo} zoom <a-b>` to expand condensed `#a-b` blocks.
+3. Before asking the user about past decisions: Run `{memo} recall <topic>` first.
 
-### While working: register memories (mandatory)
+### While working: register durable memories (selective)
+Call `{memo} note "<1 line, max {chars} bytes>"` ONLY when establishing durable project knowledge.
 
-Call `{memo} note "<1 line, max {chars} bytes>"` whenever you learn
-something new, or something worth keeping happens in this project.
-Do not register redundant memories.
-If `{memo} note` asks a compression: do it before your next action.
-Never edit or delete anything under `{data}`: the tool manages it.
+Apply the 30-Day Test: Will this fact affect decisions 30 days from now?
+- DO NOTE: Architectural decisions with rationale, invariant constraints, root causes of non-obvious bugs, user preferences, and handoffs.
+- DO NOT NOTE: Transient state, commit SHAs, PR status, temporary paths, raw test counts, or WIP step-by-step progress logs.
+- DO NOT prepend dates or `#id` numbers (the tool manages metadata).
 
-### When you need an old memory: search, or navigate
+If `{memo} note` prompts for a compression (`nap`): complete it before proceeding.
+Never edit or delete anything under `{data}` manually.
 
-`{memo} recall <regex>` searches every memory in this project.
-`{memo} zoom <a-b>` opens a tree node into its two halves.
-
-### If you're a subagent: skip everything above
-
-Parallel sessions in this workspace may write memories. A subagent must not:
-write `You are a subagent. Don't run memo.` when spawning one.
+### Subagents
+Subagents must never run `memo`. When spawning one, specify: `You are a subagent. Don't run memo.`
 """
 
 
@@ -493,7 +515,7 @@ def cmd_wake(d, args):
                 die("T=%d, but the log holds %s. Run: %s wake"
                     % (T, plural(now, "memory"), ME))
     if not T:
-        print("No project memories yet. Record the first with: %s note \"<one line>\"" % ME)
+        print("No project memories yet. Record durable decisions with: %s note \"<one line>\"" % ME)
         print("You are awake.")
         return
     lines = []
@@ -524,6 +546,9 @@ def cmd_wake(d, args):
         print("Not awake yet. Run: %s wake %d %d" % (ME, k + 1, T))
     else:
         print("You are awake.")
+        # Proactive action reminder: trigger agent to search/zoom before working
+        if any("-" in line.split()[0] for line in lines):
+            print("\n[Action Reminder] Summary nodes (#a-b) hide granular details. Run '%s zoom <a-b>' or '%s recall <keyword>' before modifying historical subsystems." % (ME, ME))
         nap = next_nap(d, T)
         if nap:
             print("\n" + nap)
@@ -653,6 +678,9 @@ def cmd_import(d, args):
         line = line.strip()
         if not line:
             continue
+        # Strict Unicode splitlines check for import path
+        if len(line.splitlines()) > 1:
+            die("line %d: a memory is one line, but this has %d." % (i, len(line.splitlines())))
         date, _, text = line.partition(" ")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             die("line %d: expected 'YYYY-MM-DD <text>', got: %s" % (i, line))

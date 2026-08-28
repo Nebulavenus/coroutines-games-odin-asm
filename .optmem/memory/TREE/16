@@ -1,1 +1,1 @@
-Built & hardened SkookumScript ASM coroutine engine with structured concurrency, guard pages, channels/generators, Raylib boss & showcase games, verified across 10 LLVM builds
+Built complete stackful ASM coroutine engine with structured concurrency (sync/race), raylib showcases, VM guard pages, temp arenas, signals, mutexes, channels, generators, and proc groups.

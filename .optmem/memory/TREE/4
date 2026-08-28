@@ -1,6 +1,7 @@
-Initialized OptMem & implemented SkookumScript-inspired stackful coroutine engine with structured concurrency (sync/race), ASM context switch, boss AI demo, and zero leaks
-Documented test matrix in REPORTS.md and built Raylib 2D Boss Fight game with visual coroutines (tweens, shakes, stable heap floating text)
-Hardened scope/sync APIs, verified 27 edge-case tests with ASM clobbers, validated 10 LLVM matrix builds, authored README.md
-Implemented PLAN/PLAN2 (temp arena, timeouts, signals, mutex, Async_Token, Channel, Generator, VM guards), 7-station showcase game, ergonomic API refactor
-Implemented flow combinators (fallback/rush/fail), Phase_Director, quest_ai, paused debugger stepping/freeze, and 3-tier engine clock (70 tests passing)
-Synced scheduler/clock pause flags, added clock helpers/visualizer status, created 19-doc PLAN4.md tech & guide suite, updated repo docs
+Initialized OptMem and implemented core stackful coroutine engine with structured concurrency (sync/race), ASM context switch, and boss AI demonstration with zero memory leaks.
+Documented test matrix in REPORTS.md, built 2D Boss Fight showcase via raylib, clamped camera shake decay, and switched floating text to coroutine-managed heap pointers.
+Hardened scope_destroy and sync return bool, verified ASM caller-saved clobbers across 10 LLVM optimization matrix builds, and authored comprehensive README.md.
+Built fiber temp arenas, with_timeout, signals, fiber mutex, watermark profiler, F1 tree visualizer, Async_Token, Channel, Generator, VM guard pages, and overloaded proc groups.
+Built fallback, rush, fail, Phase_Director, simulate_until, COOKBOOK.md, quest_ai demo, unified debugger stepping (F3/F4/F5), and 3-Tier Multi-Domain Clock engine with pluggable drivers.
+Synchronized pause flags, added clock helpers, multi-domain HUDs, and authored comprehensive 19-doc suite with math models, register layouts, disassembly analysis, and blueprints.
+Enriched 9 runnable tutorials, implemented pure sync primitives, pool telemetry, cleaned legacy clock fields, hardened aborted waiters, expanded history to 2048, and added scoped locks.

@@ -25,3 +25,4 @@
 #24 2026-08-24 Expanded and enriched all 9 progressive tutorials with complete copy-pasteable runnable code, mental models, and deep architecture diagrams
 #25 2026-08-24 Implemented pure primitives (fiber_join, Event(T), Fiber_Semaphore, Fiber_Latch), pool prewarming, telemetry, RTS Action Queue recipe, and 11 new tests (81 total tests passing)
 #26 2026-08-28 Cleaned obsolete aliases, legacy clock mirror fields, and stale debug comments across engine and examples
+#27 2026-08-28 Hardened sync primitives against stale aborted waiters, expanded handle history to 2048, unified branch spawning via fiber_setup_branches, and added with_mutex/with_semaphore scoped locks (126/126 tests passing).

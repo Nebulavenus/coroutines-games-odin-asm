@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Critical Hardening, DRY Refactoring & Scoped Synchronization] - 2026-08-28
+
+### Added
+- **Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)**:
+  - Overloaded `with_mutex` (`with_mutex_ptr`, `with_mutex_nil`) acquiring a `Fiber_Mutex` and guaranteeing defer release upon body exit.
+  - Overloaded `with_semaphore` (`with_semaphore_ptr`, `with_semaphore_nil`) acquiring and releasing a `Fiber_Semaphore` permit safely.
+- **Generational Handle History Expansion (`FIBER_HANDLE_HISTORY_CAPACITY :: 2048`)**:
+  - Expanded `Fiber_Pool.handle_history` from 256 to 2048 slots, eliminating ABA collisions and ensuring historical fiber queries remain accurate across long sessions.
+- **Unit Tests 121–126 (`src/coroutine/coroutine_test.odin`)**:
+  - Added 6 new unit tests validating stale waiter abort immunity in mutexes and channels, scoped lock mechanics, multi-channel select, cancel token broadcast, and extended handle capacity.
+  - Suite expanded to **126 / 126 unit tests passing** (100% with 0 memory leaks).
+
+### Changed
+- **Stale Suspended Waiter Validation (100% Abort Immunity)**:
+  - Hardened all synchronization wake sites (`mutex_unlock`, `semaphore_release`, `latch_count_down`, `signal_emit`, `event_emit`, `chan_send`, `chan_try_send`, `chan_recv`, `chan_try_recv`, `chan_close`, `cancel_token_cancel`).
+  - Added `fiber_is_alive(sched, f.handle)` validation before unblocking suspended fibers, ensuring recycled or aborted fibers in waiter queues are never falsely awakened.
+- **DRY Branch Spawning Refactoring (`fiber_setup_branches`)**:
+  - Extracted private `fiber_setup_branches` helper in `src/coroutine/api.odin`, unifying ~90 lines of duplicate setup logic across `sync`, `race`, and `rush`.
+
 ## [Legacy Code Audit & Pristine Engine Cleanup] - 2026-08-28
 
 ### Removed
