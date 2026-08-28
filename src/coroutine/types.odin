@@ -304,13 +304,6 @@ Scheduler :: struct {
     // 3-Tier Multi-Domain Clock
     clock:             Scheduler_Clock,
 
-    // Legacy / Mirror Engine Time (synchronized with clock for backwards compatibility)
-    current_time:      f64,
-    current_frame:     u64,
-    delta_time:        f32,
-    time_scale:        f32,
-    is_paused:         bool,
-
     // Execution Context
     scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread
     current_fiber:         ^Fiber, // Currently executing fiber

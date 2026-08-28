@@ -69,7 +69,7 @@ main :: proc() {
     coroutine.generator_init(&forge, &sched, loot_forge_procedure)
     defer coroutine.generator_destroy(&forge)
 
-    fmt.Println("=== OPENING 5 DUNGEON CHESTS ===")
+    fmt.println("=== OPENING 5 DUNGEON CHESTS ===")
 
     // Pull 5 items on demand
     for chest_id := 1; chest_id <= 5; chest_id += 1 {

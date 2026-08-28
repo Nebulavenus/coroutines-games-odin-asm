@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Legacy Code Audit & Pristine Engine Cleanup] - 2026-08-28
+
+### Removed
+- **Obsolete Procedure Aliases (`src/coroutine/api.odin`)**:
+  - Removed `spawn_typed`, `branch_typed`, `wait_until_typed`, and `wait_cond` aliases superseded by Odin's overloaded procedure groups (`spawn`, `branch`, `wait_until`).
+- **Redundant Scheduler Clock Mirror Fields (`src/coroutine/types.odin` & `src/coroutine/scheduler.odin`)**:
+  - Removed `current_time`, `current_frame`, `delta_time`, `time_scale`, and `is_paused` mirror fields from `Scheduler`.
+  - Established `Scheduler.clock` (`Scheduler_Clock`) as the sole source of truth.
+  - Eliminated per-frame synchronization assignments and branching overhead from `scheduler_step`, `scheduler_single_step`, and `scheduler_advance`.
+- **Dead Debug Artifacts (`src/coroutine/scheduler.odin`)**:
+  - Removed commented-out debug print from `fiber_cleanup_and_recycle`.
+
+### Changed
+- **Tween Delta Timing (`src/coroutine/api.odin`)**:
+  - Refactored `tween_f32`, `tween_vec2`, `tween_vec3`, and `tween_vec4` to use `delta_time(f)` inline accessor.
+- **Clock Accessors (`src/coroutine/scheduler.odin`)**:
+  - Updated `scheduler_set_paused`, `scheduler_is_paused`, `scheduler_set_time_scale`, `scheduler_time_scale`, and added `scheduler_delta_time` to operate cleanly on `sched.clock`.
+
 ## [The 8 Footguns Safety Upgrades & Comprehensive Concurrency Hardening] - 2026-08-24
 
 ### Added

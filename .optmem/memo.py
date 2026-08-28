@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OptMem: a permanent, append-only memory for AI agents (Project-Scoped).
+"""OptMem: a permanent, append-only memory for AI agents (Project-Scoped, Line-Based).
 
   {memo} init              create this memory; print the setup block.
   {memo} wake [part [T]]   read your memory. Run first, every session.
@@ -18,7 +18,7 @@ import datetime
 try:
     import fcntl
 except ImportError:
-    fcntl = None  # Windows fallback using msvcrt below
+    fcntl = None  # Windows fallback using msvcrt
 import os
 import re
 import sys
@@ -78,8 +78,6 @@ PART_CHARS = KNOBS["PART_CHARS"][0]
 PART_LINES = KNOBS["PART_LINES"][0]
 
 RAW_MAX = 16
-LOG_REC = 320
-TREE_REC = 288
 
 
 # ---------------------------------------------------------------- blocks
@@ -130,7 +128,6 @@ def cover(T, budget):
 # ---------------------------------------------------------------- store
 
 def memory_dir():
-    """Defaults to the 'memory' directory next to this script inside the project."""
     if "MEMORY_DIR" in os.environ:
         return os.path.expanduser(os.environ["MEMORY_DIR"])
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -145,16 +142,13 @@ def store():
     os.makedirs(os.path.join(d, "TREE"), exist_ok=True)
     p = os.path.join(d, "LOG.txt")
     if not os.path.exists(p):
-        open(p, "a").close()
+        open(p, "a", encoding="utf-8").close()
     return d
 
 
 def size(k, v, where=""):
     if not v.isdigit() or int(v) < 1:
         die("%s%s must be a positive whole number, not '%s'." % (where, k, v))
-    top = min(TREE_REC - 8, LOG_REC - 40)
-    if k == "ENTRY_CHARS" and int(v) > top:
-        die("%sENTRY_CHARS is at most %d: a memory has to fit the fixed-width records." % (where, top))
     return int(v)
 
 
@@ -200,88 +194,62 @@ def tree_path(d, size):
     return os.path.join(d, "TREE", str(size))
 
 
-def count(path, rec):
-    try:
-        return os.path.getsize(path) // rec
-    except FileNotFoundError:
-        return 0
+def read_lines(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\r\n") for line in f if line.strip()]
 
 
 def log_len(d):
-    return count(log_path(d), LOG_REC)
+    return len(read_lines(log_path(d)))
 
 
-def repair(path, rec):
-    try:
-        n = os.path.getsize(path)
-    except FileNotFoundError:
-        return
-    if n % rec:
-        with open(path, "r+b") as f:
-            f.truncate(n - n % rec)
+def tree_len(path):
+    return len(read_lines(path))
 
 
 def parse(line):
+    line = line.strip()
     head, _, rest = line.partition(" ")
     date, _, text = rest.partition(" ")
     return int(head[1:]), date, text
 
 
-def records(buf):
-    return [parse(buf[i * LOG_REC:(i + 1) * LOG_REC].decode().rstrip())
-            for i in range(len(buf) // LOG_REC)]
-
-
 def log_slice(d, lo, hi):
-    with open(log_path(d), "rb") as f:
-        f.seek(lo * LOG_REC)
-        return records(f.read((hi - lo) * LOG_REC))
+    lines = read_lines(log_path(d))
+    return [parse(lines[i]) for i in range(lo, min(hi, len(lines)))]
 
 
 def log_get(d, i):
-    return log_slice(d, i, i + 1)[0]
+    lines = read_lines(log_path(d))
+    return parse(lines[i])
 
 
 def log_scan(d):
-    with open(log_path(d), "rb") as f:
-        while True:
-            buf = f.read(LOG_REC * 4096)
-            if not buf:
-                return
-            for e in records(buf):
-                yield e
+    for line in read_lines(log_path(d)):
+        yield parse(line)
 
 
 def tree_get(d, lo, hi):
     size = hi - lo
-    try:
-        with open(tree_path(d, size), "rb") as f:
-            f.seek((lo // size) * TREE_REC)
-            rec = f.read(TREE_REC)
-    except FileNotFoundError:
-        return None
-    try:
-        return rec.decode().rstrip() or None
-    except UnicodeDecodeError:
-        die("The summary of #%d-%d is corrupt. Run: %s forget %d-%d"
-            % (lo, hi - 1, ME, lo, hi - 1))
-
-
-def pad(text, rec):
-    b = text.encode()
-    if len(b) > rec - 1:
-        die("Too long: %d bytes. The record holds %d." % (len(b), rec - 1))
-    return b + b" " * (rec - 1 - len(b)) + b"\n"
+    lines = read_lines(tree_path(d, size))
+    idx = lo // size
+    if idx < len(lines):
+        val = lines[idx].strip()
+        return val if val else None
+    return None
 
 
 def locked(d):
-    lock = open(os.path.join(d, ".lock"), "a")
+    lock = open(os.path.join(d, ".lock"), "a+b")
     if fcntl is not None:
         fcntl.flock(lock, fcntl.LOCK_EX)
     else:
         import msvcrt as _ms
         import time as _t
         waited = 0.0
+        lock.seek(0)
         while True:
             try:
                 _ms.locking(lock.fileno(), _ms.LK_NBLCK, 1)
@@ -294,6 +262,7 @@ def locked(d):
         _orig_close = lock.close
         def _close():
             try:
+                lock.seek(0)
                 _ms.locking(lock.fileno(), _ms.LK_UNLCK, 1)
             except Exception:
                 pass
@@ -305,13 +274,11 @@ def locked(d):
 def log_append(d, items):
     lock = locked(d)
     try:
-        repair(log_path(d), LOG_REC)
-        base = log_len(d)
-        with open(log_path(d), "ab") as f:
+        lines = read_lines(log_path(d))
+        base = len(lines)
+        with open(log_path(d), "a", encoding="utf-8") as f:
             for k, (date, text) in enumerate(items):
-                f.write(pad("#%d %s %s" % (base + k, date, text), LOG_REC))
-            f.flush()
-            os.fsync(f.fileno())
+                f.write("#%d %s %s\n" % (base + k, date, text.strip()))
         return base
     finally:
         lock.close()
@@ -322,13 +289,12 @@ def tree_put(d, lo, hi, text):
     lock = locked(d)
     try:
         p = tree_path(d, size)
-        repair(p, TREE_REC)
-        if count(p, TREE_REC) != lo // size:
+        lines = read_lines(p)
+        idx = lo // size
+        if len(lines) != idx:
             return False
-        with open(p, "ab") as f:
-            f.write(pad(text, TREE_REC))
-            f.flush()
-            os.fsync(f.fileno())
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(text.strip() + "\n")
         return True
     finally:
         lock.close()
@@ -338,13 +304,15 @@ def tree_drop(d, lo, hi):
     gone, size = [], hi - lo
     lock = locked(d)
     try:
-        while size <= log_len(d):
+        total = log_len(d)
+        while size <= total:
             p, k = tree_path(d, size), lo // size
-            n = count(p, TREE_REC)
-            if n > k:
-                gone += [(i * size, (i + 1) * size) for i in range(k, n)]
-                with open(p, "r+b") as f:
-                    f.truncate(k * TREE_REC)
+            lines = read_lines(p)
+            if len(lines) > k:
+                gone += [(i * size, (i + 1) * size) for i in range(k, len(lines))]
+                with open(p, "w", encoding="utf-8") as f:
+                    for line in lines[:k]:
+                        f.write(line + "\n")
             size *= 2
         return gone
     finally:
@@ -383,7 +351,7 @@ def check(text):
         die("Empty. A memory is one line of text.")
     if "\n" in text or "\r" in text:
         die("%d lines. A memory is one line: merge them, or note them separately." % (text.count("\n") + 1))
-    n = len(text.encode())
+    n = len(text.encode("utf-8"))
     if n > ENTRY_CHARS:
         die("Too long: %d bytes, limit %d. Accented characters cost 2 bytes. Compress it further." % (n, ENTRY_CHARS))
     return text
@@ -394,7 +362,7 @@ def check(text):
 def pending(d, T, limit=None):
     todo, size = [], 2
     while size <= T:
-        have = count(tree_path(d, size), TREE_REC)
+        have = tree_len(tree_path(d, size))
         for k in range(have, T // size):
             todo.append((k * size, (k + 1) * size))
             if limit and len(todo) >= limit:
@@ -406,7 +374,7 @@ def pending(d, T, limit=None):
 def pending_count(d, T):
     n, size = 0, 2
     while size <= T:
-        n += max(0, T // size - count(tree_path(d, size), TREE_REC))
+        n += max(0, T // size - tree_len(tree_path(d, size)))
         size *= 2
     return n
 
@@ -483,7 +451,7 @@ def cmd_init(d, args):
         die("usage: %s init" % ME)
     fresh = not os.path.isdir(d)
     os.makedirs(os.path.join(d, "TREE"), exist_ok=True)
-    open(log_path(d), "a").close()
+    open(log_path(d), "a", encoding="utf-8").close()
     if not os.path.exists(os.path.join(d, "config")):
         write_config(d, {})
     config(d)
@@ -501,7 +469,7 @@ def cmd_init(d, args):
 def paginate(lines):
     parts, cur, size = [], [], 0
     for line in lines:
-        n = len(line.encode()) + 1
+        n = len(line.encode("utf-8")) + 1
         if cur and (len(cur) >= PART_LINES or size + n > PART_CHARS):
             parts.append(cur)
             cur, size = [], 0
@@ -642,9 +610,9 @@ def cmd_recall(d, args):
             continue
         hits += 1
         out.append(line)
-        size += len(line.encode()) + 1
+        size += len(line.encode("utf-8")) + 1
         while size > PART_CHARS:
-            size -= len(out.popleft().encode()) + 1
+            size -= len(out.popleft().encode("utf-8")) + 1
     if not hits:
         print("No match.")
         return
@@ -682,8 +650,8 @@ def cmd_import(d, args):
     last = log_get(d, log_len(d) - 1)[1] if log_len(d) else "0000-00-00"
     out = []
     for i, line in enumerate(src, 1):
-        line = line.rstrip("\n")
-        if not line.strip():
+        line = line.strip()
+        if not line:
             continue
         date, _, text = line.partition(" ")
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
@@ -695,8 +663,8 @@ def cmd_import(d, args):
         if date < last:
             die("line %d: date %s precedes the previous memory (%s)." % (i, date, last))
         text = text.strip()
-        if not text or len(text.encode()) > ENTRY_CHARS:
-            die("line %d: %d bytes, limit %d." % (i, len(text.encode()), ENTRY_CHARS))
+        if not text or len(text.encode("utf-8")) > ENTRY_CHARS:
+            die("line %d: %d bytes, limit %d." % (i, len(text.encode("utf-8")), ENTRY_CHARS))
         out.append((date, text))
         last = date
     if not out:

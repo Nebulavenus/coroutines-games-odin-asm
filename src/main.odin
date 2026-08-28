@@ -460,7 +460,7 @@ game_destroy :: proc(g: ^Game) {
 
 game_update :: proc(g: ^Game, dt: f32) {
     if rl.IsKeyPressed(.F3) {
-        g.sched.is_paused = !g.sched.is_paused
+        coroutine.scheduler_set_paused(&g.sched, !coroutine.scheduler_is_paused(&g.sched))
     }
 
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
@@ -470,7 +470,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     // Determine simulation delta-time for this frame
     sim_dt: f32 = 0.0
 
-    if !g.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&g.sched) {
         sim_dt = dt
         g.step_flash_timer = 0.0
     } else {
@@ -521,7 +521,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     g.game_time += sim_dt
 
     // Step the Coroutine Engine
-    if !g.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&g.sched) {
         coroutine.scheduler_step(&g.sched, sim_dt)
     } else {
         coroutine.scheduler_single_step(&g.sched, sim_dt)
@@ -801,7 +801,7 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
     // Instructions & Pause Banner
-    if g.sched.is_paused {
+    if coroutine.scheduler_is_paused(&g.sched) {
         flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", g.step_count, g.last_step_dt, g.game_time)
         rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 850, 24, {15, 18, 30, 220})
@@ -822,7 +822,7 @@ game_render :: proc(g: ^Game) {
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
         pause_header := ""
-        if g.sched.is_paused {
+        if coroutine.scheduler_is_paused(&g.sched) {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", g.step_count, g.game_time)
         }
         rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (F1) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)

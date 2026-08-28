@@ -22,7 +22,7 @@ import "coroutine"
 // Gameplay Combat Fiber (Simulation Domain)
 boss_flame_breath :: proc(f: ^coroutine.Fiber) {
     for {
-        fmt.Println("  [Combat] Dragon casting Flame Breath!")
+        fmt.println("  [Combat] Dragon casting Flame Breath!")
         coroutine.wait(f, 1.0) // FROZEN while sched.is_paused == true!
     }
 }
@@ -30,7 +30,7 @@ boss_flame_breath :: proc(f: ^coroutine.Fiber) {
 // Pause Menu Banner Fiber (Real-Time Domain)
 ui_pause_banner :: proc(f: ^coroutine.Fiber) {
     for {
-        fmt.Println("  [UI Menu] Blinking '=== PAUSED ===' banner on screen...")
+        fmt.println("  [UI Menu] Blinking '=== PAUSED ===' banner on screen...")
         coroutine.wait_real(f, 0.5) // STILL ADVANCES while sched.is_paused == true!
     }
 }
@@ -43,12 +43,12 @@ main :: proc() {
     coroutine.spawn(&sched, boss_flame_breath)
     coroutine.spawn_real(&sched, ui_pause_banner)
 
-    fmt.Println("--- Normal Gameplay (Unpaused) ---")
+    fmt.println("--- Normal Gameplay (Unpaused) ---")
     for i := 0; i < 2; i += 1 {
         coroutine.scheduler_step(&sched, 0.5)
     }
 
-    fmt.Println("\n>>> PLAYER OPENS PAUSE MENU (is_paused = true) <<<")
+    fmt.println("\n>>> PLAYER OPENS PAUSE MENU (is_paused = true) <<<")
     coroutine.scheduler_set_paused(&sched, true)
 
     for i := 0; i < 3; i += 1 {
@@ -57,7 +57,7 @@ main :: proc() {
         coroutine.scheduler_step(&sched, 0.5)
     }
 
-    fmt.Println("\n>>> PLAYER CLOSES PAUSE MENU (is_paused = false) <<<")
+    fmt.println("\n>>> PLAYER CLOSES PAUSE MENU (is_paused = false) <<<")
     coroutine.scheduler_set_paused(&sched, false)
 
     coroutine.scheduler_step(&sched, 0.5)
@@ -92,7 +92,7 @@ physics_sim_proc :: proc(f: ^coroutine.Fiber) {
     for {
         // Wait exactly 1 discrete integer tick
         coroutine.wait_ticks(f, 1)
-        fmt.Println("Fixed 60 Hz physics integration step!")
+        fmt.println("Fixed 60 Hz physics integration step!")
     }
 }
 
@@ -126,13 +126,13 @@ main :: proc() {
 
     // Spawn combat AI fibers with Combat_AI tag
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
-        fmt.Println("[Combat AI] Charging laser cannon...")
+        fmt.println("[Combat AI] Charging laser cannon...")
         coroutine.wait(f, 2.0)
     }, tag = u32(Behavior_Tag.Combat_AI))
 
     // Spawn movement fiber with Movement tag
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
-        fmt.Println("[Movement] Patrolling perimeter...")
+        fmt.println("[Movement] Patrolling perimeter...")
         coroutine.wait(f, 5.0)
     }, tag = u32(Behavior_Tag.Movement))
 
@@ -143,7 +143,7 @@ main :: proc() {
     fmt.printf("Active Combat AI fibers: %d\n", combat_count)
 
     // EMP Blast: Cancel ALL combat fibers across all entities!
-    fmt.Println("\n>>> EMP BLAST DETONATES: Cancelling all Combat AI! <<<")
+    fmt.println("\n>>> EMP BLAST DETONATES: Cancelling all Combat AI! <<<")
     cancelled := coroutine.scheduler_cancel_by_tag(&sched, u32(Behavior_Tag.Combat_AI))
     fmt.printf("Cancelled %d combat fibers. Movement fibers continue!\n", cancelled)
 

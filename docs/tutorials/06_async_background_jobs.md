@@ -63,7 +63,7 @@ pathfinder_worker_thread :: proc(raw_data: rawptr) {
 
 // Main-Thread Coroutine Procedure
 unit_ai_behavior :: proc(f: ^coroutine.Fiber, job: ^Pathfind_Job) {
-    fmt.Println("[AI] Unit reached obstacle. Dispatching background A* pathfinder...")
+    fmt.println("[AI] Unit reached obstacle. Dispatching background A* pathfinder...")
 
     // Dispatch OS worker thread
     t := thread.create_and_start_with_data(job, pathfinder_worker_thread)

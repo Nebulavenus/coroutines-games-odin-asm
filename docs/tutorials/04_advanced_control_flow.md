@@ -100,16 +100,16 @@ main :: proc() {
     coroutine.spawn_ptr(&sched, npc_ai_decision_tree, &guard)
 
     // Tick 1: Out of range, no LOS -> Executes Patrol
-    fmt.Println("\n--- Turn 1: Player far away behind wall ---")
+    fmt.println("\n--- Turn 1: Player far away behind wall ---")
     coroutine.scheduler_step(&sched, 0.1)
 
     // Tick 2: Player steps into Line of Sight
-    fmt.Println("\n--- Turn 2: Player steps into Line of Sight ---")
+    fmt.println("\n--- Turn 2: Player steps into Line of Sight ---")
     guard.has_los = true
     coroutine.scheduler_step(&sched, 1.0)
 
     // Tick 3: Player charges into melee range
-    fmt.Println("\n--- Turn 3: Player charges into melee range ---")
+    fmt.println("\n--- Turn 3: Player charges into melee range ---")
     guard.player_pos = {120.0, 110.0} // Close range!
     coroutine.scheduler_step(&sched, 1.0)
 }
@@ -126,13 +126,13 @@ Unlike `race` (which aborts as soon as *any* branch finishes or fails), `rush` r
 coroutine.rush(f, {
     coroutine.branch(proc(f: ^coroutine.Fiber, d: rawptr) {
         coroutine.wait(f, 0.5)
-        fmt.Println("[Scout North] Dead end!")
+        fmt.println("[Scout North] Dead end!")
         coroutine.fail(f) // Ignored by rush!
     }, nil),
 
     coroutine.branch(proc(f: ^coroutine.Fiber, d: rawptr) {
         coroutine.wait(f, 1.0)
-        fmt.Println("[Scout East] Found the secret dungeon entrance!")
+        fmt.println("[Scout East] Found the secret dungeon entrance!")
         // Finishes successfully! Wins the rush!
     }, nil),
 })
@@ -150,15 +150,15 @@ Chest :: struct { is_unlocked: bool }
 chest := Chest{is_unlocked = false}
 
 success := coroutine.with_timeout(f, 2.0, proc(f: ^coroutine.Fiber, c: ^Chest) {
-    fmt.Println("Lockpicking chest...")
+    fmt.println("Lockpicking chest...")
     coroutine.wait(f, 1.5) // Takes 1.5 seconds
     c.is_unlocked = true
 }, &chest)
 
 if success {
-    fmt.Println("Chest unlocked successfully!")
+    fmt.println("Chest unlocked successfully!")
 } else {
-    fmt.Println("Lockpicking timed out! Alarm triggered!")
+    fmt.println("Lockpicking timed out! Alarm triggered!")
 }
 ```
 

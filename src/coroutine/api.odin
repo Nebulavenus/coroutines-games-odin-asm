@@ -22,7 +22,7 @@ spawn_ptr :: proc(
     fiber.debug_name = name
     fiber.user_tag = tag
     fiber.stored_context = context
-    fiber.start_time = sched.current_time
+    fiber.start_time = sched.clock.sim_time
     fiber.user_data = rawptr(data)
     fiber.user_fn = rawptr(entry)
     fiber.entry_proc = cast(proc(f: ^Fiber, user_data: rawptr))entry
@@ -35,8 +35,6 @@ spawn_ptr :: proc(
     append(&sched.ready_queue, fiber)
     return fiber.handle
 }
-
-spawn_typed :: spawn_ptr
 
 spawn_val :: proc(
     sched: ^Scheduler,
@@ -61,7 +59,7 @@ spawn_val :: proc(
     fiber.debug_name = name
     fiber.user_tag = tag
     fiber.stored_context = context
-    fiber.start_time = sched.current_time
+    fiber.start_time = sched.clock.sim_time
 
     data_copy := data
     mem.copy(&fiber.payload_storage[0], &data_copy, size_of(T))
@@ -97,7 +95,7 @@ spawn_nil :: proc(
     fiber.debug_name = name
     fiber.user_tag = tag
     fiber.stored_context = context
-    fiber.start_time = sched.current_time
+    fiber.start_time = sched.clock.sim_time
     fiber.user_data = rawptr(entry)
     fiber.user_fn = rawptr(entry)
     fiber.entry_proc = wrapper
@@ -333,7 +331,7 @@ wait_frames :: proc(f: ^Fiber, frames: int) {
     if f == nil || f.sched == nil do return
 
     target_frames := max(frames, 1)
-    f.wake_frame = f.sched.current_frame + u64(target_frames)
+    f.wake_frame = f.sched.clock.frame_count + u64(target_frames)
     f.status = .Sleeping_Frames
     append(&f.sched.frame_waiters, f)
 
@@ -377,8 +375,6 @@ wait_until_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) 
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     context = f.stored_context
 }
-
-wait_until_typed :: wait_until_ptr
 
 wait_until_val :: proc(f: ^Fiber, condition: proc(data: $T) -> bool, data: T) where !intrinsics.type_is_pointer(T) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "wait_until_val: payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
@@ -434,7 +430,6 @@ wait_until_nil :: proc(f: ^Fiber, condition: proc() -> bool) {
 
 // Unified overloaded entry point
 wait_until :: proc{wait_until_ptr, wait_until_val, wait_until_nil}
-wait_cond  :: wait_until_nil
 
 wait_while_ptr :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T) {
     if f == nil || f.sched == nil do return
@@ -528,8 +523,6 @@ branch_ptr :: proc(
     }
 }
 
-branch_typed :: branch_ptr
-
 branch_val :: proc(
     entry: proc(f: ^Fiber, data: $T),
     data: T,
@@ -598,7 +591,7 @@ sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
         child.debug_name = b.name
         child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
-        child.start_time = f.sched.current_time
+        child.start_time = f.sched.clock.sim_time
         if b.has_payload {
             child.payload_storage = b.payload_storage
             child.user_data = &child.payload_storage[0]
@@ -642,7 +635,7 @@ race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
         child.debug_name = b.name
         child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
-        child.start_time = f.sched.current_time
+        child.start_time = f.sched.clock.sim_time
         if b.has_payload {
             child.payload_storage = b.payload_storage
             child.user_data = &child.payload_storage[0]
@@ -686,7 +679,7 @@ rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
         child.debug_name = b.name
         child.user_tag = b.tag != 0 ? b.tag : f.user_tag
         child.stored_context = context
-        child.start_time = f.sched.current_time
+        child.start_time = f.sched.clock.sim_time
         if b.has_payload {
             child.payload_storage = b.payload_storage
             child.user_data = &child.payload_storage[0]
@@ -810,7 +803,7 @@ tween_f32 :: proc(
 
     for elapsed < duration {
         yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
         eased_t := ease_fn(t)
         output^ = start + (target - start) * eased_t
@@ -842,7 +835,7 @@ tween_vec2 :: proc(
 
     for elapsed < duration {
         yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
         eased_t := ease_fn(t)
         output.x = start.x + (target.x - start.x) * eased_t
@@ -875,7 +868,7 @@ tween_vec3 :: proc(
 
     for elapsed < duration {
         yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
         eased_t := ease_fn(t)
         output.x = start.x + (target.x - start.x) * eased_t
@@ -909,7 +902,7 @@ tween_vec4 :: proc(
 
     for elapsed < duration {
         yield_frame(f)
-        elapsed += f.sched.delta_time
+        elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
         eased_t := ease_fn(t)
         output.x = start.x + (target.x - start.x) * eased_t
@@ -1718,17 +1711,17 @@ simulate_until_ptr :: proc(
 ) -> (condition_met: bool, elapsed_sim_time: f64) {
     if sched == nil do return false, 0.0
     dt := step_dt > 0.0 ? step_dt : 0.016
-    start_time := sched.current_time
+    start_time := sched.clock.sim_time
 
     for {
         if condition != nil && condition(data) {
-            return true, sched.current_time - start_time
+            return true, sched.clock.sim_time - start_time
         }
-        if sched.current_time - start_time >= max_sim_seconds {
-            return false, sched.current_time - start_time
+        if sched.clock.sim_time - start_time >= max_sim_seconds {
+            return false, sched.clock.sim_time - start_time
         }
         if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
-            return (condition != nil && condition(data)), sched.current_time - start_time
+            return (condition != nil && condition(data)), sched.clock.sim_time - start_time
         }
         scheduler_step(sched, dt)
     }
@@ -1742,17 +1735,17 @@ simulate_until_nil :: proc(
 ) -> (condition_met: bool, elapsed_sim_time: f64) {
     if sched == nil do return false, 0.0
     dt := step_dt > 0.0 ? step_dt : 0.016
-    start_time := sched.current_time
+    start_time := sched.clock.sim_time
 
     for {
         if condition != nil && condition() {
-            return true, sched.current_time - start_time
+            return true, sched.clock.sim_time - start_time
         }
-        if sched.current_time - start_time >= max_sim_seconds {
-            return false, sched.current_time - start_time
+        if sched.clock.sim_time - start_time >= max_sim_seconds {
+            return false, sched.clock.sim_time - start_time
         }
         if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
-            return (condition != nil && condition()), sched.current_time - start_time
+            return (condition != nil && condition()), sched.clock.sim_time - start_time
         }
         scheduler_step(sched, dt)
     }

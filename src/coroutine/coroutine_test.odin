@@ -453,15 +453,15 @@ test_time_scaling_and_pause :: proc(t: ^testing.T) {
         c^ = 2
     }, &counter)
 
-    sched.is_paused = true
+    scheduler_set_paused(&sched, true)
     scheduler_step(&sched, 0.5)
     testing.expect_value(t, counter, 0)
 
-    sched.is_paused = false
+    scheduler_set_paused(&sched, false)
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, counter, 1)
 
-    sched.time_scale = 2.0
+    scheduler_set_time_scale(&sched, 2.0)
     scheduler_step(&sched, 0.5)
     testing.expect_value(t, counter, 2)
 }
@@ -760,7 +760,7 @@ test_timer_heap_1000_random_sort :: proc(t: ^testing.T) {
 
         spawn(&sched, proc(f: ^Fiber, e: ^Timer_Entry) {
             wait(f, e.target_time)
-            append(e.history_ptr, f.sched.current_time)
+            append(e.history_ptr, current_time(f))
         }, &entries[i])
     }
 
@@ -2617,7 +2617,7 @@ test_scheduler_step_while_paused :: proc(t: ^testing.T) {
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
 
-    sched.is_paused = true
+    scheduler_set_paused(&sched, true)
 
     counter := 0
     g_test66_flag = false
@@ -2676,7 +2676,7 @@ test_real_time_clock_while_paused :: proc(t: ^testing.T) {
     }, &sim_fiber_done)
 
     // Pause the game simulation!
-    sched.is_paused = true
+    scheduler_set_paused(&sched, true)
 
     // Step 3 times at 0.05s real time (total 0.15s real elapsed)
     for _ in 0 ..< 3 {
@@ -2690,7 +2690,7 @@ test_real_time_clock_while_paused :: proc(t: ^testing.T) {
     testing.expect(t, sched.clock.real_time >= 0.14)
 
     // Unpause game
-    sched.is_paused = false
+    scheduler_set_paused(&sched, false)
     for _ in 0 ..< 3 {
         scheduler_step(&sched, 0.05)
     }

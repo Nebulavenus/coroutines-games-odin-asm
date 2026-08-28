@@ -41,7 +41,7 @@ main :: proc() {
 
     coroutine.scheduler_step(&sched, 0.1) // Sentries start sleeping
 
-    fmt.Println("\n>>> Player steps on alarm pressure plate! <<<")
+    fmt.println("\n>>> Player steps on alarm pressure plate! <<<")
     coroutine.signal_emit(&alarm_signal) // WAKES ALL 4 SENTRIES SIMULTANEOUSLY!
 
     coroutine.scheduler_step(&sched, 0.1)
@@ -222,9 +222,9 @@ defer coroutine.latch_destroy(&loading_latch)
 
 // Game Manager Fiber:
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, latch: ^coroutine.Fiber_Latch) {
-    fmt.Println("Waiting for Level, Textures, and Audio to finish loading...")
+    fmt.println("Waiting for Level, Textures, and Audio to finish loading...")
     coroutine.latch_wait(f, latch)
-    fmt.Println("All 3 subsystems ready! Starting gameplay!")
+    fmt.println("All 3 subsystems ready! Starting gameplay!")
 }, &loading_latch)
 
 // Subsystems report completion:
@@ -340,21 +340,21 @@ main :: proc() {
 
     // 2. Multiple unrelated fibers await cancellation:
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-        fmt.Println("[Audio Subsystem] Music playing...")
+        fmt.println("[Audio Subsystem] Music playing...")
         coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
-        fmt.Println("[Audio Subsystem] Game Over received! Fading out music.")
+        fmt.println("[Audio Subsystem] Game Over received! Fading out music.")
     }, &game_over_tok)
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-        fmt.Println("[Physics Subsystem] Simulating world...")
+        fmt.println("[Physics Subsystem] Simulating world...")
         coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
-        fmt.Println("[Physics Subsystem] Game Over received! Freezing ragdolls.")
+        fmt.println("[Physics Subsystem] Game Over received! Freezing ragdolls.")
     }, &game_over_tok)
 
     coroutine.scheduler_step(&sched, 0.1)
 
     // 3. Trigger cancellation across all listeners simultaneously:
-    fmt.Println("\n>>> PLAYER DIES: Triggering Game Over Token! <<<")
+    fmt.println("\n>>> PLAYER DIES: Triggering Game Over Token! <<<")
     coroutine.cancel_token_cancel(&sched, &game_over_tok)
 
     coroutine.scheduler_step(&sched, 0.1)

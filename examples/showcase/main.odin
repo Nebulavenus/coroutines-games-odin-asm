@@ -718,7 +718,7 @@ showcase_destroy :: proc(w: ^Showcase_World) {
 
 showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if rl.IsKeyPressed(.F3) {
-        w.sched.is_paused = !w.sched.is_paused
+        coroutine.scheduler_set_paused(&w.sched, !coroutine.scheduler_is_paused(&w.sched))
     }
 
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
@@ -732,7 +732,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     // Determine simulation delta-time for this frame
     sim_dt: f32 = 0.0
 
-    if !w.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&w.sched) {
         sim_dt = dt
         w.step_flash_timer = 0.0
     } else {
@@ -784,7 +784,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     w.global_time += sim_dt
 
     // Step coroutine engine
-    if !w.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&w.sched) {
         coroutine.scheduler_step(&w.sched, sim_dt)
     } else {
         coroutine.scheduler_single_step(&w.sched, sim_dt)
@@ -1064,7 +1064,7 @@ showcase_render :: proc(w: ^Showcase_World) {
     rl.DrawCircleLines(i32(w.player.pos.x), i32(w.player.pos.y), w.player.radius + 3.0, rl.LIME)
 
     // --- Instructions Header & Pause Banner ---
-    if w.sched.is_paused {
+    if coroutine.scheduler_is_paused(&w.sched) {
         flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)
         rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {15, 18, 30, 230})
@@ -1086,7 +1086,7 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawRectangleLines(overlay_x, overlay_y, overlay_w, overlay_h, {0, 200, 255, 220})
 
         pause_header := ""
-        if w.sched.is_paused {
+        if coroutine.scheduler_is_paused(&w.sched) {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
         }
         rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY & STACK PROFILER (F1) %s", pause_header), overlay_x + 15, overlay_y + 12, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)

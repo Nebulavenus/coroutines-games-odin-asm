@@ -29,11 +29,6 @@ scheduler_init :: proc(
         tick_rate_hz = 1000,
     }
 
-    sched.current_time = 0.0
-    sched.current_frame = 0
-    sched.delta_time = 0.0
-    sched.time_scale = 1.0
-    sched.is_paused = false
     sched.scheduler_sp = nil
     sched.current_fiber = nil
     sched.watchdog_enabled = ODIN_DEBUG
@@ -58,11 +53,6 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
         tick_rate_hz = 1000,
     }
 
-    sched.current_time = 0.0
-    sched.current_frame = 0
-    sched.delta_time = 0.0
-    sched.time_scale = 1.0
-    sched.is_paused = false
     sched.scheduler_sp = nil
     sched.current_fiber = nil
     sched.watchdog_enabled = ODIN_DEBUG
@@ -280,17 +270,9 @@ fiber_unlink_child :: proc(parent: ^Fiber, child: ^Fiber) {
 // ============================================================================
 
 scheduler_step :: proc(sched: ^Scheduler, dt: f32) {
-    sched.clock.is_paused = sched.is_paused
-
     if sched.clock.is_paused {
         scheduler_advance_real(sched, dt)
         return
-    }
-
-    if sched.time_scale != 1.0 && sched.time_scale != 0.0 && sched.clock.time_scale == 1.0 {
-        sched.clock.time_scale = sched.time_scale
-    } else if sched.clock.time_scale != 1.0 && sched.time_scale == 1.0 {
-        sched.time_scale = sched.clock.time_scale
     }
 
     real_dt := dt
@@ -301,12 +283,6 @@ scheduler_step :: proc(sched: ^Scheduler, dt: f32) {
 }
 
 scheduler_single_step :: proc(sched: ^Scheduler, dt: f32) {
-    if sched.time_scale != 1.0 && sched.time_scale != 0.0 && sched.clock.time_scale == 1.0 {
-        sched.clock.time_scale = sched.time_scale
-    } else if sched.clock.time_scale != 1.0 && sched.time_scale == 1.0 {
-        sched.time_scale = sched.clock.time_scale
-    }
-
     real_dt := dt
     sim_dt := f64(dt * sched.clock.time_scale)
     if sim_dt == 0.0 do sim_dt = f64(dt)
@@ -405,13 +381,6 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
     sched.clock.sim_time += sim_dt
     sched.clock.sim_ticks += sim_ticks
     sched.clock.frame_count += 1
-
-    // Mirror legacy fields for 100% backwards compatibility
-    sched.current_time = sched.clock.sim_time
-    sched.current_frame = sched.clock.frame_count
-    sched.delta_time = sched.clock.sim_delta
-    sched.time_scale = sched.clock.time_scale
-    sched.clock.is_paused = sched.is_paused
 
     // 3. Wake Real-Time Timers from Real-Timer Min-Heap
     for len(sched.real_timer_heap) > 0 {
@@ -600,7 +569,6 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 }
 
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
-    // fmt.println("DEBUG: cleanup_and_recycle fiber status =", fiber.status)
     // 1. Run cleanup procedure if registered
     if fiber.cleanup_proc != nil {
         fiber.cleanup_proc(fiber.user_data)
@@ -740,17 +708,15 @@ scope_is_empty :: proc(scope: ^Fiber_Scope) -> bool {
 
 scheduler_set_paused :: proc(sched: ^Scheduler, paused: bool) {
     if sched == nil do return
-    sched.is_paused = paused
     sched.clock.is_paused = paused
 }
 
 scheduler_is_paused :: #force_inline proc(sched: ^Scheduler) -> bool {
-    return sched != nil && (sched.is_paused || sched.clock.is_paused)
+    return sched != nil && sched.clock.is_paused
 }
 
 scheduler_set_time_scale :: proc(sched: ^Scheduler, scale: f32) {
     if sched == nil do return
-    sched.time_scale = scale
     sched.clock.time_scale = scale
 }
 
@@ -772,6 +738,10 @@ scheduler_sim_ticks :: #force_inline proc(sched: ^Scheduler) -> u64 {
 
 scheduler_frame_count :: #force_inline proc(sched: ^Scheduler) -> u64 {
     return sched != nil ? sched.clock.frame_count : 0
+}
+
+scheduler_delta_time :: #force_inline proc(sched: ^Scheduler) -> f32 {
+    return sched != nil ? sched.clock.sim_delta : 0.0
 }
 
 scheduler_prewarm :: proc(sched: ^Scheduler, fiber_count: int, allocator := context.allocator) {

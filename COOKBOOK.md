@@ -540,7 +540,7 @@ wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token
     // 1. Run until token is cancelled:
     coroutine.spawn_ptr(f.sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
         coroutine.cancel_token_wait(f, tok) // Awaits token cancellation!
-        fmt.Println("[Wildlife AI] Game session ended; despawning animals.")
+        fmt.println("[Wildlife AI] Game session ended; despawning animals.")
     }, tok)
 }
 
@@ -578,7 +578,7 @@ spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, enemy_id: int) {
     // Combat loop (Tagged: Combat_AI)
     coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
         for {
-            fmt.Println("Drone firing lasers!")
+            fmt.println("Drone firing lasers!")
             coroutine.wait(f, 0.5)
         }
     }, tag = u32(Tag.Combat_AI))
@@ -593,7 +593,7 @@ spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, enemy_id: int) {
     // Movement patrol loop (Tagged: Movement - Immune to EMP!)
     coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
         for {
-            fmt.Println("Drone drifting forward with inertial thrusters...")
+            fmt.println("Drone drifting forward with inertial thrusters...")
             coroutine.wait(f, 1.0)
         }
     }, tag = u32(Tag.Movement))
@@ -650,4 +650,3 @@ telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(Tele
     }
 }
 ```
-

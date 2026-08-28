@@ -399,7 +399,7 @@ world_destroy :: proc(w: ^World) {
 
 world_update :: proc(w: ^World, dt: f32) {
     if rl.IsKeyPressed(.F3) {
-        w.sched.is_paused = !w.sched.is_paused
+        coroutine.scheduler_set_paused(&w.sched, !coroutine.scheduler_is_paused(&w.sched))
     }
 
     if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
@@ -413,7 +413,7 @@ world_update :: proc(w: ^World, dt: f32) {
     // Determine simulation delta-time for this frame
     sim_dt: f32 = 0.0
 
-    if !w.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&w.sched) {
         sim_dt = dt
         w.step_flash_timer = 0.0
     } else {
@@ -461,7 +461,7 @@ world_update :: proc(w: ^World, dt: f32) {
     w.global_time += sim_dt
 
     // Step coroutine engine
-    if !w.sched.is_paused {
+    if !coroutine.scheduler_is_paused(&w.sched) {
         coroutine.scheduler_step(&w.sched, sim_dt)
     } else {
         coroutine.scheduler_single_step(&w.sched, sim_dt)
@@ -622,7 +622,7 @@ world_render :: proc(w: ^World) {
     rl.DrawCircleLines(i32(w.player.pos.x), i32(w.player.pos.y), w.player.radius + 2, rl.WHITE)
 
     // Bottom HUD Instructions & Pause Banner
-    if w.sched.is_paused {
+    if coroutine.scheduler_is_paused(&w.sched) {
         flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)
         rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 850, 24, {15, 18, 30, 220})
@@ -643,7 +643,7 @@ world_render :: proc(w: ^World) {
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
         pause_header := ""
-        if w.sched.is_paused {
+        if coroutine.scheduler_is_paused(&w.sched) {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
         }
         rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY TREE (F1) %s", pause_header), panel_x + 15, panel_y + 10, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)

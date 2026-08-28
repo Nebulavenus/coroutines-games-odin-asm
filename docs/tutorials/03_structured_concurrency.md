@@ -86,18 +86,18 @@ Boss_Entity :: struct {
 }
 
 boss_combat_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Entity) {
-    fmt.Println("=== BOSS ENCOUNTER COMMENCING ===")
+    fmt.println("=== BOSS ENCOUNTER COMMENCING ===")
 
     // ==========================================
     // PHASE 1: Attack until HP drops or 5s timer
     // ==========================================
-    fmt.Println("\n[PHASE 1] Boss engages player!")
+    fmt.println("\n[PHASE 1] Boss engages player!")
 
     winner := coroutine.race(f, {
         // Branch 0: Continuous Attack Loop
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             for {
-                fmt.Println("  -> Boss casts Void Bolt!")
+                fmt.println("  -> Boss casts Void Bolt!")
                 coroutine.wait(f, 1.0)
             }
         }, boss),
@@ -105,40 +105,40 @@ boss_combat_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Entity) {
         // Branch 1: Health Threshold Trigger
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             coroutine.wait_until(f, proc(b: ^Boss_Entity) -> bool { return b.hp <= 50 }, boss)
-            fmt.Println("  >>> TRIGGER: Boss HP dropped to <= 50%! <<<")
+            fmt.println("  >>> TRIGGER: Boss HP dropped to <= 50%! <<<")
         }, boss),
 
         // Branch 2: Enrage Timer
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             coroutine.wait(f, 5.0)
-            fmt.Println("  >>> TRIGGER: 5-Second Enrage Timer Expired! <<<")
+            fmt.println("  >>> TRIGGER: 5-Second Enrage Timer Expired! <<<")
         }, boss),
     })
 
     fmt.printf("[PHASE 1 COMPLETE] Winning branch index: %d\n", winner)
-    fmt.Println("Transitioning to Phase 2: All Phase 1 attacks automatically aborted!")
+    fmt.println("Transitioning to Phase 2: All Phase 1 attacks automatically aborted!")
 
     // ==========================================
     // PHASE 2: Parallel Super-Attack (sync)
     // ==========================================
     boss.phase = 2
-    fmt.Println("\n[PHASE 2] Boss casts ultimate synchronized nova!")
+    fmt.println("\n[PHASE 2] Boss casts ultimate synchronized nova!")
 
     coroutine.sync(f, {
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
-            fmt.Println("  [Shield] Charging invulnerability barrier...")
+            fmt.println("  [Shield] Charging invulnerability barrier...")
             coroutine.wait(f, 1.5)
-            fmt.Println("  [Shield] Barrier fully charged!")
+            fmt.println("  [Shield] Barrier fully charged!")
         }, boss),
 
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
-            fmt.Println("  [Nova] Expanding fiery explosion ring...")
+            fmt.println("  [Nova] Expanding fiery explosion ring...")
             coroutine.wait(f, 1.5)
-            fmt.Println("  [Nova] Fiery ring reached boundary!")
+            fmt.println("  [Nova] Fiery ring reached boundary!")
         }, boss),
     })
 
-    fmt.Println("\n=== BOSS ENCOUNTER VICTORY ===")
+    fmt.println("\n=== BOSS ENCOUNTER VICTORY ===")
 }
 
 main :: proc() {
@@ -155,7 +155,7 @@ main :: proc() {
     }
 
     // Player deals heavy damage!
-    fmt.Println("\n>>> [Player casts Meteor Strike dealing 60 damage!] <<<")
+    fmt.println("\n>>> [Player casts Meteor Strike dealing 60 damage!] <<<")
     boss.hp = 40
 
     // Step scheduler: Race detects HP drop, cancels attacks, enters Phase 2!
