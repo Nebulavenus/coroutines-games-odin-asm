@@ -38,3 +38,4 @@
 #37 2026-08-29 Sanitized all documentation Markdown links (REPORTS.md, README.md, ARCHITECTURE.md) to GitHub-compatible relative paths.
 #38 2026-08-29 Optimized scheduler with zero-shift ready queue index cursor and in-place waiter queue linear partitioning (Suite 2 10k fibers 114ms->50ms, 138/138 tests passing).
 #39 2026-08-29 Documented CPU cache hierarchy (L1/L2/L3 vs DRAM memory wall math), zero-shift ready cursor, and in-place waiter partitioning in TECH_MEMORY.md, GUIDE_PERFORMANCE.md, TECH_CONCURRENCY.md, ARCHITECTURE.md.
+#40 2026-08-29 Normalized LaTeX math in TECH_CONCURRENCY.md to ensure '_' is used strictly for math subscripts, eliminating all KaTeX text-mode underscore rendering issues on GitHub.

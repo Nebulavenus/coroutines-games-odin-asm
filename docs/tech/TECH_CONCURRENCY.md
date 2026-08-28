@@ -133,7 +133,7 @@ The engine executes all active fibers, timers, and synchronization queues in a d
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Stage 1 (Clocks)**: Updates simulation time ($t_{\text{sim}} + dt \cdot \text{time\_scale}$), real-world wall clock ($t_{\text{real}} + dt$), and discrete frame counters.
+1. **Stage 1 (Clocks)**: Updates simulation time ($t_{\text{sim}} + dt \cdot \text{scale}$), real-world wall clock ($t_{\text{real}} + dt$), and discrete frame counters.
 2. **Stage 2 (Dual Min-Heaps)**: $O(1)$ peeks at root nodes of `timer_heap` and `real_timer_heap`. Expired timers are popped in $O(\log N)$ and appended to `ready_queue`.
 3. **Stage 3 (In-Place Linear Partitioning)**: Filters `tick_waiters`, `frame_waiters`, and `condition_waiters` in a cache-friendly single linear forward sweep. Expired waiters move to `ready_queue`, while active ones remain compacted at the head with a single $O(1)$ `resize(...)`.
 4. **Stage 4 (Zero-Shift Ready Execution)**: Steps sequentially through `ready_queue` using an index cursor (`i < len(ready_queue)`). Context-switches into each fiber in $18.4\text{ ns}$, processes volatile status reloads, auto-recycles completed fibers, and cleans the queue with an $O(1)$ `clear(&sched.ready_queue)`.
