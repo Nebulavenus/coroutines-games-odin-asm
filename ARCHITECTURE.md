@@ -1163,4 +1163,10 @@ The engine provides three distinct temporal domains:
 ### J. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
 - **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs > 100ms without yielding.
 - **Channel Auto-Wake & Timeouts**: `chan_destroy` automatically closes channels before memory deallocation to wake pending senders and receivers with `ok = false`, and `chan_recv_timeout` enables deadline-based message reception without hanging.
-- **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md).
+- **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md).
+
+### K. Zero-Shift Dispatch & Hardware Cache Physics (`docs/tech/TECH_MEMORY.md`, `docs/guides/GUIDE_PERFORMANCE.md`)
+- **Zero-Shift Ready Queue Index Cursor**: Replaces $O(N^2)$ `pop_front` dynamic slice shifting with an $O(N)$ linear index cursor (`for i := 0; i < len(ready_queue); i += 1`), eliminating 50,000,000 memory moves per frame under high load and concluding with an $O(1)$ `clear(&sched.ready_queue)`.
+- **In-Place Linear Waiter Partitioning**: Waking `frame_waiters`, `tick_waiters`, and `condition_waiters` uses a single-pass `write_idx` filter that streams through contiguous memory with maximum L1/L2 cache prefetching efficiency.
+- **CPU Cache Hierarchy & Memory Wall**: Explains the physical memory latency barrier of 10,000 fibers ($320\text{ MB}$ exceeding L3 cache by $5\times\text{--}10\times$ and incurring ~50–80ns DRAM miss latency) vs. standard game production workloads ($1,000\text{ fibers} = 32\text{ MB}$, fitting 100% inside on-die L3 cache for sub-0.35ms frame step latency).
+

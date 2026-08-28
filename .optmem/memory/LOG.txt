@@ -36,3 +36,5 @@
 #35 2026-08-29 Integrated dynamic fiber renaming (fiber_set_name) and chan_cap telemetry across Boss Fight, Showcase, and Quest AI examples.
 #36 2026-08-29 Implemented 6-suite benchmark runner (examples/bench/main.odin, .\build.ps1 run-bench); measured 19.35ns ASM switch, 88.9M msgs/sec CSP channel, 30510x headless sim speedup.
 #37 2026-08-29 Sanitized all documentation Markdown links (REPORTS.md, README.md, ARCHITECTURE.md) to GitHub-compatible relative paths.
+#38 2026-08-29 Optimized scheduler with zero-shift ready queue index cursor and in-place waiter queue linear partitioning (Suite 2 10k fibers 114ms->50ms, 138/138 tests passing).
+#39 2026-08-29 Documented CPU cache hierarchy (L1/L2/L3 vs DRAM memory wall math), zero-shift ready cursor, and in-place waiter partitioning in TECH_MEMORY.md, GUIDE_PERFORMANCE.md, TECH_CONCURRENCY.md, ARCHITECTURE.md.

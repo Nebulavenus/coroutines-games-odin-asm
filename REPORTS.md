@@ -156,12 +156,12 @@ The engine includes a dedicated 6-suite benchmark runner ([`examples/bench/main.
            ODIN STACKFUL COROUTINE ENGINE — PERFORMANCE BENCHMARKS               
 ================================================================================
 
-[BENCH 1] Raw ASM Context Switch   : 19.35 ns / switch (51.7M switches/sec) [PASS]
-[BENCH 2] 10,000 Concurrent Fibers : 11.27 ms / 10k frame step (112.66 ms total) [PASS]
-[BENCH 3] 10,000 Timer Min-Heap     : 50.12 ms total (O(log N) min-heap) [PASS]
-[BENCH 4] CSP Channel Streaming     : 88.9 M msgs / sec (1M integers streamed) [PASS]
-[BENCH 5] Structured Tree Churn     : 24.15 us / sync tree (241.52 ms for 10k) [PASS]
-[BENCH 6] Headless Sim Fast-Forward : 30510x faster than real-time (60s in 2.0ms) [PASS]
+[BENCH 1] Raw ASM Context Switch   : 18.43 ns / switch (54.2M switches/sec) [PASS]
+[BENCH 2] 10,000 Concurrent Fibers : 5.00 ms / 10k frame step (50.04 ms total) [PASS]
+[BENCH 3] 10,000 Timer Min-Heap     : 42.44 ms total (O(log N) min-heap) [PASS]
+[BENCH 4] CSP Channel Streaming     : 89.0 M msgs / sec (1M integers streamed) [PASS]
+[BENCH 5] Structured Tree Churn     : 24.97 us / sync tree (249.72 ms for 10k) [PASS]
+[BENCH 6] Headless Sim Fast-Forward : 32501x faster than real-time (60s in 1.8ms) [PASS]
 
 ================================================================================
 ALL 6 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.
@@ -170,12 +170,12 @@ ALL 6 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.
 
 | Benchmark Suite | Metric Measured | Result | Status |
 | :--- | :--- | :--- | :--- |
-| **Suite 1: Raw ASM Context Switch** | Direct `%rsp` + register swap latency | **19.35 ns / switch (51.7M/sec)** | **PASS** |
-| **Suite 2: 10k Concurrent Fibers** | Scheduler tick cost for 10,000 active fibers | **11.27 ms / frame step** | **PASS** |
-| **Suite 3: 10k Timer Min-Heap** | $O(\log N)$ push/pop min-heap waking | **50.12 ms total for 10,000 nodes** | **PASS** |
-| **Suite 4: CSP Channel Streaming** | Buffered channel throughput (1M integers) | **88.9 Million messages / sec** | **PASS** |
-| **Suite 5: Structured Tree Churn** | Intrusive coordinator setup & teardown | **24.15 µs / sync tree** | **PASS** |
-| **Suite 6: Headless Sim Fast-Forward** | Automated headless game simulation | **30,510x faster than real-time** | **PASS** |
+| **Suite 1: Raw ASM Context Switch** | Direct `%rsp` + register swap latency | **18.43 ns / switch (54.2M/sec)** | **PASS** |
+| **Suite 2: 10k Concurrent Fibers** | Scheduler tick cost for 10,000 active fibers | **5.00 ms / frame step (50.04ms for 10 frames)** | **PASS** |
+| **Suite 3: 10k Timer Min-Heap** | $O(\log N)$ push/pop min-heap waking | **42.44 ms total for 10,000 nodes** | **PASS** |
+| **Suite 4: CSP Channel Streaming** | Buffered channel throughput (1M integers) | **89.0 Million messages / sec** | **PASS** |
+| **Suite 5: Structured Tree Churn** | Intrusive coordinator setup & teardown | **24.97 µs / sync tree** | **PASS** |
+| **Suite 6: Headless Sim Fast-Forward** | Automated headless game simulation | **32,501x faster than real-time** | **PASS** |
 
 ---
 

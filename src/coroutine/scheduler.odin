@@ -410,48 +410,64 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
         }
     }
 
-    // 5. Wake Discrete Tick Waiters
-    if sim_ticks > 0 {
-        for i := len(sched.tick_waiters) - 1; i >= 0; i -= 1 {
+    // 5. Wake Discrete Tick Waiters (Linear In-Place Partition)
+    if sim_ticks > 0 && len(sched.tick_waiters) > 0 {
+        write_idx := 0
+        for i := 0; i < len(sched.tick_waiters); i += 1 {
             f := sched.tick_waiters[i]
             if f.wake_ticks <= sched.clock.sim_ticks {
-                unordered_remove(&sched.tick_waiters, i)
                 if f.status == .Sleeping_Ticks {
                     f.status = .Ready
                     append(&sched.ready_queue, f)
                 }
+            } else {
+                sched.tick_waiters[write_idx] = f
+                write_idx += 1
             }
         }
+        resize(&sched.tick_waiters, write_idx)
     }
 
-    // 6. Wake Frame Waiters
-    for i := len(sched.frame_waiters) - 1; i >= 0; i -= 1 {
-        f := sched.frame_waiters[i]
-        if f.wake_frame <= sched.clock.frame_count {
-            unordered_remove(&sched.frame_waiters, i)
-            if f.status == .Sleeping_Frames {
-                f.status = .Ready
-                append(&sched.ready_queue, f)
+    // 6. Wake Frame Waiters (Linear In-Place Partition)
+    if len(sched.frame_waiters) > 0 {
+        write_idx := 0
+        for i := 0; i < len(sched.frame_waiters); i += 1 {
+            f := sched.frame_waiters[i]
+            if f.wake_frame <= sched.clock.frame_count {
+                if f.status == .Sleeping_Frames {
+                    f.status = .Ready
+                    append(&sched.ready_queue, f)
+                }
+            } else {
+                sched.frame_waiters[write_idx] = f
+                write_idx += 1
             }
         }
+        resize(&sched.frame_waiters, write_idx)
     }
 
-    // 7. Poll Condition Waiters
-    for i := len(sched.condition_waiters) - 1; i >= 0; i -= 1 {
-        f := sched.condition_waiters[i]
-        if f.condition_fn != nil && f.condition_fn(f.condition_data) {
-            unordered_remove(&sched.condition_waiters, i)
-            if f.status == .Waiting_Condition {
-                f.status = .Ready
-                append(&sched.ready_queue, f)
+    // 7. Poll Condition Waiters (Linear In-Place Partition)
+    if len(sched.condition_waiters) > 0 {
+        write_idx := 0
+        for i := 0; i < len(sched.condition_waiters); i += 1 {
+            f := sched.condition_waiters[i]
+            if f.condition_fn != nil && f.condition_fn(f.condition_data) {
+                if f.status == .Waiting_Condition {
+                    f.status = .Ready
+                    append(&sched.ready_queue, f)
+                }
+            } else {
+                sched.condition_waiters[write_idx] = f
+                write_idx += 1
             }
         }
+        resize(&sched.condition_waiters, write_idx)
     }
 
-    // 8. Execute Ready Queue
-    for len(sched.ready_queue) > 0 {
-        f := pop_front(&sched.ready_queue)
-        if f.status != .Ready do continue
+    // 8. Execute Ready Queue (Zero-Shift O(N) Sequential Cursor)
+    for i := 0; i < len(sched.ready_queue); i += 1 {
+        f := sched.ready_queue[i]
+        if f == nil || f.status != .Ready do continue
 
         f.status = .Running
         sched.current_fiber = f
@@ -477,6 +493,7 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
             fiber_cleanup_and_recycle(sched, f)
         }
     }
+    clear(&sched.ready_queue)
 }
 
 // ============================================================================
@@ -614,12 +631,7 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     // 2. Remove root from scheduler queues
     switch root.status {
     case .Ready:
-        for i in 0 ..< len(sched.ready_queue) {
-            if sched.ready_queue[i] == root {
-                ordered_remove(&sched.ready_queue, i)
-                break
-            }
-        }
+        root.status = .Aborted
     case .Sleeping_Time:
         if root.heap_index >= 0 {
             timer_heap_remove(sched, root.heap_index)
