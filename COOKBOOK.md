@@ -15,12 +15,12 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 8. [Recipe 8: Multi-Phase Boss AI with `Phase_Director`](#recipe-8-multi-phase-boss-ai-with-phase_director)
 9. [Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints](#recipe-9-rts-unit-action-queue-with-command-preemption--waypoints)
 10. [Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)](#recipe-10-multi-channel-network--input-multiplexer-chan_select_recv)
-11. [Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)](#recipe-11-decoupled-stage-transition-cancellation-token-cancel_token)
-12. [Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)](#recipe-12-category-mass-cancellation--emp-disruption-user_tag--scheduler_cancel_by_tag)
+11. [Recipe 11: Decoupled Stage Transition Signals (`Signal` / `Event(T)`)](#recipe-11-decoupled-stage-transition-signals-signal--eventt)
+12. [Recipe 12: Entity Sub-Scopes & Localized EMP Stun (`Fiber_Scope`)](#recipe-12-entity-sub-scopes--localized-emp-stun-fiber_scope)
 13. [Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)](#recipe-13-channel-timeout--deadlock-free-message-polling-chan_recv_timeout)
 14. [Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`Ticker`)](#recipe-14-zero-drift-periodic-heartbeats--damage-over-time-ticker)
 15. [Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)](#recipe-15-deadlock-proof-scoped-mutex--semaphore-locks-with_mutex--with_semaphore)
-16. [Recipe 16: 1-Line Emergency Task Abort (`with_cancel_token`)](#recipe-16-1-line-emergency-task-abort-with_cancel_token)
+16. [Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)](#recipe-16-structured-emergency-task-abort-race--signal)
 17. [Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)](#recipe-17-custom-in-engine-hierarchy-tree-debuggers-scheduler_walk_tree)
 
 > 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) for the 8 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
@@ -521,13 +521,13 @@ actor_input_multiplexer :: proc(
 
 ---
 
-## Recipe 11: Decoupled Stage Transition Cancellation Token (`Cancel_Token`)
+## Recipe 11: Decoupled Stage Transition Signals (`Signal` / `Event(T)`)
 
 ### Problem
-When a cutscene triggers or the player dies, dozens of independent entities across completely different systems (background particle spawners, ambient wildlife AI, combat encounter scripts) must cancel immediately without needing to share a single monolithic `Fiber_Scope`.
+When a cutscene triggers or the player dies, dozens of independent entities across completely different systems (background particle spawners, ambient wildlife AI, combat encounter scripts) must react immediately without needing to share a monolithic `Fiber_Scope`.
 
 ### Solution
-Use `coroutine.Cancel_Token` as a lightweight, broadcastable abort handle:
+Use `coroutine.Signal` or `coroutine.Event(T)` as a lightweight, zero-polling broadcast handle:
 
 ```odin
 package gameplay
@@ -536,35 +536,32 @@ import "core:fmt"
 import "src/coroutine"
 
 Game_Session :: struct {
-    sched:           coroutine.Scheduler,
-    game_active_tok: coroutine.Cancel_Token,
+    sched:              coroutine.Scheduler,
+    stage_clear_signal: coroutine.Signal,
 }
 
-// Any entity can listen on the cancellation token:
-wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-    // 1. Run until token is cancelled:
-    coroutine.spawn_ptr(f.sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-        coroutine.cancel_token_wait(f, tok) // Awaits token cancellation!
-        fmt.println("[Wildlife AI] Game session ended; despawning animals.")
-    }, tok)
+// Any entity can suspend waiting on the transition signal:
+wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
+    coroutine.signal_wait(f, sig) // Zero-polling suspension!
+    fmt.println("[Wildlife AI] Stage cleared; smoothly despawning ambient fauna.")
 }
 
-// When level completes or player dies:
-session_end_game :: proc(session: ^Game_Session) {
-    // Aborts all token waiters instantly in one call:
-    coroutine.cancel_token_cancel(&session.sched, &session.game_active_tok)
+// When level completes or player reaches extraction:
+session_end_stage :: proc(session: ^Game_Session) {
+    // Unblocks all signal listeners instantly in one tick:
+    coroutine.signal_emit(&session.sched, &session.stage_clear_signal)
 }
 ```
 
 ---
 
-## Recipe 12: Category Mass Cancellation & EMP Disruption (`user_tag` / `scheduler_cancel_by_tag`)
+## Recipe 12: Entity Sub-Scopes & Localized EMP Stun (`Fiber_Scope`)
 
 ### Problem
-An in-game EMP bomb detonates. It must immediately disrupt and cancel all `Combat_AI` and `Energy_Shield` coroutines across all enemies on screen, while leaving entity `Movement`, `Gravity_Physics`, and `Audio_Voice` coroutines running unaffected.
+An in-game EMP bomb detonates within a radius. It must immediately disrupt and cancel all `combat_scope` and `shield_scope` coroutines on affected enemies, while leaving entity `movement_scope` and physics running unaffected in clean $O(1)$ time without global pool scans.
 
 ### Solution
-Assign `tag: u32` when spawning coroutines and use `coroutine.scheduler_cancel_by_tag`:
+Structure entity behaviors with dedicated sub-scopes:
 
 ```odin
 package gameplay
@@ -572,46 +569,44 @@ package gameplay
 import "core:fmt"
 import "src/coroutine"
 
-Tag :: enum u32 {
-    Default       = 0,
-    Combat_AI     = 1,
-    Energy_Shield = 2,
-    Movement      = 3,
+Drone :: struct {
+    entity_scope: coroutine.Fiber_Scope, // Death cancels all
+    combat_scope: coroutine.Fiber_Scope, // Stun / EMP cancels attacks
+    shield_scope: coroutine.Fiber_Scope, // EMP cancels shields
+    is_alive:     bool,
 }
 
-spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, enemy_id: int) {
-    // Combat loop (Tagged: Combat_AI)
-    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
-        for {
+spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) {
+    // Combat loop (Bounded to combat_scope)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        for d.is_alive {
             fmt.println("Drone firing lasers!")
             coroutine.wait(f, 0.5)
         }
-    }, tag = u32(Tag.Combat_AI))
+    }, drone, scope = &drone.combat_scope)
 
-    // Shield shimmer loop (Tagged: Energy_Shield)
-    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
-        for {
+    // Shield loop (Bounded to shield_scope)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        for d.is_alive {
             coroutine.wait(f, 0.1)
         }
-    }, tag = u32(Tag.Energy_Shield))
+    }, drone, scope = &drone.shield_scope)
 
-    // Movement patrol loop (Tagged: Movement - Immune to EMP!)
-    coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
-        for {
-            fmt.println("Drone drifting forward with inertial thrusters...")
+    // Movement patrol loop (Bounded to entity_scope - Immune to EMP!)
+    coroutine.spawn(sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        for d.is_alive {
+            fmt.println("Drone drifting forward...")
             coroutine.wait(f, 1.0)
         }
-    }, tag = u32(Tag.Movement))
+    }, drone, scope = &drone.entity_scope)
 }
 
-// EMP Detonation Event:
-detonate_emp_blast :: proc(sched: ^coroutine.Scheduler) {
-    // Aborts all Combat AI and Shields instantly in O(N) pool scan:
-    cancelled_combat := coroutine.scheduler_cancel_by_tag(sched, u32(Tag.Combat_AI))
-    cancelled_shields := coroutine.scheduler_cancel_by_tag(sched, u32(Tag.Energy_Shield))
-
-    fmt.printf("EMP DISRUPTION: Disabled %d combat loops and %d shield loops!\n",
-        cancelled_combat, cancelled_shields)
+// EMP Detonation Event on target drone:
+detonate_emp_blast_on_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) {
+    // Cancels only combat and shield sub-scopes instantly in O(1) time:
+    coroutine.scope_cancel(sched, &drone.combat_scope)
+    coroutine.scope_cancel(sched, &drone.shield_scope)
+    fmt.println("EMP DISRUPTION: Stunned drone combat and shield sub-scopes!")
 }
 ```
 
@@ -717,13 +712,13 @@ drone_recharge_fiber :: proc(f: ^coroutine.Fiber, task: ^Drone_Task) {
 
 ---
 
-## Recipe 16: 1-Line Emergency Task Abort (`with_cancel_token`)
+## Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)
 
 ### Problem
-An interactive player action (hacking a terminal, channeling a portal, reviving an ally) needs to be tied to a facility-wide alarm token or emergency kill switch in a single concise statement.
+An interactive player action (hacking a terminal, channeling a portal, reviving an ally) needs to be preempted immediately if an emergency alarm signal trips, aborting cleanly without orphan fibers.
 
 ### Solution
-Use `coroutine.with_cancel_token(f, &token, branch)`. It races the workload against the token's cancellation signal and returns `true` if interrupted.
+Use `coroutine.race` combining the primary workload with a `coroutine.signal_wait` branch:
 
 ```odin
 package gameplay
@@ -732,13 +727,19 @@ import "core:fmt"
 import "src/coroutine"
 
 hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
-    interrupted := coroutine.with_cancel_token(f, &g_lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, t: ^Terminal) {
-        coroutine.tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
-        t.is_hacked = true
-    }, term, name = "Hack Workload"))
+    winner := coroutine.race(f,
+        coroutine.branch(proc(f: ^coroutine.Fiber, t: ^Terminal) {
+            coroutine.tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
+            t.is_hacked = true
+        }, term, name = "Hack Workload"),
 
-    if interrupted {
-        fmt.println("Hacking aborted: Emergency lockdown active!")
+        coroutine.branch(proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
+            coroutine.signal_wait(f, sig)
+        }, &g_lockdown_signal, name = "Lockdown Signal Watcher"),
+    )
+
+    if winner == 1 {
+        fmt.println("Hacking aborted: Emergency lockdown alarm sounded!")
         term.hack_progress = 0.0
     }
 }

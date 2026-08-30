@@ -126,20 +126,18 @@ bench_timer_min_heap :: proc() {
 
     woken_count := 0
 
+    Timer_Bench_Ctx :: struct {
+        dur:   f32,
+        count: ^int,
+    }
+
     t0 := time.now()
     for _ in 0 ..< TIMER_COUNT {
         sleep_dur := rand.float32_range(0.01, 2.0)
-        coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, dur: f32) {
-            coroutine.wait(f, dur)
-            cnt := cast(^int)f.user_data
-            cnt^ += 1
-        }, sleep_dur)
-    }
-    // Assign user_data pointer to counter
-    for f in sched.fiber_pool.all_fibers {
-        if f.status != .Unused {
-            f.user_data = &woken_count
-        }
+        coroutine.spawn_val(&sched, proc(f: ^coroutine.Fiber, ctx: Timer_Bench_Ctx) {
+            coroutine.wait(f, ctx.dur)
+            ctx.count^ += 1
+        }, Timer_Bench_Ctx{dur = sleep_dur, count = &woken_count})
     }
 
     // Step scheduler to populate min-heap and advance virtual time

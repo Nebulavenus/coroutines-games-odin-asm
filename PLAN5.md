@@ -20,9 +20,9 @@ Games and real-time simulations require deterministic execution, zero-allocation
 │    (16-bit Index | 16-bit Gen)       │ single-instruction O(1) direct slot  │
 │                                      │ lookups with ABA safety guarantees.  │
 ├──────────────────────────────────────┼──────────────────────────────────────┤
-│ 3. Zero-Allocation Static Waiters    │ Embed fixed [STATIC_WAITERS_CAP]^Fiber│
-│    in Sync Primitives                │ in Mutex, Signal, Semaphore, Latch   │
-│                                      │ for 0-heap allocation initialization.│
+│ 3. Intrusive Futex Wait Queues       │ Doubly-linked intrusive pointers     │
+│    (OS Kernel Pattern & True ZII)    │ embedded in Fiber (next/prev_waiter) │
+│                                      │ achieving 100% zero-alloc sync.      │
 ├──────────────────────────────────────┼──────────────────────────────────────┤
 │ 4. Engine-Agnostic Usability         │ Retain zero external dependencies,   │
 │    & Zero-Hitch Real-Time Semantics  │ full ZII semantics, and pure drop-in │
@@ -52,16 +52,15 @@ TEMP_ARENA_SIZE :: #config(CORO_TEMP_ARENA_SIZE, 4 * 1024)
 
 // --- 2. Safety, Canary & Diagnostics ---
 CANARY_SIZE :: #config(CORO_CANARY_SIZE, 64)
-CANARY_MAGIC :: 0xDEAD_BEEF_CAFE_BABE
-DEFAULT_ALLOC_MODE :: Stack_Allocation_Mode(#config(CORO_ALLOC_MODE, 0)) // 0: Standard_Slab, 1: Virtual_Memory_OS
+CANARY_MAGIC :: #config(CORO_CANARY_MAGIC, 0xDEAD_BEEF_CAFE_BABE)
+DEFAULT_ALLOC_MODE_INT :: #config(CORO_ALLOC_MODE, 0)
 WATCHDOG_ENABLED :: #config(CORO_WATCHDOG_ENABLED, ODIN_DEBUG)
 WATCHDOG_MAX_SLICE_MS :: #config(CORO_WATCHDOG_MAX_SLICE_MS, 100.0)
 
 // --- 3. Clocks & Timers ---
 DEFAULT_TICK_RATE_HZ :: #config(CORO_TICK_RATE_HZ, 1000)
 
-// --- 4. Static Capacity Bounds (sds Philosophy) ---
-STATIC_WAITERS_CAPACITY :: #config(CORO_STATIC_WAITERS_CAPACITY, 4)
+// --- 4. Static Capacity Bounds ---
 HANDLE_HISTORY_CAPACITY :: #config(CORO_HANDLE_HISTORY_CAPACITY, 2048)
 ```
 
@@ -109,33 +108,64 @@ Fiber_Handle :: distinct u32
 
 ---
 
-## 4. Pillar 3: Zero-Allocation Synchronization Primitives (`Waiter_List`)
+## 4. Pillar 3: Intrusive Waiter Queues & True ZII (OS Kernel / Futex Pattern)
 
-### Unified Embedded Static Waiter Structure
+### Architectural Evolution
+The initial design explored a hybrid fixed-array buffer (`[STATIC_WAITERS_CAPACITY]^Fiber`) with a dynamic slice fallback (`overflow: [dynamic]^Fiber`). While functional, dynamic overflow compromised the pure zero-allocation guarantee and required explicit allocator initialization.
+
+Instead, we adopted the **gold standard of OS kernels (Linux futexes, Windows kernel events, FreeRTOS queues)**: **Intrusive Doubly-Linked Wait Queues**.
+
+### Intrusive Data Layout
 ```odin
-Waiter_List :: struct {
-    static_buf:   [STATIC_WAITERS_CAPACITY]^Fiber,
-    count:        int,
-    overflow:     [dynamic]^Fiber,
-    allocator:    mem.Allocator,
+// Inside Fiber struct (src/coroutine/types.odin):
+Fiber :: struct {
+    // ...
+    next_waiter: ^Fiber, // Intrusive pointer to next waiting fiber in queue
+    prev_waiter: ^Fiber, // Intrusive pointer to previous waiting fiber in queue
+    // ...
+}
+
+// Compact Wait_Queue header (only 16 bytes!):
+Wait_Queue :: struct {
+    head: ^Fiber,
+    tail: ^Fiber,
 }
 ```
 
-### Methods
-- `waiter_list_init(wl: ^Waiter_List, allocator := context.allocator)`
-- `waiter_list_destroy(wl: ^Waiter_List)`: Frees overflow only if allocated; no-op if within static capacity.
-- `waiter_list_add(wl: ^Waiter_List, f: ^Fiber)`: Adds to `static_buf` if `count < STATIC_WAITERS_CAPACITY`, else appends to `overflow`.
-- `waiter_list_remove(wl: ^Waiter_List, f: ^Fiber) -> bool`: In-place removal.
-- `waiter_list_pop_first(wl: ^Waiter_List) -> (^Fiber, bool)`: Pops first waiting fiber.
-- `waiter_list_clear(wl: ^Waiter_List)`: Resets count and clears overflow.
+```
+                          INTRUSIVE WAIT QUEUE TOPOLOGY
+  [ Wait_Queue Header ]
+   • head: ──────► [ Fiber A ] (in pool)
+   • tail: ──┐      • next_waiter ──────► [ Fiber B ] (in pool)
+             │      • prev_waiter = nil    • next_waiter = nil
+             │                             • prev_waiter ───────┐
+             └─────────────────────────────▲                    │
+                                           └────────────────────┘
+```
+
+### Key Advantages
+1. **100% Zero Heap Allocations**: All links are embedded directly inside preallocated `Fiber` slab descriptors.
+2. **Unbounded Waiter Capacity**: Holds 1, 4, 100, or 10,000 waiting fibers without capacity limits or array reallocations.
+3. **True Zero Is Initialization (ZII)**: Default zeroed memory (`head = nil, tail = nil`) is immediately valid without calling `_init`.
+4. **$O(1)$ In-Place Unlinking (`wait_queue_remove`)**: When a fiber times out, is cancelled, or unregisters in multi-channel select (`chan_select_recv`), it unlinks itself in $O(1)$ time without searching.
+
+### Operations
+- `wait_queue_init(q: ^Wait_Queue)` / `wait_queue_destroy(q: ^Wait_Queue)`
+- `wait_queue_push_back(q: ^Wait_Queue, f: ^Fiber)`: $O(1)$ append to tail.
+- `wait_queue_pop_front(q: ^Wait_Queue) -> (^Fiber, bool)`: $O(1)$ pop from head.
+- `wait_queue_remove(q: ^Wait_Queue, f: ^Fiber) -> bool`: $O(1)$ in-place doubly-linked unlinking.
+- `wait_queue_count(q: ^Wait_Queue) -> int`: Counts active waiters.
+- `wait_queue_is_empty(q: ^Wait_Queue) -> bool`: `return q.head == nil`.
+- `wait_queue_clear(q: ^Wait_Queue)`: Resets head and tail to nil.
 
 ### Target Primitives
-- `Signal`
-- `Fiber_Mutex`
-- `Fiber_Semaphore`
-- `Fiber_Latch`
-- `Cancel_Token`
-- `Event(T)`
+- `Signal` (16 bytes, True ZII)
+- `Fiber_Mutex` (24 bytes, True ZII)
+- `Fiber_Semaphore` (32 bytes)
+- `Fiber_Latch` (24 bytes, True ZII)
+- `Cancel_Token` (24 bytes, True ZII)
+- `Event(T)` (Wait_Queue + allocator)
+- `Channel(T)` (send_waiters & recv_waiters)
 
 ---
 

@@ -43,3 +43,19 @@
 #42 2026-08-30 Upgraded synchronization primitives to doubly-linked Intrusive Wait Queues (OS Kernel / Futex Pattern): 100% zero-alloc, unbounded capacity, true ZII, and O(1) in-place removals (143/143 tests passing).
 #43 2026-08-30 Authored TECH_SDS_AND_HANDLES.md detailing SDS, ZII, packed generational handles (O(1) lookups), and intrusive futex queues; updated ARCHITECTURE, TECH_MEMORY, TECH_PRIMITIVES, README.
 #44 2026-08-30 Updated tutorials (04, 05) and guides (PERFORMANCE, INTEGRATION, FOOTGUNS) with True ZII, Intrusive Futex Queues, condition timeouts, and packed handle safety.
+#45 2026-08-30 Updated PLAN5.md: Documented the transition from the initial hybrid Waiter_List proposal to OS Kernel Intrusive Futex Queues (Wait_Queue doubly-linked) with True ZII.
+#46 2026-08-30 Hardened Cancel Token & Wait_Queue safety: automatic queue unlinking on fiber abort, cancel_token_reset for token re-arming, and EMP stun recovery loops in demos (146/146 tests passing).
+#47 2026-08-30 Added Test 147: Headless Boss AI fuzzing simulation running 2000 frames with randomized EMP parry pulses and variable delta times; verified 0 fiber leaks and pool integrity.
+#48 2026-08-30 Added Phase Transition Tag Isolation and Test 148: verified that EMP parries fired on exact phase boundaries cleanly purge old attack fibers with zero ghost crossover.
+#49 2026-08-30 Hardened engine: fixed chan_select_recv intrusive queue aliasing, sim_ticks zero-drift math, paused zero-shift sweep, and defensive wait_queue_remove (150/150 tests passing across 12-config matrix).
+#50 2026-08-30 Engine purity audit: converted generator_next to O(1) handle lookup, removed dead next_handle_id, clamped time_scale >= 0, and added wait_queue recycle unlinking (152/152 tests passing).
+#51 2026-08-30 Pruned unused 16-byte allocator fields from Event, Fiber_Semaphore, Fiber_Latch, and Cancel_Token ZII structs (152/152 tests passing across 12-config LLVM matrix).
+#52 2026-08-30 Purged Cancel_Token; engine is now 100% pure structured concurrency via Fiber_Scope, user_tag, Event(T)/Signal, and race/rush
+#53 2026-08-30 Fixed boss attack fiber multiplication on EMP in main.odin: removed redundant root fiber spawn, letting structured AI tree handle loop restarts
+#54 2026-08-30 Purged user_tag and category cancellation; engine is 100% pure Structured Concurrency using Fiber_Scope sub-scopes and race+Signal stuns.
+#55 2026-08-30 Hardened chan_recv_timeout unbuffered safety, scheduler_destroy wait-queue unlinking, and canary breach detection in fiber_calc_stack_usage.
+#56 2026-08-30 Pruned cosmetic Join_Kind.Fallback variant leaving 3 fundamental orthogonal join combinators (Sync, Race, Rush); 156/156 tests passing across 12-config LLVM matrix.
+#57 2026-08-30 Persisted allocator in Fiber_Pool & Scheduler for memory lifecycle fidelity; cleaned up redundant Event(T) size checks; 156/156 tests passing across 12-config matrix.
+#58 2026-08-30 Audited and updated all 35 documentation files to GFM compatibility, 156-test catalog, pure structured concurrency, and persistent allocator memory models.
+#59 2026-08-30 Hardened unbuffered rendezvous deadlock safety, Windows PAGE_NOACCESS guard pages, spawn_real_val, compile constants, and verified 161 tests across 12-target LLVM matrix.
+#60 2026-08-30 Cleaned up Test 66 package-global variable and renamed Tests 108/110; verified 161 tests across 12-target LLVM build matrix with zero errors.

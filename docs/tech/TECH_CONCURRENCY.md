@@ -50,7 +50,7 @@ To achieve zero dynamic heap allocations during branch coordination, each `Fiber
 - `first_child`: Pointer to the first active child fiber.
 - `sibling_next`: Pointer to the next sibling in the linked list.
 - `parent`: Pointer back to the parent fiber.
-- `join_coord`: Intrusive struct managing join mode (`.Sync`, `.Race`, `.Rush`, `.Fallback`), active branch counts, and winner indices.
+- `join_coord`: Intrusive struct managing join mode (`.Sync`, `.Race`, `.Rush`), active branch counts, and winner indices.
 
 ---
 
@@ -82,33 +82,29 @@ When a branch is cancelled (via `race` preemption, `fiber_cancel`, `with_timeout
 
 ---
 
-## 4. The Three Dimensions of Cancellation
+## 4. Pure Structured Concurrency: The Two Dimensions of Cancellation
 
-The engine provides 3 orthogonal cancellation models tailored to different gameplay architectures:
+The engine provides 2 orthogonal cancellation models tailored to gameplay architectures, preserving 100% structured concurrency without loose unstructured token state:
 
 ```
-┌───────────────────────────┬───────────────────────────┬───────────────────────────┐
-│ 1. STRUCTURAL (Hierarchical)│ 2. CATEGORY (Orthogonal) │ 3. EXPLICIT (Decoupled)   │
-├───────────────────────────┼───────────────────────────┼───────────────────────────┤
-│ `Fiber_Scope` / Tree      │ `user_tag: u32`           │ `Cancel_Token`            │
-│ Bounded to entity lifetime│ Bounded to gameplay class │ Bounded to broadcast event│
-│ e.g. Entity death         │ e.g. EMP / Silence blast  │ e.g. Game over / Cutscene │
-└───────────────────────────┴───────────────────────────┴───────────────────────────┘
+┌───────────────────────────────────────────┬───────────────────────────────────────────┐
+│ 1. HIERARCHICAL SCOPES (Ownership / Bounds)│ 2. INTERRUPTION RACES (Status / Mechanics)│
+├───────────────────────────────────────────┼───────────────────────────────────────────┤
+│ `Fiber_Scope` / Sub-Scopes / Trees        │ `race` & `Signal` / Fork-Join Preemption  │
+│ Bounded to entity & subsystem lifetime    │ Bounded to gameplay status effects & stuns│
+│ e.g. Entity death, despawn, scene unloads │ e.g. EMP blast, Silence, Stun, Interruption│
+└───────────────────────────────────────────┴───────────────────────────────────────────┘
 ```
 
-### Dimension 1: Structural Scopes (`Fiber_Scope`)
-- Attached directly to game entities (e.g. `monster.scope`).
-- All fibers spawned with `scope = &monster.scope` are tracked in `scope.handles`.
-- When the monster dies, calling `scope_cancel(sched, &monster.scope)` cancels every coroutine attached to that monster in one call.
+### Dimension 1: Hierarchical Scopes & Sub-Scopes (`Fiber_Scope` / `scope_cancel`)
+- Attached directly to game entities (e.g. `monster.entity_scope`, `monster.combat_scope`).
+- All fibers spawned with `scope = &monster.combat_scope` are tracked in `scope.handles`.
+- When the monster dies or is stunned, calling `scope_cancel(sched, &monster.combat_scope)` cleanly cancels all attached fibers in $O(1)$ time.
+- Task trees (`race`, `rush`, `sync`, `fallback`) automatically clean up subtrees bottom-up upon completion or failure.
 
-### Dimension 2: Category Tags (`user_tag` & `scheduler_cancel_by_tag`)
-- Assigned on spawn: `spawn(sched, proc, tag = u32(Tag.Combat_AI))`.
-- Bypasses entity hierarchy to cancel an entire category of behaviors across the whole world (e.g. cancelling all combat AI and shields on EMP detonation).
-
-### Dimension 3: Explicit Tokens (`Cancel_Token`)
-- Decoupled token handle passed to arbitrary fibers across different systems.
-- Unrelated fibers await cancellation with `cancel_token_wait(f, &tok)`.
-- Calling `cancel_token_cancel(sched, &tok)` awakens and unblocks all listeners simultaneously.
+### Dimension 2: Interruption Races (`race` & `Signal`)
+- Combat workloads race against entity or area signals: `race(f, branch(combat_loop), branch(signal_wait(&stun_sig)))`.
+- When a stun occurs, the combat subtree is aborted with zero leaked fibers, executes stun recovery, and loops around cleanly.
 
 ---
 

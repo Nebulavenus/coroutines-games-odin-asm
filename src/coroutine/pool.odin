@@ -13,7 +13,7 @@ fiber_pool_init :: proc(
     pool: ^Fiber_Pool,
     stack_size: uint = DEFAULT_STACK_SIZE,
     stacks_per_slab: int = 32,
-    alloc_mode: Stack_Allocation_Mode = .Standard_Slab,
+    alloc_mode: Stack_Allocation_Mode = DEFAULT_ALLOC_MODE,
     allocator := context.allocator,
 ) {
     pool.stack_size = max(stack_size, 16 * 1024)
@@ -23,10 +23,10 @@ fiber_pool_init :: proc(
     }
     pool.stacks_per_slab = max(stacks_per_slab, 1)
     pool.alloc_mode = alloc_mode
-    pool.slabs = make([dynamic]rawptr, allocator)
-    pool.free_fibers = make([dynamic]^Fiber, allocator)
-    pool.all_fibers = make([dynamic]^Fiber, allocator)
-    pool.next_handle_id = 1
+    pool.allocator = allocator.procedure != nil ? allocator : context.allocator
+    pool.slabs = make([dynamic]rawptr, pool.allocator)
+    pool.free_fibers = make([dynamic]^Fiber, pool.allocator)
+    pool.all_fibers = make([dynamic]^Fiber, pool.allocator)
 }
 
 fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
@@ -44,8 +44,9 @@ fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
 }
 
 fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
+    alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     for fiber in pool.all_fibers {
-        free(fiber, allocator)
+        free(fiber, alloc)
     }
     delete(pool.all_fibers)
     delete(pool.free_fibers)
@@ -62,12 +63,12 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
             }
         } else {
             for slab in pool.slabs {
-                mem.free(slab, allocator)
+                mem.free(slab, alloc)
             }
         }
     } else {
         for slab in pool.slabs {
-            mem.free(slab, allocator)
+            mem.free(slab, alloc)
         }
     }
     delete(pool.slabs)
@@ -88,6 +89,12 @@ fiber_watermark_stack :: proc(fiber: ^Fiber) {
 fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
     if fiber == nil || fiber.stack_base == nil do return 0, 0
     total_bytes = fiber.stack_size
+
+    // If canary watermark is breached, report full stack consumption
+    if !fiber_check_canary(fiber) {
+        return total_bytes, total_bytes
+    }
+
     bytes := ([^]u8)(fiber.stack_base)
     start_offset := CANARY_SIZE
 
@@ -103,6 +110,7 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
 // Allocates a new slab of memory for stacks and fibers
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
+    alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     slab_size := int(pool.stack_size) * pool.stacks_per_slab
 
     if pool.alloc_mode == .Virtual_Memory_OS {
@@ -115,11 +123,11 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
 
             for i in 0 ..< pool.stacks_per_slab {
                 raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-                // Protect lowest 4KB page as PAGE_GUARD
+                // Protect lowest 4KB page as PAGE_NOACCESS (Guard Page)
                 old_protect: win32.DWORD
-                win32.VirtualProtect(raw_base, 4096, win32.PAGE_GUARD | win32.PAGE_READWRITE, &old_protect)
+                win32.VirtualProtect(raw_base, 4096, win32.PAGE_NOACCESS, &old_protect)
 
-                fiber := new(Fiber, allocator)
+                fiber := new(Fiber, alloc)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
                 fiber.pool_index = u16(len(pool.all_fibers))
@@ -146,7 +154,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 // Protect lowest 4KB page as PROT_NONE (Guard Page)
                 posix.mprotect(raw_base, 4096, posix.PROT_NONE)
 
-                fiber := new(Fiber, allocator)
+                fiber := new(Fiber, alloc)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
                 fiber.pool_index = u16(len(pool.all_fibers))
@@ -164,7 +172,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     }
 
     // Standard slab allocation fallback
-    slab, err := mem.alloc(slab_size, 16, allocator)
+    slab, err := mem.alloc(slab_size, 16, alloc)
     if err != nil || slab == nil {
         panic("Failed to allocate memory slab for fiber pool")
     }
@@ -172,7 +180,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
 
     for i in 0 ..< pool.stacks_per_slab {
         stack_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-        fiber := new(Fiber, allocator)
+        fiber := new(Fiber, alloc)
         fiber.stack_base = stack_base
         fiber.stack_size = pool.stack_size
         fiber.pool_index = u16(len(pool.all_fibers))
@@ -208,8 +216,9 @@ fiber_check_canary :: proc(fiber: ^Fiber) -> bool {
 }
 
 fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) -> ^Fiber {
+    alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     if len(pool.free_fibers) == 0 {
-        fiber_pool_grow(pool, allocator)
+        fiber_pool_grow(pool, alloc)
     }
 
     fiber := pop(&pool.free_fibers)
@@ -296,13 +305,17 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.child_count = 0
     fiber.join_coord = nil
     fiber.scope = nil
+    fiber.next_waiter = nil
+    fiber.prev_waiter = nil
+    fiber.current_wait_queue = nil
 
     append(&pool.free_fibers, fiber)
 }
 
 fiber_pool_prewarm :: proc(pool: ^Fiber_Pool, fiber_count: int, allocator := context.allocator) {
+    alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     for len(pool.all_fibers) < fiber_count {
-        fiber_pool_grow(pool, allocator)
+        fiber_pool_grow(pool, alloc)
     }
 }
 
@@ -470,6 +483,7 @@ wait_queue_push_back :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) {
     if q == nil || f == nil do return
     f.next_waiter = nil
     f.prev_waiter = q.tail
+    f.current_wait_queue = q
 
     if q.tail != nil {
         q.tail.next_waiter = f
@@ -492,11 +506,14 @@ wait_queue_pop_front :: proc "contextless" (q: ^Wait_Queue) -> (f: ^Fiber, ok: b
 
     f.next_waiter = nil
     f.prev_waiter = nil
+    f.current_wait_queue = nil
     return f, true
 }
 
 wait_queue_remove :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) -> bool {
     if q == nil || f == nil do return false
+    // Defensive check: Ensure fiber actually belongs to this specific queue!
+    if f.current_wait_queue != q do return false
     // Verify f is actually queued (either it has linked neighbors, or it is the head)
     if f.prev_waiter == nil && f.next_waiter == nil && q.head != f do return false
 
@@ -514,6 +531,7 @@ wait_queue_remove :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) -> bool {
 
     f.next_waiter = nil
     f.prev_waiter = nil
+    f.current_wait_queue = nil
     return true
 }
 
@@ -524,6 +542,7 @@ wait_queue_clear :: proc "contextless" (q: ^Wait_Queue) {
         next := curr.next_waiter
         curr.next_waiter = nil
         curr.prev_waiter = nil
+        curr.current_wait_queue = nil
         curr = next
     }
     q.head = nil

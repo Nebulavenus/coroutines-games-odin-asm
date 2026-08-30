@@ -159,7 +159,7 @@ When planning fiber density for your game:
 - **Result:** $O(1)$ instant lookups for `fiber_is_alive`, `fiber_status`, and `fiber_cancel` with zero search overhead regardless of pool size.
 
 ### B. Doubly-Linked Intrusive Futex Wait Queues
-- Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Cancel_Token`, `Event(T)`, `Channel(T)`) embed intrusive `next_waiter` and `prev_waiter` pointers inside `Fiber`.
+- Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event(T)`, `Channel(T)`) embed intrusive `next_waiter` and `prev_waiter` pointers inside `Fiber`.
 - **Zero Allocations:** 100% zero heap memory allocated during synchronization, contention, or broadcasting.
 - **$O(1)$ In-Place Unlinking:** When a fiber times out or is cancelled in multi-channel select (`chan_select_recv`), it unlinks from wait queues in $O(1)$ time without searching.
 

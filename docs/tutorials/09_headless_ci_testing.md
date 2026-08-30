@@ -95,7 +95,7 @@ Congratulations! You have completed the 9-stage tutorial series:
 1. **[Tutorial 1: Hello Coroutines & Basic Yields](01_hello_coroutines.md)**
 2. **[Tutorial 2: State & Parameter Passing](02_parameter_passing.md)**
 3. **[Tutorial 3: Structured Concurrency (`sync` & `race`)](03_structured_concurrency.md)**
-4. **[Tutorial 4: Advanced Decision Trees (`rush`, `fallback`, `with_timeout`, `Ticker`, `with_cancel_token`)](04_advanced_control_flow.md)**
+4. **[Tutorial 4: Advanced Decision Trees (`rush`, `fallback`, `with_timeout`, `Ticker`)](04_advanced_control_flow.md)**
 5. **[Tutorial 5: Synchronization & Communication (`with_mutex`, `with_semaphore`, `Event`, `Latch`, `Channel`)](05_synchronization.md)**
 6. **[Tutorial 6: Offloading Heavy Compute (`await_async` & `fiber_join`)](06_async_background_jobs.md)**
 7. **[Tutorial 7: Stateful Iterators (`Generator(T)`)](07_stateful_generators.md)**

@@ -162,29 +162,29 @@ ready_idx, val, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(string)
 
 ---
 
-## 9. Explicit Cancellation Token (`Cancel_Token` & `with_cancel_token`)
+## 9. Structured Fiber Scopes & Sub-Scope Cancellation (`Fiber_Scope`)
 
-A lightweight, decoupled cancellation primitive (24 bytes, True ZII) for cross-subsystem coordination:
+A zero-allocation handle tracking container for structured hierarchical entity boundaries:
 
 ```odin
-Cancel_Token :: struct {
-    is_cancelled: bool,
-    waiters:      Wait_Queue,
-    allocator:    mem.Allocator,
+// Initialize scope or sub-scopes:
+entity_scope: coroutine.Fiber_Scope
+combat_scope: coroutine.Fiber_Scope
+defer {
+    coroutine.scope_destroy(&sched, &entity_scope)
+    coroutine.scope_destroy(&sched, &combat_scope)
 }
 
-// Lifecycle & Control (True ZII: tok: Cancel_Token is immediately ready!)
-cancel_token_cancel(&sched, &tok)
-cancel_token_wait(f, &tok)
-is_cancelled := cancel_token_is_cancelled(&tok)
+// Spawn fibers bound to specific scopes:
+coroutine.spawn(&sched, enemy_movement_fiber, drone, scope = &entity_scope)
+coroutine.spawn(&sched, enemy_attack_fiber, drone, scope = &combat_scope)
 
-// 1-line race cancellation wrapper:
-cancelled := coroutine.with_cancel_token(f, &tok, coroutine.branch(task_proc, task_data))
+// Mass cancel specific sub-systems in O(1) time without global pool scans:
+cancelled_attacks := coroutine.scope_cancel(&sched, &combat_scope)
 ```
 
-- Enables multiple independent fibers across different entity scopes to coordinate abort signals without sharing a `Fiber_Scope`.
-- Calling `cancel_token_wait` on an already-cancelled token returns immediately without suspension.
-- `with_cancel_token` races the task branch against a token watcher and returns `true` if cancelled before completion.
+- Enforces strict structured concurrency: child tasks and component subsystems are explicitly bounded by scope lifetime.
+- Eliminates global pool searches: `scope_cancel` pops and terminates all active fibers tracked in the scope in $O(1)$ amortized time.
 
 ---
 
@@ -241,7 +241,7 @@ scheduler_walk_tree(sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawp
 
 ## 13. Stale Aborted Waiter Immunity
 
-All synchronization waitlists (`mutex.waiters`, `sem.waiters`, `latch.waiters`, `chan.recv_waiters`, `token.waiters`) are protected by **generational handle validation**:
+All synchronization waitlists (`mutex.waiters`, `sem.waiters`, `latch.waiters`, `chan.recv_waiters`, `signal.waiters`) are protected by **generational handle validation**:
 
 ```odin
 if next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {

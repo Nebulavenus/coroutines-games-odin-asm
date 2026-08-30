@@ -102,9 +102,9 @@ coroutine.scheduler_step_ticks(&sched, 1)
 
 ---
 
-## 4. Category User Tags & Mass Cancellation (`user_tag`)
+## 4. Structured Sub-Scope Lifecycle Management (`Fiber_Scope`)
 
-In addition to entity-scoped cancellations, you can tag fibers by category (e.g. `TAG_COMBAT_AI`, `TAG_PARTICLE_FX`, `TAG_AMBIENT_AUDIO`) to perform selective mass cancellations:
+In addition to entity root scopes, you can structure component behaviors into sub-scopes (e.g. `combat_scope`, `particle_scope`, `movement_scope`) to perform selective lifecycle management:
 
 ```odin
 package main
@@ -112,11 +112,9 @@ package main
 import "core:fmt"
 import "coroutine"
 
-Behavior_Tag :: enum u32 {
-    Unspecified = 0,
-    Combat_AI   = 1,
-    Movement    = 2,
-    Particles   = 3,
+Sentry_Drone :: struct {
+    entity_scope: coroutine.Fiber_Scope,
+    combat_scope: coroutine.Fiber_Scope,
 }
 
 main :: proc() {
@@ -124,27 +122,32 @@ main :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // Spawn combat AI fibers with Combat_AI tag
+    drone := Sentry_Drone{}
+    defer {
+        coroutine.scope_destroy(&sched, &drone.entity_scope)
+        coroutine.scope_destroy(&sched, &drone.combat_scope)
+    }
+
+    // Spawn combat AI fiber bound to combat_scope
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
         fmt.println("[Combat AI] Charging laser cannon...")
         coroutine.wait(f, 2.0)
-    }, tag = u32(Behavior_Tag.Combat_AI))
+    }, scope = &drone.combat_scope)
 
-    // Spawn movement fiber with Movement tag
+    // Spawn movement fiber bound to entity_scope
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
         fmt.println("[Movement] Patrolling perimeter...")
         coroutine.wait(f, 5.0)
-    }, tag = u32(Behavior_Tag.Movement))
+    }, scope = &drone.entity_scope)
 
     coroutine.scheduler_step(&sched, 0.1)
 
-    // Inspect active counts by tag:
-    combat_count := coroutine.scheduler_count_by_tag(&sched, u32(Behavior_Tag.Combat_AI))
-    fmt.printf("Active Combat AI fibers: %d\n", combat_count)
+    // Inspect active handles in scope:
+    fmt.printf("Active Combat AI fibers in scope: %d\n", len(drone.combat_scope.handles))
 
-    // EMP Blast: Cancel ALL combat fibers across all entities!
-    fmt.println("\n>>> EMP BLAST DETONATES: Cancelling all Combat AI! <<<")
-    cancelled := coroutine.scheduler_cancel_by_tag(&sched, u32(Behavior_Tag.Combat_AI))
+    // EMP Blast: Cancel combat sub-scope in O(1) time!
+    fmt.println("\n>>> EMP BLAST DETONATES: Cancelling Combat Sub-Scope! <<<")
+    cancelled := coroutine.scope_cancel(&sched, &drone.combat_scope)
     fmt.printf("Cancelled %d combat fibers. Movement fibers continue!\n", cancelled)
 
     coroutine.scheduler_step(&sched, 0.1)

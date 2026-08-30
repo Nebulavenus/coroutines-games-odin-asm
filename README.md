@@ -4,7 +4,7 @@ A high-performance, deterministic **stackful coroutine engine** for [Odin](https
 
 Write gameplay scripts as straight-line code — `wait`, `sync`, `race`, `rush`, `fallback`, `tween` — while the scheduler handles suspension, cancellation, and hierarchy behind the scenes. No callback spaghetti, no state machines, no OOP boilerplate.
 
-**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · Centralized `#config` with build-time `-define` overrides · Packed Generational Handles ($O(1)$ lookups) · Intrusive Waiter Queues (OS Kernel / Futex Pattern with 100% Zero Allocations & ZII) · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick`) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · multi-channel select (`chan_select_recv`) · cancellation tokens (`Cancel_Token`) · category mass cancellation (`scheduler_cancel_by_tag`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` / POSIX `PROT_NONE` · built-in tweening · headless CI simulation (`simulate_until`).
+**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · Centralized `#config` with build-time `-define` overrides · Packed Generational Handles ($O(1)$ lookups) · Intrusive Waiter Queues (OS Kernel / Futex Pattern with 100% Zero Allocations & ZII) · Persistent Allocator References · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick` with zero-drift continuous ticks) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · multi-channel select (`chan_select_recv`) · hierarchical sub-scopes (`Fiber_Scope`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` / POSIX `PROT_NONE` · built-in tweening · headless CI simulation (`simulate_until`).
 
 Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sandbox, and an All-Features Showcase with a live F1 fiber-tree debugger and freeze-frame controls.
 
@@ -14,12 +14,13 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sand
 
 - **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary scratchpads, canaries, and tick frequencies) are centralized with `-define:KEY=VALUE` compile-time overrides.
 - **Packed Generational Handles ($O(1)$ Direct Slot Lookups)**: `Fiber_Handle` packs a 16-bit slot index and 16-bit generation counter (`u16 index | u16 gen`), enabling instant single-instruction array lookups with zero linear searching and complete ABA protection.
-- **Intrusive Waiter Queues (100% Zero-Allocation & True ZII)**: Primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Cancel_Token`, `Event`, `Channel`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization (ZII).
+- **Intrusive Waiter Queues (100% Zero-Allocation & True ZII)**: Primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event`, `Channel`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization (ZII).
+- **Persistent Allocator Reference Storage**: `Fiber_Pool` and `Scheduler` maintain persistent allocator references, ensuring complete memory lifecycle fidelity across worker threads and temporary allocator scopes.
 - **Native AMD64 Inline Assembly Context Switching**: Fast register swap using call/ret trampoline patterns with full register preservation (Windows x64 GPRs + `xmm6`..`xmm15`; System V AMD64 GPRs), `#volatile` and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`), and strict 16-byte stack alignment.
 - **3-Tier Multi-Domain Engine Clock**:
   - **Simulation Clock (`sim_time`, `sim_delta`)**: Pausable, scalable gameplay clock for AI, combat, and animations.
   - **Real / Wall Clock (`real_time`, `real_delta`)**: Unpaused clock for UI menus, HUD overlays, and network pings (`wait_real`, `spawn_real`).
-  - **Fixed Integer Ticks (`sim_ticks`)**: Integer tick domain for lockstep physics, rollback netcode, and exact replays (`wait_ticks`, `scheduler_step_ticks`).
+  - **Fixed Integer Ticks (`sim_ticks`)**: Integer tick domain with continuous zero-drift math for lockstep physics, rollback netcode, and exact replays (`wait_ticks`, `scheduler_step_ticks`).
 - **Structured Concurrency & Synchronization Matrix**:
   - `sync`: Spawns parallel branches and suspends the parent fiber until all branches complete.
   - `race`: Preemptive first-to-finish race that immediately and recursively aborts competing sibling subtrees.
@@ -27,41 +28,40 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sand
   - `fallback`: Sequential priority execution ($A \rightarrow B \rightarrow C$) stopping at first success.
   - `with_timeout`: Auto-cancelling task execution within time limits.
   - `fiber_join`: Dynamic task joining allowing fibers to await independent fiber handles (like `pthread_join`).
-  - `Event(T)`: 1-to-many publish-subscribe typed event broadcast with zero polling.
+  - `Event(T)`: 1-to-many publish-subscribe typed event broadcast with zero polling and compile-time `#assert` bounds validation.
   - `chan_select_recv`: Go-style CSP multi-channel multiplexer awaiting whichever channel is ready first.
-  - `Cancel_Token`: Decoupled explicit cancellation token for cross-subsystem aborts without shared scopes.
   - `Fiber_Semaphore`: Cooperative counting semaphore allowing up to $N$ concurrent permits.
   - `Fiber_Latch`: Countdown rendezvous synchronization barrier.
   - `Signal`: Zero-polling event broadcasting (`signal_wait`, `signal_emit`).
   - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion queue (`mutex_lock`, `mutex_unlock`, `mutex_try_lock`).
-  - `branch :: proc{branch_typed, branch_nil}`: Unified type-safe branch descriptors.
+  - `branch :: proc{branch_typed, branch_nil, branch_val}`: Unified type-safe branch descriptors.
 - **Stateful Control & Lifecycle Management**:
   - `Phase_Director`: Dynamic phase coordinator with automatic previous-phase fiber cancellation.
   - `simulate_until`: High-speed headless simulation runner for CI/CD automated gameplay tests.
   - `spawn_val`: 128-byte inline by-value payload storage eliminating heap allocations and dangling stack pointers.
-  - `user_tag` & `scheduler_cancel_by_tag`: 4-byte category tagging enabling selective mass cancellations.
+  - `Fiber_Scope`: Structured hierarchical entity scopes and $O(1)$ lifecycle cancellation.
   - `scheduler_prewarm`: Pre-allocate memory slabs during level loads to eliminate runtime frame hitches.
   - `scheduler_pool_stats`: Real-time memory telemetry and active stack metrics.
 - **Unopinionated Async Job Bridge (`await_async` / `Async_Token`)**:
   - Lock-free, zero-allocation contract allowing main-thread fibers to suspend until *any* background thread pool marks work complete.
 - **Pure CSP Typed Channels (`Channel(T)`)**:
-  - Synchronous unbuffered rendezvous (capacity 0) and bounded FIFO buffered queues (`chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_close`).
+  - Synchronous unbuffered rendezvous (capacity 0) with deadlock-safe timeouts and bounded FIFO buffered queues (`chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_close`).
 - **Stateful Pull Generators (`Generator(T)`)**:
   - Zero-allocation pull-based lazy sequence generators for procedural generation, loot rolling, and graph iteration (`yield_value`, `generator_next`).
 - **Isolated Per-Fiber Temporary Allocator**:
   - Embedded 4KB `mem.Arena` in each `Fiber` assigned to `context.temp_allocator`, guaranteeing allocations survive across yield points without cross-coroutine contamination.
 - **Deterministic Multi-Stage Scheduler**:
-  - $O(1)$ Ready FIFO Queue.
+  - $O(1)$ Ready FIFO Queue with single-pass zero-shift dispatch cursor.
   - Dual $O(\log N)$ Binary Min-Heaps (`timer_heap`, `real_timer_heap`) with cached indices for instant removal on cancel.
   - Frame Wait Queue (`wait_frames`, `yield_frame`).
   - Condition Watchlist (`wait_until :: proc{wait_until_typed, wait_until_nil}`).
 - **Multi-Tiered Stack Safety**:
   - Configurable `Stack_Allocation_Mode`:
     - `Standard_Slab`: Portable heap slabs with 64-byte `0xDEAD_BEEF_CAFE_BABE` canary watermark.
-    - `Virtual_Memory_OS`: OS-level virtual memory allocation with hardware `PAGE_GUARD` (Windows) and `mprotect(PROT_NONE)` (Linux/macOS) trapping.
-  - `0xAA` stack watermarking and real-time high-water usage profiling (`fiber_calc_stack_usage`).
+    - `Virtual_Memory_OS`: OS-level virtual memory allocation with hardware `PAGE_NOACCESS` (Windows) and `mprotect(PROT_NONE)` (Linux/macOS) trapping.
+  - `0xAA` stack watermarking and real-time high-water usage profiling (`fiber_calc_stack_usage`) with automatic canary corruption detection.
 - **Hierarchical Cancellations**:
-  - `scope_cancel` / `scope_destroy`: Cleanly cancels and unwinds all coroutines attached to an entity scope.
+  - `scope_cancel` / `scope_destroy`: Cleanly cancels and unwinds all coroutines attached to an entity scope in $O(1)$.
   - `fiber_cancel`: Cancels an individual fiber and all its descendant children bottom-up.
 - **Built-in Value Interpolation (`tween`)**:
   - Smooth scalar and `[2]f32` property animation over time with linear, quadratic, and cubic easing curves.
@@ -77,7 +77,7 @@ coroutines_asm/
 ├── ARCHITECTURE.md            # Complete Engine Architectural Specification
 ├── ASM.md                     # Odin Inline Assembly Reference & Grammar
 ├── CHANGELOG.md               # Version History & Release Notes
-├── REPORTS.md                 # Verification Matrix & 81-Test Compliance Report
+├── REPORTS.md                 # Verification Matrix & 161-Test Compliance Report
 ├── COOKBOOK.md                # 17 Production Gameplay Architecture Recipes
 │
 ├── docs/
@@ -119,13 +119,13 @@ A dedicated interactive sandbox game demonstrating engine features across 7 game
 - **Station 1 (The Ritual Circle):** `sync` parallel join of 3 charging runes.
 - **Station 2 (The Capture Contest):** `race` and `with_timeout` countdown contest.
 - **Station 3 (The Energy Charger):** `Fiber_Mutex` queuing 4 AI worker drones into a single charging pad.
-- **Station 4 (The Alert Beacon):** `Signal` broadcast waking 6 sleeping sentries simultaneously.
+- **Station 4 (The Alert Beacon):** `Signal` broadcast waking 6 sleeping sentries simultaneously and `scope_cancel` lockdown.
 - **Station 5 (The Loot Forge):** `Generator(T)` procedural on-demand item rolling.
 - **Station 6 (The Async Research Lab):** `Async_Token` & `await_async` bridging OS background worker threads.
 - **Station 7 (The Telemetry Feed & Tree Inspector):** CSP `Channel(T)` log stream + `F1` real-time tree visualizer and `F3`/`F4` freeze-step controller.
 
 ### 2. 2D Boss Encounter Demo (`src/main.odin`)
-- **Boss AI Timeline**: Multi-phase behavior running combat `race` triggers, laser charges, and radial bullet barrages.
+- **Boss AI Timeline**: Multi-phase behavior running combat `race` vs `stun_signal` stuns, laser charges, and radial bullet barrages.
 - **Live F1 / TAB Hierarchy Tree Debugger**: Real-time visual overlay displaying the active fiber tree hierarchy, remaining sleep timers, and per-fiber stack usage percentages.
 
 ---
@@ -214,13 +214,18 @@ coroutine.with_mutex(f, &charger_mutex, proc(f: ^coroutine.Fiber, d: ^Drone) {
 }, drone)
 ```
 
-### 6. 1-Line Task Cancellation (`with_cancel_token`)
+### 6. Structured Interruption & Stun Preemption (`race` & `Signal`)
 
 ```odin
-// Executes task, aborting immediately if lockdown alarm trips:
-interrupted := coroutine.with_cancel_token(f, &lockdown_token, coroutine.branch(hack_terminal, terminal))
-if interrupted {
-    fmt.println("Hacking aborted due to lockdown alarm!")
+// Interruption race pattern (Verse / Skookum): race combat loop against entity stun signal
+winner := coroutine.race(f,
+    coroutine.branch(boss_combat_workload, boss),
+    coroutine.branch(proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
+        coroutine.signal_wait(f, sig)
+    }, &boss.stun_signal),
+)
+if winner == 1 {
+    coroutine.wait(f, 1.5) // Stun duration -> loop restarts cleanly!
 }
 ```
 
@@ -229,7 +234,7 @@ if interrupted {
 ```odin
 ch_combat, ch_network: coroutine.Channel(Command)
 
-// $O(1)$ Event-driven suspension until ANY channel has a message ready:
+// Event-driven suspension until ANY channel has a message ready:
 idx, cmd, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(Command){&ch_combat, &ch_network})
 if ok {
     switch idx {
@@ -258,7 +263,7 @@ A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows
 # Run the 6-Suite Performance Benchmark Runner
 .\build.ps1 run-bench
 
-# Run All 138 Unit Tests
+# Run All 156 Unit Tests
 .\build.ps1 test
 
 # Run Full LLVM Optimization & Architecture Matrix (12 builds)

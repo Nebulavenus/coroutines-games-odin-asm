@@ -26,8 +26,6 @@ Projectile :: struct {
     alive:    bool,
 }
 
-TAG_FLOATING_TEXT : u32 : 0xF10A7
-
 Floating_Text :: struct {
     text:  string,
     pos:   rl.Vector2,
@@ -69,6 +67,7 @@ Boss :: struct {
     color:        rl.Color,
     scope:        coroutine.Fiber_Scope,
     director:     coroutine.Phase_Director,
+    stun_signal:  coroutine.Signal,
     alive:        bool,
 }
 
@@ -175,15 +174,16 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
     }
 }
 
-spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color) {
+spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color = rl.GOLD, scale: f32 = 18.0) {
+    if g_game == nil do return
     ft := Floating_Text{
         text  = text,
-        pos   = pos,
+        pos   = pos + {rand.float32_range(-20, 20), rand.float32_range(-10, 10)},
         color = color,
         alpha = 1.0,
-        scale = 20,
+        scale = scale,
     }
-    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft, name = "Floating Text", tag = TAG_FLOATING_TEXT)
+    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft, name = "Floating Text")
 }
 
 player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
@@ -210,15 +210,7 @@ player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 }
 
 // ============================================================================
-// Coroutine Category Tags
-// ============================================================================
-
-TAG_DEFAULT        :: 0
-TAG_BOSS_ATTACK    :: 1
-TAG_PLAYER_ABILITY :: 2
-
-// ============================================================================
-// Coroutines: Hierarchical Multi-Phase Boss AI
+// Coroutines: Hierarchical Multi-Phase Boss AI (Pure Structured Concurrency)
 // ============================================================================
 
 boss_patrol_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
@@ -291,6 +283,76 @@ boss_enraged_laser_sweep :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     }
 }
 
+boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
+    for b.hp > 700.0 && b.alive && b.phase == 1 {
+        winner := coroutine.race(f,
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.sync(f,
+                    coroutine.branch(boss_spiral_shoot_subloop, b, "Spiral Shoot Loop"),
+                    coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst Loop"),
+                )
+            }, b, "Phase 1 Attacks"),
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.signal_wait(f, &b.stun_signal)
+            }, b, "Stun Signal Watcher"),
+        )
+
+        if winner == 1 && b.hp > 700.0 && b.alive && b.phase == 1 {
+            spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
+            b.color = rl.DARKGRAY
+            coroutine.wait(f, 1.5)
+            if b.alive && b.phase == 1 do b.color = rl.GOLD
+        }
+    }
+}
+
+boss_attack_loop_phase2 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
+    for b.hp > 350.0 && b.alive && b.phase == 2 {
+        winner := coroutine.race(f,
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.sync(f,
+                    coroutine.branch(boss_enraged_laser_sweep, b, "Laser Sweep"),
+                    coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst"),
+                )
+            }, b, "Phase 2 Attacks"),
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.signal_wait(f, &b.stun_signal)
+            }, b, "Stun Signal Watcher"),
+        )
+
+        if winner == 1 && b.hp > 350.0 && b.alive && b.phase == 2 {
+            spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
+            b.color = rl.DARKGRAY
+            coroutine.wait(f, 1.5)
+            if b.alive && b.phase == 2 do b.color = rl.SKYBLUE
+        }
+    }
+}
+
+boss_attack_loop_phase3 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
+    for b.alive && b.phase == 3 {
+        winner := coroutine.race(f,
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.sync(f,
+                    coroutine.branch(boss_spiral_shoot_subloop, b, "Enraged Spiral"),
+                    coroutine.branch(boss_enraged_laser_sweep, b, "Enraged Nova"),
+                    coroutine.branch(boss_targeted_burst_subloop, b, "Rapid Targeted Fire"),
+                )
+            }, b, "Phase 3 Attacks"),
+            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+                coroutine.signal_wait(f, &b.stun_signal)
+            }, b, "Stun Signal Watcher"),
+        )
+
+        if winner == 1 && b.alive && b.phase == 3 {
+            spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
+            b.color = rl.DARKGRAY
+            coroutine.wait(f, 1.0)
+            if b.alive && b.phase == 3 do b.color = rl.RED
+        }
+    }
+}
+
 // Master Boss AI Timeline
 boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     center_x := f32(SCREEN_WIDTH) / 2.0
@@ -313,14 +375,8 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
             }, b)
         }, b, "HP < 700 Trigger"),
 
-        // Parallel combat subroutines
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.sync(f,
-                coroutine.branch(boss_patrol_subloop, b, "Patrol Loop"),
-                coroutine.branch(boss_spiral_shoot_subloop, b, "Spiral Shoot Loop", tag = TAG_BOSS_ATTACK),
-                coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst Loop", tag = TAG_BOSS_ATTACK),
-            )
-        }, b, "Phase 1 Combat Sync"),
+        coroutine.branch(boss_patrol_subloop, b, "Patrol Loop"),
+        coroutine.branch(boss_attack_loop_phase1, b, "Phase 1 Attack Loop"),
     )
 
     if !b.alive do return
@@ -370,13 +426,8 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
             }, b)
         }, b, "HP < 350 Trigger"),
 
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.sync(f,
-                coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
-                coroutine.branch(boss_enraged_laser_sweep, b, "Laser Sweep", tag = TAG_BOSS_ATTACK),
-                coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst", tag = TAG_BOSS_ATTACK),
-            )
-        }, b, "Phase 2 Combat Sync"),
+        coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
+        coroutine.branch(boss_attack_loop_phase2, b, "Phase 2 Attack Loop"),
     )
 
     if !b.alive do return
@@ -391,10 +442,15 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     spawn_floating_text("PHASE 3: BERSERK MODE!", b.pos, rl.RED)
     trigger_camera_shake(20.0)
 
-    coroutine.sync(f,
-        coroutine.branch(boss_spiral_shoot_subloop, b, "Enraged Spiral", tag = TAG_BOSS_ATTACK),
-        coroutine.branch(boss_enraged_laser_sweep, b, "Enraged Nova", tag = TAG_BOSS_ATTACK),
-        coroutine.branch(boss_targeted_burst_subloop, b, "Rapid Targeted Fire", tag = TAG_BOSS_ATTACK),
+    coroutine.race(f,
+        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
+                return b.alive
+            }, b)
+        }, b, "Boss Death Trigger"),
+
+        coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
+        coroutine.branch(boss_attack_loop_phase3, b, "Phase 3 Attack Loop"),
     )
 }
 
@@ -444,6 +500,7 @@ game_init :: proc(g: ^Game) {
 }
 
 game_destroy :: proc(g: ^Game) {
+    coroutine.signal_destroy(&g.boss.stun_signal)
     coroutine.phase_director_destroy(&g.boss.director)
     coroutine.scope_destroy(&g.sched, &g.player.scope)
     coroutine.scope_destroy(&g.sched, &g.boss.scope)
@@ -546,9 +603,9 @@ game_update :: proc(g: ^Game, dt: f32) {
         coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash")
     }
 
-    // Player EMP Parry Burst (B key / X key): Mass cancel active boss attack fibers & vaporize bullets!
+    // Player EMP Parry Burst (B key / X key): Stun Boss directly via Signal & vaporize bullets!
     if rl.IsKeyPressed(.B) || rl.IsKeyPressed(.X) {
-        cancelled := coroutine.scheduler_cancel_by_tag(&g.sched, TAG_BOSS_ATTACK)
+        coroutine.signal_emit(&g.sched, &g.boss.stun_signal)
         bullets_destroyed := 0
         for i := len(g.projectiles) - 1; i >= 0; i -= 1 {
             if g.projectiles[i].is_enemy {
@@ -559,30 +616,7 @@ game_update :: proc(g: ^Game, dt: f32) {
         }
         trigger_camera_shake(16.0)
         spawn_particles(g.player.pos, 50, rl.GOLD)
-
-        if cancelled > 0 {
-            g.boss.color = rl.DARKGRAY
-            spawn_floating_text(fmt.tprintf("EMP PARRY! Stunned Boss (%d Attacks Cancelled, %d Bullets Destroyed)", cancelled, bullets_destroyed), g.player.pos, rl.GOLD)
-            // Stun recovery fiber: resumes boss attacks after 1.5s
-            coroutine.spawn(&g.sched, proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.wait(f, 1.5)
-                if !b.alive do return
-                b.color = b.phase == 1 ? rl.GOLD : (b.phase == 2 ? rl.SKYBLUE : rl.RED)
-                switch b.phase {
-                case 1:
-                    coroutine.spawn(f.sched, boss_spiral_shoot_subloop, b, tag = TAG_BOSS_ATTACK, name = "Spiral Shoot (Restarted)")
-                    coroutine.spawn(f.sched, boss_targeted_burst_subloop, b, tag = TAG_BOSS_ATTACK, name = "Targeted Burst (Restarted)")
-                case 2:
-                    coroutine.spawn(f.sched, boss_enraged_laser_sweep, b, tag = TAG_BOSS_ATTACK, name = "Laser Sweep (Restarted)")
-                    coroutine.spawn(f.sched, boss_targeted_burst_subloop, b, tag = TAG_BOSS_ATTACK, name = "Targeted Burst (Restarted)")
-                case 3:
-                    coroutine.spawn(f.sched, boss_spiral_shoot_subloop, b, tag = TAG_BOSS_ATTACK, name = "Enraged Spiral (Restarted)")
-                    coroutine.spawn(f.sched, boss_enraged_laser_sweep, b, tag = TAG_BOSS_ATTACK, name = "Enraged Nova (Restarted)")
-                }
-            }, &g.boss)
-        } else {
-            spawn_floating_text(fmt.tprintf("EMP BURST! (%d Bullets Vaporized)", bullets_destroyed), g.player.pos, rl.GOLD)
-        }
+        spawn_floating_text(fmt.tprintf("EMP PARRY! Stunned Boss (%d Bullets Vaporized)", bullets_destroyed), g.player.pos, rl.GOLD)
     }
 
     // Player Shooting (Left Click, J/Z, or Latched)
@@ -742,7 +776,7 @@ game_render :: proc(g: ^Game) {
     }
     draw_ctx := Floating_Draw_Ctx{cam_x = cam_x, cam_y = cam_y}
     coroutine.scheduler_walk_tree(&g.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
-        if f != nil && f.user_tag == TAG_FLOATING_TEXT && f.status != .Unused && f.status != .Completed && f.status != .Aborted && f.status != .Failed {
+        if f != nil && f.debug_name == "Floating Text" && f.status != .Unused && f.status != .Completed && f.status != .Aborted && f.status != .Failed {
             ft := (cast(^Floating_Text)&f.payload_storage[0])^
             ctx := (cast(^Floating_Draw_Ctx)user_data)^
             c := ft.color
@@ -797,8 +831,7 @@ game_render :: proc(g: ^Game) {
     diag_y: i32 = 20
     rl.DrawText(fmt.ctprintf("FPS: %d", rl.GetFPS()), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Active Fibers (Coroutines): %d", active_fibers), SCREEN_WIDTH - 280, diag_y, 16, rl.YELLOW); diag_y += 22
-    attack_fibers := coroutine.scheduler_count_by_tag(&g.sched, TAG_BOSS_ATTACK)
-    rl.DrawText(fmt.ctprintf("Boss Attacks (Tag #1): %d [B: EMP]", attack_fibers), SCREEN_WIDTH - 280, diag_y, 16, attack_fibers > 0 ? rl.ORANGE : rl.GRAY); diag_y += 22
+    rl.DrawText(fmt.ctprintf("Boss Stun Signal: [B / X: EMP]"), SCREEN_WIDTH - 280, diag_y, 16, g.boss.color == rl.DARKGRAY ? rl.GRAY : rl.ORANGE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Timer Min-Heap: %d items", len(g.sched.timer_heap)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
@@ -886,7 +919,6 @@ game_render :: proc(g: ^Game) {
                 case .Sync:     kind = "Sync"
                 case .Race:     kind = "Race"
                 case .Rush:     kind = "Rush"
-                case .Fallback: kind = "Fallback"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

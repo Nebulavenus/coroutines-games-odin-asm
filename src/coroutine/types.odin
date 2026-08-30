@@ -69,10 +69,9 @@ Scheduler_Clock :: struct {
 }
 
 Join_Kind :: enum u8 {
-    Sync,     // All children must finish; parent resumes when remaining == 0
-    Race,     // First child to finish wins; immediately aborts all siblings
-    Rush,     // First child to SUCCEED wins; aborts siblings; failures ignored unless all fail
-    Fallback, // Sequential execution of branches until first success
+    Sync, // All children must finish; parent resumes when remaining == 0
+    Race, // First child to finish wins; immediately aborts all siblings
+    Rush, // First child to SUCCEED wins; aborts siblings; failures ignored unless all fail
 }
 
 // ============================================================================
@@ -109,7 +108,6 @@ Branch_Desc :: struct {
     user_fn:         rawptr,
     payload_storage: [FIBER_PAYLOAD_SIZE]byte,
     has_payload:     bool,
-    tag:             u32,
     name:            string,
 }
 
@@ -148,8 +146,9 @@ Fiber :: struct {
     child_count:      int,
 
     // --- Intrusive Wait Queue Links (Zero-Allocation Synchronization) ---
-    next_waiter:      ^Fiber,
-    prev_waiter:      ^Fiber,
+    next_waiter:        ^Fiber,
+    prev_waiter:        ^Fiber,
+    current_wait_queue: ^Wait_Queue,
 
     // --- Concurrency & Join Coordination ---
     join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race
@@ -173,7 +172,6 @@ Fiber :: struct {
     user_fn:          rawptr,          // Function pointer for generic/value entry thunks
     payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
     cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
-    user_tag:         u32,             // User-assigned category tag for mass cancellation / filtering
 
     // --- Isolated Temporary Allocator ---
     temp_arena:        mem.Arena,
@@ -201,8 +199,7 @@ Fiber_Mutex :: struct {
 // --- 1-to-Many Typed Multicast Event ---
 
 Event :: struct($T: typeid) {
-    waiters:   Wait_Queue,
-    allocator: mem.Allocator,
+    waiters: Wait_Queue,
 }
 
 // --- Counting Semaphore (Up to N Concurrent Permits) ---
@@ -211,15 +208,13 @@ Fiber_Semaphore :: struct {
     permits:     int,
     max_permits: int,
     waiters:     Wait_Queue,
-    allocator:   mem.Allocator,
 }
 
 // --- Countdown Latch / Barrier ---
 
 Fiber_Latch :: struct {
-    count:     int,
-    waiters:   Wait_Queue,
-    allocator: mem.Allocator,
+    count:   int,
+    waiters: Wait_Queue,
 }
 
 // --- Pool Memory Telemetry ---
@@ -260,14 +255,6 @@ Channel :: struct($T: typeid) {
     allocator:    mem.Allocator,    // Backing memory allocator
 }
 
-// --- Explicit Cancellation Token ---
-
-Cancel_Token :: struct {
-    is_cancelled: bool,
-    waiters:      Wait_Queue,
-    allocator:    mem.Allocator,
-}
-
 // --- Zero-Drift Periodic Ticker ---
 
 Ticker :: struct {
@@ -294,8 +281,10 @@ Generator :: struct($T: typeid) {
 
 Stack_Allocation_Mode :: enum u8 {
     Standard_Slab,      // Standard mem.alloc (100% portable, works on all platforms)
-    Virtual_Memory_OS,  // OS-level pages with hardware PAGE_GUARD (Windows/Linux/macOS)
+    Virtual_Memory_OS,  // OS-level pages with hardware PAGE_NOACCESS / PROT_NONE (Windows/Linux/macOS)
 }
+
+DEFAULT_ALLOC_MODE :: Stack_Allocation_Mode(DEFAULT_ALLOC_MODE_INT)
 
 Fiber_Pool_Config :: struct {
     stack_size:      uint,
@@ -315,10 +304,10 @@ Fiber_Pool :: struct {
     stack_size:      uint,
     stacks_per_slab: int,
     alloc_mode:      Stack_Allocation_Mode,
+    allocator:       mem.Allocator,
     slabs:           [dynamic]rawptr,
     free_fibers:     [dynamic]^Fiber,
     all_fibers:      [dynamic]^Fiber,
-    next_handle_id:  u32,
     handle_history:  [FIBER_HANDLE_HISTORY_CAPACITY]Handle_Entry,
 }
 
@@ -327,6 +316,9 @@ Fiber_Pool :: struct {
 // ============================================================================
 
 Scheduler :: struct {
+    // Allocator Reference
+    allocator:         mem.Allocator,
+
     // Queues
     ready_queue:       [dynamic]^Fiber,
     timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)

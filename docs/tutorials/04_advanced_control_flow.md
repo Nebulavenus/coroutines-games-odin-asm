@@ -164,18 +164,24 @@ if success {
 
 ---
 
-## 4. 1-Line Cancellation with `with_cancel_token`
+## 4. Structured Task Preemption with `race` & `Signal`
 
-Easily run any task while racing it against a cancellation token:
+Easily run any task while racing it against a cancellation signal:
 
 ```odin
-interrupted := coroutine.with_cancel_token(f, &g_lockdown_token, coroutine.branch(proc(f: ^coroutine.Fiber, c: ^Chest) {
-    coroutine.wait(f, 3.0)
-    c.is_unlocked = true
-}, &chest, name = "Lockpicking"))
+winner := coroutine.race(f,
+    coroutine.branch(proc(f: ^coroutine.Fiber, c: ^Chest) {
+        coroutine.wait(f, 3.0)
+        c.is_unlocked = true
+    }, &chest, name = "Lockpicking"),
 
-if interrupted {
-    fmt.println("Lockpicking interrupted by emergency lockdown!")
+    coroutine.branch(proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
+        coroutine.signal_wait(f, sig)
+    }, &g_lockdown_signal, name = "Lockdown Watcher"),
+)
+
+if winner == 1 {
+    fmt.println("Lockpicking interrupted by emergency lockdown signal!")
 }
 ```
 

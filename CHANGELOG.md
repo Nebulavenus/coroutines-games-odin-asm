@@ -2,6 +2,130 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Technical Hardening & Quality Audit] - 2026-08-30
+
+### Fixed
+- **Unbuffered Channel (`capacity == 0`) Sender-First Rendezvous Deadlock (`src/coroutine/api.odin`)**:
+  - In `chan_send` (unbuffered mode with empty `recv_waiters`), the sender now safely writes `ch.buffer[0] = value`, sets `ch.count = 1`, and suspends in `send_waiters`.
+  - When `chan_recv`, `chan_try_recv`, or `chan_select_recv` subsequently runs, it consumes `ch.buffer[0]`, resets `ch.count = 0`, and wakes the waiting sender.
+  - Symmetrical rendezvous execution eliminates any deadlock regardless of whether sender or receiver spawns first.
+- **Windows Virtual Memory Guard Page Protection (`src/coroutine/pool.odin`)**:
+  - Replaced transient `win32.PAGE_GUARD | win32.PAGE_READWRITE` with permanent `win32.PAGE_NOACCESS` on the bottom 4KB page of virtual memory slabs.
+  - Achieves 1:1 hardware MMU crash trapping parity with POSIX `mprotect(PROT_NONE)`.
+- **`simulate_until` Execution Safety When Paused (`src/coroutine/api.odin`)**:
+  - `simulate_until_ptr` and `simulate_until_nil` now temporarily unpause the simulation clock (`sched.clock.is_paused = false` with defer restore), preventing infinite simulation loops during headless tests.
+- **OS Thread Handle Leak in Showcase Station 6 (`examples/showcase/main.odin`)**:
+  - Retained `^thread.Thread` handle in `research_lab_task` and called `thread.destroy` on completion of `await_async`.
+
+### Added
+- **`spawn_real_val` By-Value Inline Payload Procedure (`src/coroutine/api.odin`)**:
+  - Added `spawn_real_val` supporting inline by-value payload structs (`size_of(T) <= 128`) on the real-time clock domain.
+  - Expanded procedure group: `spawn_real :: proc{spawn_real_ptr, spawn_real_val, spawn_real_nil}`.
+- **Defensive Input Clamping & Guards (`src/coroutine/api.odin`)**:
+  - Guarded `semaphore_release` against non-positive counts (`count <= 0`).
+  - Guarded `latch_count_down` against non-positive steps (`n <= 0`).
+  - Defensively clamped `ticker_init` intervals (`t.interval = max(0.0001, interval_seconds)`).
+- **`DEFAULT_ALLOC_MODE` Enum Alias (`src/coroutine/types.odin`, `pool.odin`, `scheduler.odin`)**:
+  - Added `DEFAULT_ALLOC_MODE :: Stack_Allocation_Mode(DEFAULT_ALLOC_MODE_INT)` and wired as default parameter in `fiber_pool_init` and `scheduler_init`.
+
+### Refactored
+- **Compile-Time Procedure Constants for Thunk Trampolines (`src/coroutine/api.odin`)**:
+  - Converted `wrapper := proc(...)` runtime variable declarations to compile-time procedure constants `wrapper :: proc(...)` in `spawn_nil`, `branch_nil`, `wait_until_nil`, and `wait_while_nil`.
+- **Benchmark Payload Cleanliness (`examples/bench/main.odin`)**:
+  - Refactored `bench_timer_min_heap` to pass `Timer_Bench_Ctx` directly via `spawn_val`, eliminating manual `f.user_data` pointer overwriting.
+- **Unit Tests 157–161 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 157: Symmetrical unbuffered channel rendezvous (sender spawned before receiver).
+  - Test 158: Unbuffered multi-channel select with pre-queued sender.
+  - Test 159: `spawn_real_val` inline payload execution while game simulation is paused.
+  - Test 160: Defensive non-positive counts in `semaphore_release` and `latch_count_down`.
+  - Test 161: `simulate_until` execution safety when scheduler starts in paused state.
+  - Test suite expanded to **161 / 161 unit tests passing** (100% with 0 memory leaks across all 12 build matrix targets).
+
+## [Safety Hardening & Streamlined Branching] - 2026-08-30
+
+### Fixed
+- **Unbuffered Rendezvous `chan_recv_timeout` Deadlock Safety (`src/coroutine/api.odin`)**:
+  - Constrained fast-path evaluation to buffered channels with ready items in memory (`ch.count > 0`).
+  - Guarantees that unbuffered channels (`capacity == 0`) always route through `race` timeout preemption, preventing hangs if senders are aborted.
+- **`Wait_Queue` Unlinking on `scheduler_destroy` (`src/coroutine/scheduler.odin`)**:
+  - Added proactive unlinking of all active fibers from `fiber.current_wait_queue` during `scheduler_destroy`.
+  - Prevents use-after-free (UAF) if channels, mutexes, semaphores, or events outlive the scheduler instance.
+- **Stack Canary Verification in `fiber_calc_stack_usage` (`src/coroutine/pool.odin`)**:
+  - Added watermark breach validation (`!fiber_check_canary(fiber)`) to return 100% stack consumption (`total_bytes, total_bytes`) immediately, highlighting stack overflows in telemetry and debug overlays.
+
+### Refactored
+- **`with_timeout_branch` Value-Passing (`src/coroutine/api.odin`)**:
+  - Streamlined `with_timeout_branch` by passing `seconds: f32` directly into fiber inline payload storage via `branch_val`, eliminating temporary struct allocations and pointer indirections.
+- **Pruned Unused `Join_Kind.Fallback` Enum Variant (`src/coroutine/types.odin`)**:
+  - Pruned `Fallback` from `Join_Kind` enum, leaving the 3 fundamental orthogonal join modes (`.Sync`, `.Race`, `.Rush`).
+  - High-level `fallback` combinator continues executing sequential branches via `sync` without unnecessary low-level join coordinator state.
+- **Persistent Allocator Storage (`src/coroutine/types.odin`, `pool.odin`, `scheduler.odin`)**:
+  - Stored `allocator: mem.Allocator` directly inside `Fiber_Pool` and `Scheduler` structs.
+  - Ensures dynamic fiber pool growth (`fiber_pool_grow`) and teardown (`fiber_pool_destroy`, `scheduler_destroy`) always use the initial allocator, preventing mismatch when `context.allocator` is temporarily overridden.
+- **`Event(T)` Runtime Size Check Cleanup (`src/coroutine/api.odin`)**:
+  - Removed redundant runtime `if size_of(T) <= FIBER_PAYLOAD_SIZE` checks from `event_wait` and `event_emit`, relying on the compile-time `#assert` guarantee.
+- **Unit Tests 153–156 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 153: Verified unbuffered channel `chan_recv_timeout` deadlock safety when no sender is present.
+  - Test 154: Verified clean `Wait_Queue` unlinking upon `scheduler_destroy` for outliving sync primitives.
+  - Test 155: Verified `with_timeout` by-value inline payload branching.
+  - Test 156: Verified `fiber_calc_stack_usage` canary watermark breach detection and 100% usage reporting.
+  - Test suite expanded to **156 / 156 unit tests passing** (100% with 0 memory leaks).
+
+## [100% Pure Structured Concurrency & Category Tag Purge] - 2026-08-30
+
+### Removed
+- **`user_tag`, `scheduler_cancel_by_tag`, and `scheduler_count_by_tag` Purged from Engine**:
+  - Eliminated `user_tag: u32` from `Fiber` and `tag: u32` from `Branch_Desc` and all `spawn_*` / `branch_*` procedures.
+  - Eliminated `scheduler_cancel_by_tag` and `scheduler_count_by_tag`, removing the final unstructured escape hatch from the engine.
+  - Replaced unstructured category tags with **100% Pure Structured Concurrency**:
+    1. **`Fiber_Scope` / Sub-Scopes**: Hierarchical component and entity lifetimes (`scope_cancel` now returns `cancelled_count: int` in $O(1)$ time).
+    2. **Interruption Races (`race` + `Signal`)**: Preempts and recovers from gameplay stuns, EMPs, silences, and phase transitions cleanly without out-of-band tag queries or duplicate spawned fibers.
+    3. **Fork-Join Task Combinators**: `race`, `rush`, `sync`, `fallback`.
+- **Refactored All Demos & Examples**:
+  - `src/main.odin`: Refactored Boss AI into structured `race` vs `stun_signal` loops with EMP particle FX and clean auto-recovery; converted floating text renderer to tree-walk inspection.
+  - `examples/showcase/main.odin`: Converted Station 4 sentry lockdown to structured `scope_cancel`.
+  - `examples/quest_ai/main.odin`: Converted knight stun to structured `scope_cancel`.
+- **Refactored Unit Tests**:
+  - Updated all unit tests in `src/coroutine/coroutine_test.odin` (Tests 85, 87, 88, 89, 90, 96, 97, 98, 99, 100, 101, 108, 110, 145, 146, 147, 148).
+  - **152 / 152 unit tests passing**; 0 memory leaks across all test runners and 12 LLVM matrix configurations.
+
+## [Pure Structured Concurrency & Cancel_Token Elimination] - 2026-08-30
+
+### Removed
+- **`Cancel_Token` and `with_cancel_token` Purged from Engine**:
+  - Eliminated `Cancel_Token` struct and all related procedures (`cancel_token_init`, `cancel_token_destroy`, `cancel_token_reset`, `cancel_token_is_cancelled`, `cancel_token_waiter_count`, `cancel_token_cancel`, `cancel_token_wait`, `with_cancel_token`).
+  - Replaced the unstructured cancellation escape hatch with structured concurrency primitives.
+
+## [Systems Engineering Hardening & Math Precision] - 2026-08-30
+
+### Fixed
+- **`chan_select_recv` Intrusive Queue Aliasing (Memory Corruption Fix)**:
+  - Eliminated dangerous simultaneous multi-registration of a single `Fiber` node across multiple intrusive `Wait_Queue` channels.
+  - Converted `chan_select_recv` to a zero-shift frame-yielding check across all selected channels, preventing intrusive queue pointer overwrites.
+- **Continuous Synchronized `sim_ticks` (Zero-Drift Simulation Math)**:
+  - Fixed fractional delta-time truncation drift where discrete simulation ticks drifted behind `sim_time` by up to 40ms per second at 60 FPS.
+  - Computes `sim_ticks` from accumulated target simulation time (`u64(new_total_sim_time * tick_rate_hz) - sched.clock.sim_ticks`), guaranteeing exact 1000 ticks/sec alignment.
+- **`scheduler_advance_real` Zero-Shift Optimization**:
+  - Replaced legacy $O(N)$ slice `pop_front` shifts during paused game mode with an $O(N)$ zero-shift linear sweep in `scheduler_advance_real`, matching `scheduler_advance`.
+- **Defensive `wait_queue_remove` Queue Validation**:
+  - Added strict queue validation (`if f.current_wait_queue != q do return false`) in `wait_queue_remove` to guard against cross-queue pointer unlinking.
+- **$O(1)$ Generational Lookup in `generator_next`**:
+  - Replaced $O(N)$ linear pool scan with instant $O(1)$ generational handle index lookup via `fiber_find_by_handle`.
+- **Removed Dead Legacy Struct Field `next_handle_id`**:
+  - Cleaned up unused `next_handle_id: u32` from `Fiber_Pool` struct and `fiber_pool_init` initialization.
+- **Defensive Clamping in `scheduler_set_time_scale`**:
+  - Added non-negative clamping (`max(0.0, scale)`) and NaN fallback (`math.is_nan(scale) ? 1.0 : ...`) to guarantee binary min-heap timestamp monotonicity.
+- **`Wait_Queue` Double-Unlink Defense on Fiber Recycling**:
+  - Added defensive unlinking in `fiber_cleanup_and_recycle` (`if fiber.current_wait_queue != nil do wait_queue_remove(...)`) to guarantee clean queue state on abnormal termination.
+- **Removed Unused `allocator` Fields from ZII Synchronization Primitives**:
+  - Pruned unused 16-byte `allocator: mem.Allocator` fields from `Event(T)`, `Fiber_Semaphore`, `Fiber_Latch`, and `Cancel_Token` structs, achieving 100% zero-allocation True ZII footprint.
+- **Unit Tests 149–152 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 149: Verified continuous synchronized `sim_ticks` zero-drift math across 60 frames at 60 FPS (exact 1000 ticks/sec).
+  - Test 150: Verified defensive cross-queue unlinking protection and zero-shift real-time dispatch while simulation is paused.
+  - Test 151: Verified defensive time scale clamping on negative values and NaNs.
+  - Test 152: Verified generator $O(1)$ generational handle lookup and wait queue unlinking on fiber recycle.
+  - Test suite expanded to **152 / 152 unit tests passing** (100% with 0 memory leaks across all 12 LLVM matrix builds).
+
 ## [PLAN 5: Centralized Configuration, Intrusive Wait Queues & Generational Handles] - 2026-08-30
 
 ### Added
@@ -19,13 +143,17 @@ All notable changes to this project will be documented in this file.
   - Enables unbounded waiter capacity with true **Zero Is Initialization (ZII)**: primitives (`Fiber_Mutex`, `Signal`, `Fiber_Latch`, `Cancel_Token`) are immediately valid upon declaration without calling `_init`.
   - Added $O(1)$ in-place unlinking (`wait_queue_remove`), allowing instant fiber removal on timeouts, cancellations, and multi-channel select without linear queue scans.
   - Primitives shrunk down to ultra-compact structs (`Fiber_Mutex` is only 24 bytes, `Signal` is 16 bytes).
-- **Unit Tests 139–143 (`src/coroutine/coroutine_test.odin`)**:
-  - Test 139: Packed generational handle bitwise packing & unpacking.
-  - Test 140: Handle slot reuse, generation increment, and ABA safety.
-  - Test 141: Intrusive `Wait_Queue` operations (ZII, $O(1)$ push, $O(1)$ pop, $O(1)$ in-place node removals).
-  - Test 142: $O(1)$ generational handle lookups under high fiber load (256 fibers).
-  - Test 143: `#config` compile-time constants integration and static bounds.
-  - Test suite expanded to **143 / 143 unit tests passing** (100% with 0 memory leaks).
+- **Cancellation Token Robustness & Token Re-Arming (`cancel_token_reset`)**:
+  - Added `cancel_token_reset(tok: ^Cancel_Token)` allowing cancellation tokens (lockdowns, alarms, EMPs) to be cleanly re-armed for multi-cycle reuse without permanent cancellation state stickiness.
+  - Added automatic `current_wait_queue` tracking in `Fiber` and auto-unlinking in `fiber_abort_tree`, ensuring that when a fiber waiting in an intrusive `Wait_Queue` is aborted externally (tag cancel, scope destroy, sibling race), it unlinks in $O(1)$ time and leaves the queue pristine with zero dangling node corruption.
+- **EMP Stun Recovery Loops in Boss AI & Showcase Demo**:
+  - Restructured Boss AI attack phases with auto-recovering combat loops: when the player executes an EMP parry (`B` / `X`), attack branches are aborted, floating `"BOSS STUNNED!"` text appears, and attacks seamlessly resume after a 1.5s stun duration.
+  - Enhanced Showcase lockdown demo: sentries enter `Lockdown Stunned` for 5.0s upon lockdown token trip, then re-arm the token and resume idle perimeter patrol.
+- **Unit Tests 144–146 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 144: Wait_Queue auto-unlinking on fiber abort (preserves queue integrity for subsequent fibers).
+  - Test 145: Cancel_Token reset and multi-cycle re-arming under `with_cancel_token`.
+  - Test 146: EMP tag cancellation and subsequent attack recovery loop.
+  - Test suite expanded to **146 / 146 unit tests passing** (100% with 0 memory leaks).
 
 ### Added
 - **Condition Timeouts (`wait_until_timeout` & `wait_while_timeout`) (`src/coroutine/api.odin`)**:

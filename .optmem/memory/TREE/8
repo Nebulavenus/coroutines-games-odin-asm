@@ -3,3 +3,5 @@ Hardened scope_destroy, verified 10-config LLVM matrix, built fiber temp arenas,
 Implemented fallback/rush/fail, Phase_Director, simulate_until, COOKBOOK.md, quest_ai, unified debugger stepping, 3-Tier Multi-Domain Clock, and comprehensive 19-doc technical suite.
 Engine hardened with stale-waiter immunity, event-driven chan_select_recv, zero-drift Ticker, scoped locks (with_mutex/sem), with_cancel_token, and scheduler_walk_tree; fully integrated into 3 demos, 9 tutorials, and cookbook.
 Hardened engine with Event(T) compile asserts, condition timeouts, dynamic renaming, 6-suite benchmark runner, zero-shift scheduler cursor, and full CPU cache/DRAM physics documentation.
+Completed PLAN 5 architecture: config centralization, packed O(1) handles, intrusive futex wait queues (true ZII), auto-unlinking queue aborts, token resetting, doc refresh, and headless EMP fuzzing.
+100% Pure Structured Concurrency with zero unstructured escape hatches (Fiber_Scope sub-scopes, race+Signal, rush, sync); zero-allocation ZII primitives; zero-drift sim_ticks; hardened unbuffered chan_recv_timeout, queue unlinking on destroy/recycle, and stack canaries.

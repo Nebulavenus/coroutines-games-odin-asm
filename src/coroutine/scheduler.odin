@@ -3,6 +3,7 @@ package coroutine
 import "base:runtime"
 import "base:intrinsics"
 import "core:fmt"
+import "core:math"
 import "core:time"
 
 // ============================================================================
@@ -13,16 +14,17 @@ scheduler_init :: proc(
     sched: ^Scheduler,
     stack_size: uint = DEFAULT_STACK_SIZE,
     stacks_per_slab: int = STACKS_PER_SLAB,
-    alloc_mode: Stack_Allocation_Mode = .Standard_Slab,
+    alloc_mode: Stack_Allocation_Mode = DEFAULT_ALLOC_MODE,
     allocator := context.allocator,
 ) {
-    sched.ready_queue = make([dynamic]^Fiber, allocator)
-    sched.timer_heap = make([dynamic]^Fiber, allocator)
-    sched.real_timer_heap = make([dynamic]^Fiber, allocator)
-    sched.tick_waiters = make([dynamic]^Fiber, allocator)
-    sched.frame_waiters = make([dynamic]^Fiber, allocator)
-    sched.condition_waiters = make([dynamic]^Fiber, allocator)
-    fiber_pool_init(&sched.fiber_pool, stack_size, stacks_per_slab, alloc_mode, allocator)
+    sched.allocator = allocator.procedure != nil ? allocator : context.allocator
+    sched.ready_queue = make([dynamic]^Fiber, sched.allocator)
+    sched.timer_heap = make([dynamic]^Fiber, sched.allocator)
+    sched.real_timer_heap = make([dynamic]^Fiber, sched.allocator)
+    sched.tick_waiters = make([dynamic]^Fiber, sched.allocator)
+    sched.frame_waiters = make([dynamic]^Fiber, sched.allocator)
+    sched.condition_waiters = make([dynamic]^Fiber, sched.allocator)
+    fiber_pool_init(&sched.fiber_pool, stack_size, stacks_per_slab, alloc_mode, sched.allocator)
 
     sched.clock = Scheduler_Clock{
         time_scale   = 1.0,
@@ -40,12 +42,13 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
     if allocator.procedure == nil {
         allocator = context.allocator
     }
-    sched.ready_queue = make([dynamic]^Fiber, allocator)
-    sched.timer_heap = make([dynamic]^Fiber, allocator)
-    sched.real_timer_heap = make([dynamic]^Fiber, allocator)
-    sched.tick_waiters = make([dynamic]^Fiber, allocator)
-    sched.frame_waiters = make([dynamic]^Fiber, allocator)
-    sched.condition_waiters = make([dynamic]^Fiber, allocator)
+    sched.allocator = allocator
+    sched.ready_queue = make([dynamic]^Fiber, sched.allocator)
+    sched.timer_heap = make([dynamic]^Fiber, sched.allocator)
+    sched.real_timer_heap = make([dynamic]^Fiber, sched.allocator)
+    sched.tick_waiters = make([dynamic]^Fiber, sched.allocator)
+    sched.frame_waiters = make([dynamic]^Fiber, sched.allocator)
+    sched.condition_waiters = make([dynamic]^Fiber, sched.allocator)
     fiber_pool_init_config(&sched.fiber_pool, config)
 
     sched.clock = Scheduler_Clock{
@@ -60,9 +63,14 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
 }
 
 scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
-    // Abort all active fibers
+    alloc := sched.allocator.procedure != nil ? sched.allocator : (allocator.procedure != nil ? allocator : context.allocator)
+    // Abort and unlink all active fibers
     for fiber in sched.fiber_pool.all_fibers {
         if fiber.status != .Unused {
+            if fiber.current_wait_queue != nil {
+                wait_queue_remove(fiber.current_wait_queue, fiber)
+                fiber.current_wait_queue = nil
+            }
             if fiber.cleanup_proc != nil {
                 fiber.cleanup_proc(fiber.user_data)
                 fiber.cleanup_proc = nil
@@ -76,7 +84,7 @@ scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
     delete(sched.tick_waiters)
     delete(sched.frame_waiters)
     delete(sched.condition_waiters)
-    fiber_pool_destroy(&sched.fiber_pool, allocator)
+    fiber_pool_destroy(&sched.fiber_pool, alloc)
 }
 
 // ============================================================================
@@ -277,7 +285,11 @@ scheduler_step :: proc(sched: ^Scheduler, dt: f32) {
 
     real_dt := dt
     sim_dt := f64(dt * sched.clock.time_scale)
-    sim_ticks := u64(sim_dt * f64(sched.clock.tick_rate_hz))
+
+    // Calculate new target total ticks from total accumulated sim_time (Zero Drift!):
+    new_total_sim_time := sched.clock.sim_time + sim_dt
+    target_ticks := u64(new_total_sim_time * f64(sched.clock.tick_rate_hz))
+    sim_ticks := target_ticks > sched.clock.sim_ticks ? target_ticks - sched.clock.sim_ticks : 0
 
     scheduler_advance(sched, real_dt, sim_dt, sim_ticks)
 }
@@ -286,7 +298,10 @@ scheduler_single_step :: proc(sched: ^Scheduler, dt: f32) {
     real_dt := dt
     sim_dt := f64(dt * sched.clock.time_scale)
     if sim_dt == 0.0 do sim_dt = f64(dt)
-    sim_ticks := u64(sim_dt * f64(sched.clock.tick_rate_hz))
+
+    new_total_sim_time := sched.clock.sim_time + sim_dt
+    target_ticks := u64(new_total_sim_time * f64(sched.clock.tick_rate_hz))
+    sim_ticks := target_ticks > sched.clock.sim_ticks ? target_ticks - sched.clock.sim_ticks : 0
     if sim_ticks == 0 && dt > 0.0 do sim_ticks = 1
 
     scheduler_advance(sched, real_dt, sim_dt, sim_ticks)
@@ -316,18 +331,20 @@ scheduler_step_dual :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f32) {
     }
 
     scaled_sim_dt := f64(sim_dt * sched.clock.time_scale)
-    sim_ticks := u64(scaled_sim_dt * f64(sched.clock.tick_rate_hz))
+    new_total_sim_time := sched.clock.sim_time + scaled_sim_dt
+    target_ticks := u64(new_total_sim_time * f64(sched.clock.tick_rate_hz))
+    sim_ticks := target_ticks > sched.clock.sim_ticks ? target_ticks - sched.clock.sim_ticks : 0
 
     scheduler_advance(sched, real_dt, scaled_sim_dt, sim_ticks)
 }
 
 scheduler_advance_real :: proc(sched: ^Scheduler, real_dt: f32) {
-    // Advance Real / Wall Clock
+    // 1. Advance Real / Wall Clock
     sched.clock.real_delta = real_dt
     sched.clock.real_time += f64(real_dt)
     sched.clock.real_ticks += u64(f64(real_dt) * 1000.0)
 
-    // Wake Real-Time Timers from Real-Timer Min-Heap
+    // 2. Wake Real-Time Timers from Real-Timer Min-Heap
     for len(sched.real_timer_heap) > 0 {
         root := sched.real_timer_heap[0]
         if root.wake_time <= sched.clock.real_time {
@@ -341,16 +358,16 @@ scheduler_advance_real :: proc(sched: ^Scheduler, real_dt: f32) {
         }
     }
 
-    // Execute only real-time fibers in ready queue
-    queue_len := len(sched.ready_queue)
-    for _ in 0 ..< queue_len {
-        if len(sched.ready_queue) == 0 do break
-        f := pop_front(&sched.ready_queue)
-        if f.status != .Ready do continue
+    // 3. Execute only real-time fibers in ready queue (Zero-Shift O(N) linear sweep)
+    write_idx := 0
+    for i := 0; i < len(sched.ready_queue); i += 1 {
+        f := sched.ready_queue[i]
+        if f == nil || f.status != .Ready do continue
 
         if f.wake_clock != .Real_Time {
-            // Keep simulation fibers deferred until unpaused or stepped
-            append(&sched.ready_queue, f)
+            // Keep simulation fibers deferred in place without array shifts!
+            sched.ready_queue[write_idx] = f
+            write_idx += 1
             continue
         }
 
@@ -358,7 +375,17 @@ scheduler_advance_real :: proc(sched: ^Scheduler, real_dt: f32) {
         sched.current_fiber = f
 
         // Context switch into the fiber
-        fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+        if sched.watchdog_enabled {
+            t0 := time.tick_now()
+            fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+            elapsed := time.tick_since(t0)
+            elapsed_ms := time.duration_milliseconds(elapsed)
+            if elapsed_ms > sched.watchdog_max_slice_ms {
+                fmt.panicf("[WATCHDOG PANIC] Runaway non-yielding fiber detected! Fiber [#%d] '%s' executed for %.2f ms without yielding! Did you write an infinite loop without wait() or yield_frame()?", f.handle, f.debug_name, elapsed_ms)
+            }
+        } else {
+            fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
+        }
 
         sched.current_fiber = nil
 
@@ -368,6 +395,7 @@ scheduler_advance_real :: proc(sched: ^Scheduler, real_dt: f32) {
             fiber_cleanup_and_recycle(sched, f)
         }
     }
+    resize(&sched.ready_queue, write_idx)
 }
 
 scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_ticks: u64) {
@@ -523,16 +551,18 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                         child = next
                     }
 
-                    // Wake up parent
-                    parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent)
+                    // Wake up parent if waiting
+                    if parent.status == .Suspended_Join {
+                        parent.status = .Ready
+                        append(&fiber.sched.ready_queue, parent)
+                    }
                 }
             } else if coord.active_branches <= 0 && !coord.completed {
                 coord.completed = true
                 coord.winner = nil
                 coord.winner_index = -1
                 parent := coord.parent
-                if parent != nil {
+                if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
                     append(&fiber.sched.ready_queue, parent)
                 }
@@ -556,9 +586,11 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                         child = next
                     }
 
-                    // Wake up parent
-                    parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent)
+                    // Wake up parent if waiting
+                    if parent.status == .Suspended_Join {
+                        parent.status = .Ready
+                        append(&fiber.sched.ready_queue, parent)
+                    }
                 }
             } else if coord.active_branches <= 0 && !coord.completed {
                 // All branches finished without any success
@@ -566,7 +598,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 coord.winner = nil
                 coord.winner_index = -1
                 parent := coord.parent
-                if parent != nil {
+                if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
                     append(&fiber.sched.ready_queue, parent)
                 }
@@ -576,7 +608,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
             if coord.active_branches <= 0 && !coord.completed {
                 coord.completed = true
                 parent := coord.parent
-                if parent != nil {
+                if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
                     append(&fiber.sched.ready_queue, parent)
                 }
@@ -592,12 +624,18 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
         fiber.cleanup_proc = nil
     }
 
-    // 2. Unlink from parent
+    // 2. Unlink from intrusive Wait_Queue if still attached
+    if fiber.current_wait_queue != nil {
+        wait_queue_remove(fiber.current_wait_queue, fiber)
+        fiber.current_wait_queue = nil
+    }
+
+    // 3. Unlink from parent
     if fiber.parent != nil {
         fiber_unlink_child(fiber.parent, fiber)
     }
 
-    // 3. Remove from scope if attached
+    // 4. Remove from scope if attached
     if fiber.scope != nil {
         for i in 0 ..< len(fiber.scope.handles) {
             if fiber.scope.handles[i] == fiber.handle {
@@ -608,17 +646,20 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
         fiber.scope = nil
     }
 
-    // 4. Record status in history before recycling
+    // 5. Record status in history before recycling
     if fiber.handle != 0 {
         sched.fiber_pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY].status = fiber.status
     }
 
-    // 5. Return to pool
+    // 6. Return to pool
     fiber_pool_recycle(&sched.fiber_pool, fiber)
 }
 
 fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
-    if root == nil || root.status == .Unused do return
+    if root == nil || root.status == .Unused || root.status == .Aborted do return
+
+    prev_status := root.status
+    root.status = .Aborted
 
     // 1. Recursively abort all children bottom-up
     child := root.first_child
@@ -629,9 +670,9 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     }
 
     // 2. Remove root from scheduler queues
-    switch root.status {
+    switch prev_status {
     case .Ready:
-        root.status = .Aborted
+        // Already marked aborted
     case .Sleeping_Time:
         if root.heap_index >= 0 {
             timer_heap_remove(sched, root.heap_index)
@@ -665,7 +706,12 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
         // No queue removal required
     }
 
-    root.status = .Aborted
+    // 3. If fiber is sitting in an intrusive synchronization Wait_Queue, safely unlink it in O(1)
+    if root.current_wait_queue != nil {
+        wait_queue_remove(root.current_wait_queue, root)
+        root.current_wait_queue = nil
+    }
+
     fiber_on_finish(root)
     fiber_cleanup_and_recycle(sched, root)
 }
@@ -682,18 +728,23 @@ fiber_find_by_handle :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> ^Fiber 
     return nil
 }
 
-fiber_cancel :: proc(sched: ^Scheduler, handle: Fiber_Handle) {
+fiber_cancel :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
     if fiber := fiber_find_by_handle(sched, handle); fiber != nil {
         fiber_abort_tree(sched, fiber)
+        return true
     }
+    return false
 }
 
-scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
-    if scope == nil do return
+scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled_count: int) {
+    if scope == nil || sched == nil do return 0
     for len(scope.handles) > 0 {
         handle := pop(&scope.handles)
-        fiber_cancel(sched, handle)
+        if fiber_cancel(sched, handle) {
+            cancelled_count += 1
+        }
     }
+    return cancelled_count
 }
 
 scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
@@ -731,7 +782,11 @@ scheduler_is_paused :: #force_inline proc(sched: ^Scheduler) -> bool {
 
 scheduler_set_time_scale :: proc(sched: ^Scheduler, scale: f32) {
     if sched == nil do return
-    sched.clock.time_scale = scale
+    if math.is_nan(scale) {
+        sched.clock.time_scale = 1.0
+    } else {
+        sched.clock.time_scale = max(0.0, scale)
+    }
 }
 
 scheduler_time_scale :: #force_inline proc(sched: ^Scheduler) -> f32 {

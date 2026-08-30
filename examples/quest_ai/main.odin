@@ -28,13 +28,6 @@ Player :: struct {
     scope:  coroutine.Fiber_Scope,
 }
 
-// ============================================================================
-// Coroutine Category Tags
-// ============================================================================
-
-TAG_DEFAULT       :: 0
-TAG_KNIGHT_ACTION :: 1
-
 // --- Zone 1: Knight AI (fallback & semaphore) ---
 Knight_AI :: struct {
     pos:            rl.Vector2,
@@ -397,7 +390,7 @@ world_init :: proc(w: ^World) {
     coroutine.phase_switch(&w.sentinel.director, 1, sentinel_phase1_fiber, &w.sentinel, name = "Phase 1: Laser Patrol")
 
     // Start Knight AI decision loop with category tag
-    coroutine.spawn(&w.sched, knight_ai_fiber, &w.knight, scope = &w.knight.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
+    coroutine.spawn(&w.sched, knight_ai_fiber, &w.knight, scope = &w.knight.scope, name = "Knight AI (fallback)")
 }
 
 world_destroy :: proc(w: ^World) {
@@ -527,19 +520,19 @@ world_update :: proc(w: ^World, dt: f32) {
         run_simulation_benchmark(w)
     }
 
-    // --- Category Tag Interrupt Trigger (Press [X]): Cancels Knight AI by tag ---
+    // --- Scope Interrupt Trigger (Press [X]): Cancels Knight AI by Scope ---
     if rl.IsKeyPressed(.X) {
-        cancelled := coroutine.scheduler_cancel_by_tag(&w.sched, TAG_KNIGHT_ACTION)
+        cancelled := coroutine.scope_cancel(&w.sched, &w.knight.scope)
         // Ensure combat semaphore is restored if interrupted mid-action
         if coroutine.semaphore_available_permits(&w.combat_sem) < w.combat_sem.max_permits {
             coroutine.semaphore_release(&w.sched, &w.combat_sem, w.combat_sem.max_permits - coroutine.semaphore_available_permits(&w.combat_sem))
         }
-        w.knight.current_action = fmt.tprintf("STUNNED via Category Tag #1 (Cancelled %d)", cancelled)
+        w.knight.current_action = fmt.tprintf("STUNNED via Scope Cancellation (Cancelled %d)", cancelled)
         w.knight.action_color = rl.GOLD
         // Respawn Knight decision fiber after 1.2s stun
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
-            coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, tag = TAG_KNIGHT_ACTION, name = "Knight AI (fallback)")
+            coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, name = "Knight AI (fallback)")
         }, &w.knight)
     }
 }
@@ -716,7 +709,6 @@ world_render :: proc(w: ^World) {
                 case .Sync:     kind = "Sync"
                 case .Race:     kind = "Race"
                 case .Rush:     kind = "Rush"
-                case .Fallback: kind = "Fallback"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

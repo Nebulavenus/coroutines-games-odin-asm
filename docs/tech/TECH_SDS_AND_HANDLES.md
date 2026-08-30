@@ -195,10 +195,6 @@ coroutine.mutex_lock(f, &m)
 // Immediately valid — countdown latch ready on declaration!
 latch := coroutine.Fiber_Latch{count = 3}
 coroutine.latch_wait(f, &latch)
-
-// Immediately valid — cancellation token ready on declaration!
-tok: coroutine.Cancel_Token
-coroutine.cancel_token_wait(f, &tok)
 ```
 
 ### Memory Footprint of Synchronization Primitives:
@@ -207,7 +203,6 @@ coroutine.cancel_token_wait(f, &tok)
 | `Signal` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Mutex` | `locked: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Latch` | `count: int, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Cancel_Token` | `is_cancelled: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Semaphore`| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
 
 ---

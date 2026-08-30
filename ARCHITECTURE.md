@@ -1152,12 +1152,11 @@ The engine provides three distinct temporal domains:
 - **`scheduler_prewarm(sched, count)`**: Pre-allocates slab capacity during loading screens or boot, guaranteeing zero mid-game allocation spikes.
 - **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ circular handle history queries (`fiber_is_alive`, `fiber_status`).
 
-### H. Multi-Channel Select & Explicit Cancellation Tokens (`chan_select_recv`, `Cancel_Token`)
+### H. Multi-Channel Select (`chan_select_recv`)
 - **Multi-Channel Select (`chan_select_recv`, `chan_try_select_recv`)**: Go-style CSP multiplexer that checks an arbitrary slice of typed channels (`[]^Channel(T)`) and suspends the calling fiber until any channel has a message available or is closed.
-- **Explicit Cancellation Token (`Cancel_Token`)**: Decoupled, lightweight cancellation handle (`cancel_token_cancel`, `cancel_token_wait`, `cancel_token_is_cancelled`). Multiple unrelated fibers can await cancellation or check state without sharing an intrusive `Fiber_Scope`.
 
-### I. Category User Tags & POSIX Guard Page Parity (`user_tag`, `scheduler_cancel_by_tag`, `mprotect`)
-- **Category User Tags (`user_tag: u32`, `scheduler_cancel_by_tag`)**: 4-byte category tag embedded in `Fiber` allowing games to perform mass cancellations across entire subsystems (e.g. aborting all combat AI upon EMP while retaining navigation).
+### I. 100% Pure Structured Concurrency & POSIX Guard Page Parity (`Fiber_Scope`, `race`, `mprotect`)
+- **100% Pure Structured Concurrency**: Zero unstructured escape hatches. Hierarchical lifetimes are managed via `Fiber_Scope` and component sub-scopes (`scope_cancel`), and status preemption (EMP, Stun, Silence) is managed via `race` + `Signal` / `rush`.
 - **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_GUARD`.
 
 ### J. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
@@ -1173,6 +1172,6 @@ The engine provides three distinct temporal domains:
 ### L. Centralized Configuration, Packed Generational Handles & Intrusive Futex Queues ([`docs/tech/TECH_SDS_AND_HANDLES.md`](docs/tech/TECH_SDS_AND_HANDLES.md))
 - **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary arenas, canaries, and tick rates) are unified using Odin's `#config` directive, allowing zero-source-modification build overrides via `-define:KEY=VALUE`.
 - **Packed Generational Handles ($O(1)$ Direct Slot Resolution)**: `Fiber_Handle` packs `u16 slot_index | u16 generation` into a 32-bit integer, transforming $O(N)$ linear handle searches into instant $O(1)$ direct array index lookups with 100% ABA and use-after-free protection.
-- **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**: Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Cancel_Token`, `Event(T)`, `Channel(T)`) embed doubly-linked intrusive links inside `Fiber` (`next_waiter`, `prev_waiter`). Delivers 100% zero heap allocations, unbounded waiter capacity, true Zero Is Initialization (ZII), and $O(1)$ in-place node removals (`wait_queue_remove`).
+- **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**: Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event(T)`, `Channel(T)`) embed doubly-linked intrusive links inside `Fiber` (`next_waiter`, `prev_waiter`). Delivers 100% zero heap allocations, unbounded waiter capacity, true Zero Is Initialization (ZII), and $O(1)$ in-place node removals (`wait_queue_remove`).
 - **Complete Deep-Dive**: Documented in [`docs/tech/TECH_SDS_AND_HANDLES.md`](docs/tech/TECH_SDS_AND_HANDLES.md).
 

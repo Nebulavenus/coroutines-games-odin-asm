@@ -65,7 +65,15 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 
 ---
 
-## 3. Multi-Tiered Safety Invariants
+## 3. Persistent Allocator Reference Storage
+
+`Fiber_Pool` and `Scheduler` maintain an explicit `allocator: mem.Allocator` field assigned at initialization:
+* **Dynamic Pool Expansion (`fiber_pool_grow`)**: Allocates new memory slabs and appends to pool slices using the initial allocator, preventing allocator mismatches if `context.allocator` is temporarily set to a frame scratchpad.
+* **Deterministic Teardown (`fiber_pool_destroy`, `scheduler_destroy`)**: Frees all slabs, fibers, and scheduler queues using the stored allocator with zero use-after-free risk.
+
+---
+
+## 4. Multi-Tiered Safety Invariants
 
 Stack overflows in native stackful coroutines are notoriously catastrophic if undetected. The engine provides a 3-tier defense-in-depth safety system:
 
@@ -116,7 +124,7 @@ Stack overflows in native stackful coroutines are notoriously catastrophic if un
 
 ---
 
-## 4. Per-Fiber Isolated Temporary Allocator (`context.temp_allocator`)
+## 5. Per-Fiber Isolated Temporary Allocator (`context.temp_allocator`)
 
 In standard Odin programs, `context.temp_allocator` is typically a global ring buffer reset at the end of the frame. In a coroutine engine, multiple fibers yielding across frames would overwrite each other's temporary memory.
 
@@ -128,7 +136,7 @@ In standard Odin programs, `context.temp_allocator` is typically a global ring b
 
 ---
 
-## 5. Inline 128-Byte By-Value Payload Storage
+## 6. Inline 128-Byte By-Value Payload Storage
 
 Passing parameters to spawned coroutines often creates a dilemma:
 - **By Pointer (`spawn_ptr`):** Requires the caller's stack frame or entity to outlive the coroutine. If the caller was a short-lived procedure, the pointer dangles.
@@ -149,7 +157,7 @@ payload: [FIBER_PAYLOAD_SIZE]u8
 
 ---
 
-## 6. Loading-Screen Memory Pre-Warming & Pool Telemetry
+## 7. Loading-Screen Memory Pre-Warming & Pool Telemetry
 
 ### Pre-Warming (`scheduler_prewarm`)
 In production games, allocating memory slabs mid-gameplay can induce micro-stutter frame spikes. The engine provides loading-screen memory pre-warming:
@@ -181,7 +189,7 @@ stats := coroutine.scheduler_pool_stats(&sched)
 
 ---
 
-## 7. CPU Cache Hierarchy & The Memory Wall (L1/L2/L3 vs. DRAM)
+## 8. CPU Cache Hierarchy & The Memory Wall (L1/L2/L3 vs. DRAM)
 
 Understanding high-density fiber scalability requires examining the physical memory limits of modern CPU architectures:
 

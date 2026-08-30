@@ -309,9 +309,9 @@ if ok {
 
 ---
 
-## 9. Decoupled Cancellation with `Cancel_Token` (True ZII)
+## 9. Sub-Scope Cancellation & Interruption Races
 
-While `Fiber_Scope` provides structural, parent-child cancellations for entities, `Cancel_Token` provides a lightweight, explicit cancellation handle for cross-subsystem coordination with **True ZII**:
+To isolate status effects (such as EMP blasts, stuns, or silences) without global pool searches, structure subsystem lifecycles using sub-scopes and interruption races:
 
 ```odin
 package main
@@ -319,32 +319,40 @@ package main
 import "core:fmt"
 import "coroutine"
 
+Drone :: struct {
+    entity_scope: coroutine.Fiber_Scope,
+    combat_scope: coroutine.Fiber_Scope,
+    is_alive:     bool,
+}
+
 main :: proc() {
     sched: coroutine.Scheduler
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // 1. True ZII: cancellation token is immediately valid on declaration!
-    game_over_tok: coroutine.Cancel_Token
+    drone := Drone{is_alive = true}
+    defer {
+        coroutine.scope_destroy(&sched, &drone.entity_scope)
+        coroutine.scope_destroy(&sched, &drone.combat_scope)
+    }
 
-    // 2. Multiple unrelated fibers await cancellation:
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-        fmt.println("[Audio Subsystem] Music playing...")
-        coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
-        fmt.println("[Audio Subsystem] Game Over received! Fading out music.")
-    }, &game_over_tok)
+    // 1. Spawn fibers bound to specific sub-scopes:
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        fmt.println("[Combat Subsystem] Firing attacks...")
+        coroutine.wait(f, 5.0)
+    }, &drone, scope = &drone.combat_scope)
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
-        fmt.println("[Physics Subsystem] Simulating world...")
-        coroutine.cancel_token_wait(f, tok) // Suspends until cancelled
-        fmt.println("[Physics Subsystem] Game Over received! Freezing ragdolls.")
-    }, &game_over_tok)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
+        fmt.println("[Movement Subsystem] Cruising along patrol route...")
+        coroutine.wait(f, 5.0)
+    }, &drone, scope = &drone.entity_scope)
 
     coroutine.scheduler_step(&sched, 0.1)
 
-    // 3. Trigger cancellation across all listeners simultaneously:
-    fmt.println("\n>>> PLAYER DIES: Triggering Game Over Token! <<<")
-    coroutine.cancel_token_cancel(&sched, &game_over_tok)
+    // 2. EMP blast triggers: cancel only the combat sub-scope in O(1) time!
+    fmt.println("\n>>> EMP BLAST DETONATES! <<<")
+    stunned := coroutine.scope_cancel(&sched, &drone.combat_scope)
+    fmt.printf("Stunned %d active combat fibers; Movement remains unaffected.\n", stunned)
 
     coroutine.scheduler_step(&sched, 0.1)
 }

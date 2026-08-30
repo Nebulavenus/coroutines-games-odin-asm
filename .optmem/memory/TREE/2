@@ -20,3 +20,11 @@ Implemented 6-suite benchmark runner with 19.35ns ASM switch & 88.9M msgs/s CSP 
 Optimized scheduler with zero-shift ready queue cursor & in-place waiter partitioning; fully documented CPU cache physics & DRAM memory wall across technical guides.
 Normalized LaTeX math in TECH_CONCURRENCY.md; implemented PLAN 5 with centralized config.odin, O(1) packed generational handles, and zero-allocation Waiter_List across all sync primitives.
 Implemented OS Kernel intrusive wait queues (Wait_Queue doubly-linked) across sync primitives with true ZII, and authored TECH_SDS_AND_HANDLES.md detailing static data structures, ZII, packed generational handles (O(1) lookups), and futex queues.
+Updated tutorials (04, 05), guides (PERFORMANCE, INTEGRATION, FOOTGUNS), and PLAN5.md detailing the transition to OS Kernel Intrusive Futex Queues with True ZII and packed handle safety.
+Hardened Cancel Token and Wait_Queue safety with auto-unlinking on abort; verified Boss AI EMP recovery with a 2,000-frame headless fuzzing simulation (Test 147).
+Hardened phase transitions with tag isolation, eliminated chan_select_recv queue aliasing, locked sim_ticks to sim_time with zero fractional drift, optimized paused sweep, and added defensive wait_queue validation.
+Engine purity: O(1) generator lookup, pruned next_handle_id, clamped time_scale >= 0, recycle queue unlinking, and pruned unused 16B allocator fields from Event, Semaphore, Latch, Cancel_Token ZII structs.
+Purged Cancel_Token for pure structured concurrency; fixed EMP attack duplication by letting structured Boss AI tree manage loop recovery without manual orphan spawns
+100% Pure Structured Concurrency via Fiber_Scope sub-scopes and race+Signal stuns; hardened chan_recv_timeout unbuffered fast-path, scheduler_destroy wait-queue unlinking UAF guard, and stack canary breach detection.
+Pruned cosmetic Join_Kind.Fallback variant leaving 3 fundamental orthogonal join combinators (Sync, Race, Rush); stored persistent allocator in Fiber_Pool and Scheduler; cleaned up redundant Event(T) runtime size checks.
+Audited docs to GFM; hardened unbuffered rendezvous deadlock symmetry, Windows PAGE_NOACCESS guard pages, spawn_real_val overload, compile constants, and verified 161 tests across 12-target matrix.

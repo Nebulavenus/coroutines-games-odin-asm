@@ -79,10 +79,13 @@ Standard variable frame delta driver.
 - Advances `real_time += dt`, `real_delta = dt`, `real_ticks += 1`.
 - If `!is_paused`:
   - `sim_delta = dt * time_scale`
+  - Computes `sim_ticks` continuously from total accumulated simulation time to guarantee zero integer truncation drift over arbitrarily long gameplay sessions:
+    $$\text{target\_ticks} = \lfloor(\text{sim\_time} + \text{sim\_delta}) \times \text{tick\_rate\_hz}\rfloor$$
+    $$\text{sim\_ticks} = \text{target\_ticks} - \text{clock.sim\_ticks}$$
   - `sim_time += sim_delta`
   - Evaluates and wakes sleeping fibers from `timer_heap`.
 - Always evaluates and wakes sleeping fibers from `real_timer_heap`.
-- Evaluates `frame_waiters` and `condition_waiters`.
+- Evaluates `tick_waiters`, `frame_waiters`, and `condition_waiters`.
 
 ```odin
 scheduler_step(&sched, rl.GetFrameTime())
