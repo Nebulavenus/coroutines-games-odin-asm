@@ -3393,7 +3393,7 @@ test_scope_hierarchy_multi_fiber_active_count :: proc(t: ^testing.T) {
     scope: Fiber_Scope
     defer scope_destroy(&sched, &scope)
 
-    testing.expect_value(t, len(scope.handles), 0)
+    testing.expect_value(t, scope_active_count(&scope), 0)
 
     spawn(&sched, proc(f: ^Fiber) {
         wait(f, 1.0)
@@ -3403,7 +3403,7 @@ test_scope_hierarchy_multi_fiber_active_count :: proc(t: ^testing.T) {
         wait(f, 1.0)
     }, scope = &scope)
 
-    testing.expect_value(t, len(scope.handles), 2)
+    testing.expect_value(t, scope_active_count(&scope), 2)
 }
 
 // ============================================================================
@@ -4481,12 +4481,12 @@ test_scope_mass_cancel_mixed_states :: proc(t: ^testing.T) {
     }, &flag, scope = &mixed_scope)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(mixed_scope.handles), 5)
+    testing.expect_value(t, scope_active_count(&mixed_scope), 5)
 
     // Cancel all 5 in various sleeping queues via scope
     cancelled := scope_cancel(&sched, &mixed_scope)
     testing.expect_value(t, cancelled, 5)
-    testing.expect_value(t, len(mixed_scope.handles), 0)
+    testing.expect_value(t, scope_active_count(&mixed_scope), 0)
 }
 
 // ============================================================================
@@ -5591,36 +5591,43 @@ test_primitives_custom_arena_allocation_fidelity :: proc(t: ^testing.T) {
     // 1. Event(T)
     {
         ev: Event(int)
-        event_init(&ev, allocator = arena_alloc)
+        event_init(&ev)
         event_destroy(&ev)
     }
 
     // 2. Fiber_Semaphore
     {
         sem: Fiber_Semaphore
-        semaphore_init(&sem, 2, 4, allocator = arena_alloc)
+        semaphore_init(&sem, 2, 4)
         semaphore_destroy(&sem)
     }
 
     // 3. Fiber_Latch
     {
         latch: Fiber_Latch
-        latch_init(&latch, 3, allocator = arena_alloc)
+        latch_init(&latch, 3)
         latch_destroy(&latch)
     }
 
     // 4. Signal
     {
         sig: Signal
-        signal_init(&sig, allocator = arena_alloc)
+        signal_init(&sig)
         signal_destroy(&sig)
     }
 
     // 5. Mutex
     {
         m: Fiber_Mutex
-        mutex_init(&m, allocator = arena_alloc)
+        mutex_init(&m)
         mutex_destroy(&m)
+    }
+
+    // 6. Channel(T) with custom allocator
+    {
+        ch: Channel(int)
+        chan_init(&ch, capacity = 8, allocator = arena_alloc)
+        chan_destroy(&ch)
     }
 
     // Verify zero leaks on custom allocator
@@ -6119,12 +6126,12 @@ test_scope_multi_cycle_emp_stun_and_recovery :: proc(t: ^testing.T) {
 
     scheduler_step(&sched, 0.01)
     testing.expect_value(t, sentries_active, 4)
-    testing.expect_value(t, len(sentry_scope.handles), 4)
+    testing.expect_value(t, scope_active_count(&sentry_scope), 4)
 
     // Fire EMP disruption: cancel entire sentry scope!
     cancelled := scope_cancel(&sched, &sentry_scope)
     testing.expect_value(t, cancelled, 4)
-    testing.expect_value(t, len(sentry_scope.handles), 0)
+    testing.expect_value(t, scope_active_count(&sentry_scope), 0)
 
     // Cycle 2: Respawn clean sentries under the same scope
     sentries_cycle2 := 0
@@ -7124,6 +7131,75 @@ test_simulate_until_while_paused :: proc(t: ^testing.T) {
     testing.expect(t, elapsed >= 0.05)
     // Verify original paused state was cleanly restored
     testing.expect_value(t, sched.clock.is_paused, true)
+}
+
+// ============================================================================
+// Test 162: Intrusive Doubly-Linked Fiber_Scope Zero-Allocation Lifecycle
+// ============================================================================
+
+@(test)
+test_intrusive_fiber_scope_lifecycle :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // True ZII declaration - zero allocation
+    scope: Fiber_Scope
+    defer scope_destroy(&sched, &scope)
+
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect_value(t, scope_is_busy(&scope), false)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+
+    f1_done := false
+    f2_done := false
+    f3_done := false
+
+    // Spawn 3 fibers attached to scope
+    spawn_ptr(&sched, proc(f: ^Fiber, d: ^bool) {
+        wait(f, 0.02)
+        d^ = true
+    }, &f1_done, scope = &scope, name = "Fiber 1")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, d: ^bool) {
+        wait(f, 0.04)
+        d^ = true
+    }, &f2_done, scope = &scope, name = "Fiber 2")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, d: ^bool) {
+        wait(f, 0.06)
+        d^ = true
+    }, &f3_done, scope = &scope, name = "Fiber 3")
+
+    testing.expect_value(t, scope_active_count(&scope), 3)
+    testing.expect_value(t, scope_is_busy(&scope), true)
+    testing.expect_value(t, scope_is_empty(&scope), false)
+
+    // Step 1: fibers start and enter sleep
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, f1_done, false)
+    testing.expect_value(t, scope_active_count(&scope), 3)
+
+    // Step 2: 0.03s -> total 0.04s >= 0.03s wake time -> Fiber 1 finishes naturally and unlinks in O(1)
+    scheduler_step(&sched, 0.03)
+    testing.expect_value(t, f1_done, true)
+    testing.expect_value(t, f2_done, false)
+    testing.expect_value(t, f3_done, false)
+    testing.expect_value(t, scope_active_count(&scope), 2)
+
+    // Cancel remaining 2 fibers mid-flight
+    cancelled := scope_cancel(&sched, &scope)
+    testing.expect_value(t, cancelled, 2)
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect_value(t, scope_is_busy(&scope), false)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+    testing.expect(t, scope.head == nil)
+    testing.expect(t, scope.tail == nil)
+
+    // Step further: canceled fibers should never execute finish callbacks
+    scheduler_step(&sched, 0.10)
+    testing.expect_value(t, f2_done, false)
+    testing.expect_value(t, f3_done, false)
 }
 
 

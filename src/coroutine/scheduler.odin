@@ -62,8 +62,8 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
     sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
 }
 
-scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
-    alloc := sched.allocator.procedure != nil ? sched.allocator : (allocator.procedure != nil ? allocator : context.allocator)
+scheduler_destroy :: proc(sched: ^Scheduler) {
+    if sched == nil do return
     // Abort and unlink all active fibers
     for fiber in sched.fiber_pool.all_fibers {
         if fiber.status != .Unused {
@@ -84,7 +84,7 @@ scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
     delete(sched.tick_waiters)
     delete(sched.frame_waiters)
     delete(sched.condition_waiters)
-    fiber_pool_destroy(&sched.fiber_pool, alloc)
+    fiber_pool_destroy(&sched.fiber_pool)
 }
 
 // ============================================================================
@@ -635,15 +635,9 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
         fiber_unlink_child(fiber.parent, fiber)
     }
 
-    // 4. Remove from scope if attached
+    // 4. Remove from scope if attached (O(1) in-place unlinking)
     if fiber.scope != nil {
-        for i in 0 ..< len(fiber.scope.handles) {
-            if fiber.scope.handles[i] == fiber.handle {
-                unordered_remove(&fiber.scope.handles, i)
-                break
-            }
-        }
-        fiber.scope = nil
+        fiber_scope_detach(fiber)
     }
 
     // 5. Record status in history before recycling
@@ -736,12 +730,48 @@ fiber_cancel :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
     return false
 }
 
+fiber_scope_attach :: #force_inline proc "contextless" (scope: ^Fiber_Scope, fiber: ^Fiber) {
+    if scope == nil || fiber == nil do return
+    fiber.scope = scope
+    fiber.prev_in_scope = scope.tail
+    fiber.next_in_scope = nil
+    if scope.tail != nil {
+        scope.tail.next_in_scope = fiber
+    } else {
+        scope.head = fiber
+    }
+    scope.tail = fiber
+    scope.count += 1
+}
+
+fiber_scope_detach :: #force_inline proc "contextless" (fiber: ^Fiber) {
+    if fiber == nil || fiber.scope == nil do return
+    scope := fiber.scope
+    if fiber.prev_in_scope != nil {
+        fiber.prev_in_scope.next_in_scope = fiber.next_in_scope
+    } else if scope.head == fiber {
+        scope.head = fiber.next_in_scope
+    }
+    if fiber.next_in_scope != nil {
+        fiber.next_in_scope.prev_in_scope = fiber.prev_in_scope
+    } else if scope.tail == fiber {
+        scope.tail = fiber.prev_in_scope
+    }
+    scope.count -= 1
+    fiber.prev_in_scope = nil
+    fiber.next_in_scope = nil
+    fiber.scope = nil
+}
+
 scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled_count: int) {
     if scope == nil || sched == nil do return 0
-    for len(scope.handles) > 0 {
-        handle := pop(&scope.handles)
-        if fiber_cancel(sched, handle) {
+    for scope.head != nil {
+        fiber := scope.head
+        if fiber_cancel(sched, fiber.handle) {
             cancelled_count += 1
+        } else {
+            // Fallback: if fiber_cancel did not detach, detach manually to prevent infinite loop
+            fiber_scope_detach(fiber)
         }
     }
     return cancelled_count
@@ -750,21 +780,21 @@ scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled_count
 scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) {
     if scope == nil do return
     scope_cancel(sched, scope)
-    delete(scope.handles)
-    scope.handles = nil
+    scope.head = nil
+    scope.tail = nil
+    scope.count = 0
 }
 
-scope_active_count :: proc(scope: ^Fiber_Scope) -> int {
-    if scope == nil do return 0
-    return len(scope.handles)
+scope_active_count :: #force_inline proc "contextless" (scope: ^Fiber_Scope) -> int {
+    return scope != nil ? scope.count : 0
 }
 
-scope_is_busy :: proc(scope: ^Fiber_Scope) -> bool {
-    return scope_active_count(scope) > 0
+scope_is_busy :: #force_inline proc "contextless" (scope: ^Fiber_Scope) -> bool {
+    return scope != nil && scope.head != nil
 }
 
-scope_is_empty :: proc(scope: ^Fiber_Scope) -> bool {
-    return scope_active_count(scope) == 0
+scope_is_empty :: #force_inline proc "contextless" (scope: ^Fiber_Scope) -> bool {
+    return scope == nil || scope.head == nil
 }
 
 // ============================================================================

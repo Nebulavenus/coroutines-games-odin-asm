@@ -43,8 +43,9 @@ fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
     )
 }
 
-fiber_pool_destroy :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
-    alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
+fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
+    if pool == nil do return
+    alloc := pool.allocator.procedure != nil ? pool.allocator : context.allocator
     for fiber in pool.all_fibers {
         free(fiber, alloc)
     }

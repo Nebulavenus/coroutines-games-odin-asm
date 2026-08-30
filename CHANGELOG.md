@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Code Purity & Legacy Fallback Pruning] - 2026-08-30
+
+### Refactored
+- **Pruned Unused `allocator` Parameters in True ZII Sync Inits (`src/coroutine/api.odin`)**:
+  - Removed obsolete `allocator := context.allocator` parameters from `signal_init`, `mutex_init`, `semaphore_init`, `latch_init`, and `event_init` since all synchronization primitives operate 100% on zero-allocation intrusive `Wait_Queue` headers.
+- **Streamlined Memory Lifecycle Helpers (`src/coroutine/pool.odin`, `scheduler.odin`)**:
+  - Simplified `fiber_pool_destroy(pool)` and `scheduler_destroy(sched)` signatures to directly utilize persistent struct allocators, eliminating redundant triple-fallback ternary expressions.
+- **True ZII Verification (`src/coroutine/coroutine_test.odin`)**:
+  - Updated Test 135 to verify that initializing and destroying all synchronization primitives incurs zero heap allocations.
+
+## [Static Data Structure (SDS) & Memory Layout Migration] - 2026-08-30
+
+### Refactored
+- **Intrusive Doubly-Linked `Fiber_Scope` (`src/coroutine/types.odin`, `api.odin`, `scheduler.odin`)**:
+  - Embedded `next_in_scope: ^Fiber` and `prev_in_scope: ^Fiber` directly inside `Fiber` descriptor.
+  - Converted `Fiber_Scope` from dynamic slice `[dynamic]Fiber_Handle` to a 24-byte True ZII header (`head: ^Fiber, tail: ^Fiber, count: int`).
+  - Achieved 100% zero-allocation scoped fiber spawning (`spawn(..., scope = &s)`).
+  - Replaced $O(N)$ linear handle scans and `unordered_remove` in `fiber_cleanup_and_recycle` with $O(1)$ in-place list unlinking.
+  - Eliminated `delete(scope.handles)` in `scope_destroy`; `Fiber_Scope` is now immediately valid on `{}` declaration.
+- **Fixed SDS Active Arrays & Circular Buffers in Demos (`src/main.odin`, `examples/showcase/main.odin`)**:
+  - Converted `projectiles` and `particles` in Boss Fight game to fixed SDS active arrays (`MAX_PROJECTILES :: 512`, `MAX_PARTICLES :: 1024`) with in-place swap-with-last compaction and zero runtime heap allocations.
+  - Converted `recent_logs` in Feature Showcase (Station 7) to a fixed circular ring buffer (`MAX_RECENT_LOGS :: 8`) with modulo head/count indexing.
+
+### Added
+- **Test 162: Intrusive Doubly-Linked Fiber_Scope Zero-Allocation Lifecycle (`src/coroutine/coroutine_test.odin`)**:
+  - Validates True ZII initialization, $O(1)$ natural fiber completion unlinking, and batch scope cancellation mid-flight.
+
 ## [Documentation Modernization & Learning Tracks] - 2026-08-30
 
 ### Documentation

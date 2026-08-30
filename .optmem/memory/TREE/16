@@ -1,3 +1,4 @@
 Built complete stackful ASM coroutine engine with structured concurrency (sync/race), raylib showcases, VM guard pages, temp arenas, signals, mutexes, channels, generators, and proc groups.
 Engine completed with 3-tier clock, fallback/rush, Phase_Director, CSP channels, sync primitives, zero-drift Ticker, scoped locks, and live F1 tree debugger; backed by 132 tests and full documentation suite.
 Odin Coroutine Engine: Built PLAN 5 with #config, O(1) packed generational handles, intrusive doubly-linked futex wait queues (true ZII), auto-queue unlinking on abort, token reset, benchmark suite (16.9ns ASM switch), and headless Boss AI EMP fuzzing.
+Purged Cancel_Token/user_tag for pure structured concurrency (Sync, Race, Rush); migrated sync primitives and Fiber_Scope to 100% intrusive True ZII SDS structures; hardened unbuffered rendezvous and PAGE_NOACCESS; reorganized docs into 4 tracks.

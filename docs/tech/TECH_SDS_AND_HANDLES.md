@@ -197,13 +197,20 @@ latch := coroutine.Fiber_Latch{count = 3}
 coroutine.latch_wait(f, &latch)
 ```
 
-### Memory Footprint of Synchronization Primitives:
-| Primitive | Internal Fields | Size (64-bit) | Zero-Allocation? | ZII Ready? |
+### Memory Footprint of Synchronization Primitives & Scopes:
+| Primitive / Container | Internal Fields | Size (64-bit) | Zero-Allocation? | ZII Ready? |
 | :--- | :--- | :---: | :---: | :---: |
 | `Signal` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
+| `Fiber_Scope` | `head: ^Fiber, tail: ^Fiber, count: int` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Mutex` | `locked: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Latch` | `count: int, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Semaphore`| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
+
+### 4.1 Intrusive `Fiber_Scope` Doubly-Linked List (Zero-Allocation Scopes)
+Following the exact same intrusive kernel pattern, `Fiber_Scope` is a 24-byte ZII header with embedded `next_in_scope` and `prev_in_scope` pointers directly inside each `Fiber`:
+- **100% Zero-Allocation Spawning:** Spawning fibers attached to a scope (`spawn(..., scope = &s)`) incurs zero dynamic heap allocations.
+- **$O(1)$ In-Place Unlinking:** When a scoped fiber finishes naturally or is aborted, it unlinks from its scope in $O(1)$ time without searching or scanning.
+- **True ZII:** `scope: Fiber_Scope` requires no initialization or heap teardown. `scope_destroy` simply cancels any remaining fibers in the scope.
 
 ---
 

@@ -90,7 +90,9 @@ Join_Coordinator :: struct {
 }
 
 Fiber_Scope :: struct {
-    handles: [dynamic]Fiber_Handle,
+    head:  ^Fiber,
+    tail:  ^Fiber,
+    count: int,
 }
 
 Phase_Director :: struct {
@@ -144,6 +146,10 @@ Fiber :: struct {
     next_sibling:     ^Fiber,
     prev_sibling:     ^Fiber,
     child_count:      int,
+
+    // --- Intrusive Scope Membership (Zero-Allocation Scopes) ---
+    next_in_scope:    ^Fiber,
+    prev_in_scope:    ^Fiber,
 
     // --- Intrusive Wait Queue Links (Zero-Allocation Synchronization) ---
     next_waiter:        ^Fiber,

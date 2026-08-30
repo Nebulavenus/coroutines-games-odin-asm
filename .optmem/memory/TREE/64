@@ -1,0 +1,1 @@
+Production stackful coroutine engine in Odin via native ASM: pure structured concurrency (Sync, Race, Rush), #config tunables, O(1) packed generational handles, 100% intrusive True ZII SDS sync primitives & Fiber_Scope (zero runtime allocs), and 4 complete doc tracks.

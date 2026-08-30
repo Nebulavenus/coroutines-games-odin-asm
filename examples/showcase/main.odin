@@ -134,11 +134,15 @@ Lab_Station :: struct {
 }
 
 // --- Station 7: The Telemetry Feed (Channel(T) & Multi-Channel Select) ---
+MAX_RECENT_LOGS :: 8
+
 Channel_Station :: struct {
     pos:           rl.Vector2,
     user_channel:  coroutine.Channel(string),
     sys_channel:   coroutine.Channel(string),
-    recent_logs:   [dynamic]string,
+    recent_logs:   [MAX_RECENT_LOGS]string,
+    log_count:     int,
+    log_head:      int,
     items_sent:    int,
     scope:         coroutine.Fiber_Scope,
 }
@@ -472,9 +476,12 @@ channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
         tag_prefix := ready_idx == 0 ? "[USER]" : "[SYS]"
         formatted := fmt.tprintf("%s %s", tag_prefix, msg)
 
-        append(&s.recent_logs, formatted)
-        if len(s.recent_logs) > 6 {
-            ordered_remove(&s.recent_logs, 0)
+        idx := (s.log_head + s.log_count) % MAX_RECENT_LOGS
+        s.recent_logs[idx] = formatted
+        if s.log_count < MAX_RECENT_LOGS {
+            s.log_count += 1
+        } else {
+            s.log_head = (s.log_head + 1) % MAX_RECENT_LOGS
         }
     }
 }
@@ -637,7 +644,6 @@ showcase_init :: proc(w: ^Showcase_World) {
 
     // 7. Channel Station (CSP Multi-Channel Select)
     w.station_channel.pos = {1060, 160}
-    w.station_channel.recent_logs = make([dynamic]string)
     coroutine.chan_init(&w.station_channel.user_channel, capacity = 10)
     coroutine.chan_init(&w.station_channel.sys_channel, capacity = 10)
     coroutine.spawn(&w.sched, channel_consumer_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "Multi-Channel Select Consumer")
@@ -668,12 +674,11 @@ showcase_init :: proc(w: ^Showcase_World) {
     coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber) {
         for {
             ev, ok := coroutine.event_wait(f, &g_world.event_hub)
-            if ok {
-                g_world.toast_title = ev.title
-                g_world.toast_desc = ev.desc
-                g_world.toast_color = ev.color
-                g_world.toast_timer = 3.5
-            }
+            if !ok do break
+            g_world.toast_title = ev.title
+            g_world.toast_desc = ev.desc
+            g_world.toast_color = ev.color
+            g_world.toast_timer = 3.5
         }
     }, name = "Event(T) Toast Listener")
 
@@ -698,7 +703,6 @@ showcase_destroy :: proc(w: ^Showcase_World) {
     coroutine.generator_destroy(&w.station_forge.loot_gen)
     coroutine.chan_destroy(&w.station_channel.user_channel)
     coroutine.chan_destroy(&w.station_channel.sys_channel)
-    delete(w.station_channel.recent_logs)
     coroutine.scheduler_destroy(&w.sched)
 }
 
@@ -1018,7 +1022,8 @@ showcase_render :: proc(w: ^Showcase_World) {
     rl.DrawLine(panel_x + 10, panel_y + 24, panel_x + panel_w - 10, panel_y + 24, {50, 70, 100, 255})
 
     log_y := panel_y + 30
-    for msg in w.station_channel.recent_logs {
+    for i in 0 ..< w.station_channel.log_count {
+        msg := w.station_channel.recent_logs[(w.station_channel.log_head + i) % MAX_RECENT_LOGS]
         color := strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY
         rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, color)
         log_y += 18

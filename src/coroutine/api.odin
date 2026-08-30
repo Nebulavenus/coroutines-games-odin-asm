@@ -26,8 +26,7 @@ spawn_ptr :: proc(
     fiber.entry_proc = cast(proc(f: ^Fiber, user_data: rawptr))entry
 
     if scope != nil {
-        fiber.scope = scope
-        append(&scope.handles, fiber.handle)
+        fiber_scope_attach(scope, fiber)
     }
 
     append(&sched.ready_queue, fiber)
@@ -64,8 +63,7 @@ spawn_val :: proc(
     fiber.entry_proc = wrapper
 
     if scope != nil {
-        fiber.scope = scope
-        append(&scope.handles, fiber.handle)
+        fiber_scope_attach(scope, fiber)
     }
 
     append(&sched.ready_queue, fiber)
@@ -95,8 +93,7 @@ spawn_nil :: proc(
     fiber.entry_proc = wrapper
 
     if scope != nil {
-        fiber.scope = scope
-        append(&scope.handles, fiber.handle)
+        fiber_scope_attach(scope, fiber)
     }
 
     append(&sched.ready_queue, fiber)
@@ -240,7 +237,7 @@ current_frame :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
 scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
     if f == nil || f.sched == nil || scope == nil do return
     wait_until(f, proc(s: ^Fiber_Scope) -> bool {
-        return s == nil || len(s.handles) == 0
+        return s == nil || s.head == nil
     }, scope)
 }
 
@@ -1117,8 +1114,9 @@ wait_while_timeout :: proc{wait_while_timeout_ptr, wait_while_timeout_val, wait_
 // Signal (Event Broadcast)
 // ============================================================================
 
-signal_init :: proc(sig: ^Signal, allocator := context.allocator) {
-    wait_queue_init(&sig.waiters)
+signal_init :: proc(sig: ^Signal) {
+    if sig == nil do return
+    sig^ = {}
 }
 
 signal_destroy :: proc(sig: ^Signal) {
@@ -1157,9 +1155,9 @@ signal_waiter_count :: #force_inline proc "contextless" (sig: ^Signal) -> int {
 // Fiber Mutex (Cooperative Resource Lock)
 // ============================================================================
 
-mutex_init :: proc(m: ^Fiber_Mutex, allocator := context.allocator) {
-    m.locked = false
-    wait_queue_init(&m.waiters)
+mutex_init :: proc(m: ^Fiber_Mutex) {
+    if m == nil do return
+    m^ = {}
 }
 
 mutex_destroy :: proc(m: ^Fiber_Mutex) {
@@ -1245,10 +1243,10 @@ with_mutex :: proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}
 // Event(T) (1-to-Many Typed Multicast Broadcast)
 // ============================================================================
 
-event_init :: proc(ev: ^Event($T), allocator := context.allocator) {
+event_init :: proc(ev: ^Event($T)) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if ev == nil do return
-    wait_queue_init(&ev.waiters)
+    ev^ = {}
 }
 
 event_destroy :: proc(ev: ^Event($T)) {
@@ -1297,11 +1295,11 @@ event_has_waiters :: #force_inline proc(ev: ^Event($T)) -> bool {
 // Fiber Semaphore (Counting Semaphore with Up to N Concurrent Permits)
 // ============================================================================
 
-semaphore_init :: proc(sem: ^Fiber_Semaphore, initial_permits: int, max_permits: int = -1, allocator := context.allocator) {
+semaphore_init :: proc(sem: ^Fiber_Semaphore, initial_permits: int, max_permits: int = -1) {
     if sem == nil do return
     sem.permits = initial_permits
     sem.max_permits = max_permits > 0 ? max_permits : initial_permits
-    wait_queue_init(&sem.waiters)
+    sem.waiters = {}
 }
 
 semaphore_destroy :: proc(sem: ^Fiber_Semaphore) {
@@ -1390,10 +1388,10 @@ with_semaphore :: proc{with_semaphore_ptr, with_semaphore_val, with_semaphore_ni
 // Fiber Latch (Countdown Rendezvous Barrier)
 // ============================================================================
 
-latch_init :: proc(latch: ^Fiber_Latch, initial_count: int, allocator := context.allocator) {
+latch_init :: proc(latch: ^Fiber_Latch, initial_count: int) {
     if latch == nil do return
     latch.count = initial_count
-    wait_queue_init(&latch.waiters)
+    latch.waiters = {}
 }
 
 latch_destroy :: proc(latch: ^Fiber_Latch) {
@@ -1878,7 +1876,7 @@ phase_director_init :: proc(director: ^Phase_Director, sched: ^Scheduler) {
     director.sched = sched
     director.current_phase = 0
     director.phase_name = ""
-    director.current_scope.handles = nil
+    director.current_scope = {}
 }
 
 phase_director_destroy :: proc(director: ^Phase_Director) {

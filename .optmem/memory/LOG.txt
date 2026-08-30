@@ -60,3 +60,5 @@
 #59 2026-08-30 Hardened unbuffered rendezvous deadlock safety, Windows PAGE_NOACCESS guard pages, spawn_real_val, compile constants, and verified 161 tests across 12-target LLVM matrix.
 #60 2026-08-30 Cleaned up Test 66 package-global variable and renamed Tests 108/110; verified 161 tests across 12-target LLVM build matrix with zero errors.
 #61 2026-08-30 Documentation suite restructured into 4 engineering tracks; reconciled async_token_complete and 11 footguns; documented symmetrical rendezvous, PAGE_NOACCESS, spawn_real_val, and simulate_until pause overrides
+#62 2026-08-30 Migrated Fiber_Scope to intrusive doubly-linked list (head, tail, count) with O(1) in-place unlinking; converted demo projectiles, particles, and logs to fixed SDS arrays (162/162 tests passing across 12-target LLVM matrix).
+#63 2026-08-30 Pruned unused allocator parameters from True ZII sync inits; streamlined scheduler_destroy and fiber_pool_destroy to use persistent struct allocators (162/162 tests passing across 12-target matrix).

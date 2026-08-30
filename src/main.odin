@@ -71,12 +71,17 @@ Boss :: struct {
     alive:        bool,
 }
 
+MAX_PROJECTILES :: 512
+MAX_PARTICLES   :: 1024
+
 Game :: struct {
-    sched:          coroutine.Scheduler,
-    player:         Player,
-    boss:           Boss,
-    projectiles:    [dynamic]Projectile,
-    particles:      [dynamic]Particle,
+    sched:                   coroutine.Scheduler,
+    player:                  Player,
+    boss:                    Boss,
+    projectiles:             [MAX_PROJECTILES]Projectile,
+    projectile_count:        int,
+    particles:               [MAX_PARTICLES]Particle,
+    particle_count:          int,
     camera_offset:           rl.Vector2,
     game_time:               f32,
     show_coroutine_debugger: bool,
@@ -98,7 +103,9 @@ g_game: ^Game
 // ============================================================================
 
 spawn_particles :: proc(pos: rl.Vector2, count: int, color: rl.Color) {
+    if g_game == nil do return
     for _ in 0 ..< count {
+        if g_game.particle_count >= MAX_PARTICLES do break
         angle := rand.float32_range(0, math.TAU)
         spd := rand.float32_range(50, 250)
         p := Particle{
@@ -110,11 +117,13 @@ spawn_particles :: proc(pos: rl.Vector2, count: int, color: rl.Color) {
             lifetime = rand.float32_range(0.3, 0.7),
             alive    = true,
         }
-        append(&g_game.particles, p)
+        g_game.particles[g_game.particle_count] = p
+        g_game.particle_count += 1
     }
 }
 
 spawn_projectile :: proc(pos, vel: rl.Vector2, radius: f32, color: rl.Color, is_enemy: bool) {
+    if g_game == nil || g_game.projectile_count >= MAX_PROJECTILES do return
     p := Projectile{
         pos      = pos,
         vel      = vel,
@@ -123,7 +132,8 @@ spawn_projectile :: proc(pos, vel: rl.Vector2, radius: f32, color: rl.Color, is_
         is_enemy = is_enemy,
         alive    = true,
     }
-    append(&g_game.projectiles, p)
+    g_game.projectiles[g_game.projectile_count] = p
+    g_game.projectile_count += 1
 }
 
 // ============================================================================
@@ -485,8 +495,8 @@ game_init :: proc(g: ^Game) {
         alive        = true,
     }
 
-    g.projectiles = make([dynamic]Projectile)
-    g.particles = make([dynamic]Particle)
+    g.projectile_count = 0
+    g.particle_count = 0
     g.camera_offset = {0, 0}
     g.game_time = 0.0
     g.game_over = false
@@ -505,8 +515,6 @@ game_destroy :: proc(g: ^Game) {
     coroutine.scope_destroy(&g.sched, &g.player.scope)
     coroutine.scope_destroy(&g.sched, &g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
-    delete(g.projectiles)
-    delete(g.particles)
 }
 
 game_update :: proc(g: ^Game, dt: f32) {
@@ -607,10 +615,11 @@ game_update :: proc(g: ^Game, dt: f32) {
     if rl.IsKeyPressed(.B) || rl.IsKeyPressed(.X) {
         coroutine.signal_emit(&g.sched, &g.boss.stun_signal)
         bullets_destroyed := 0
-        for i := len(g.projectiles) - 1; i >= 0; i -= 1 {
+        for i := g.projectile_count - 1; i >= 0; i -= 1 {
             if g.projectiles[i].is_enemy {
                 spawn_particles(g.projectiles[i].pos, 10, rl.GOLD)
-                unordered_remove(&g.projectiles, i)
+                g.projectiles[i] = g.projectiles[g.projectile_count - 1]
+                g.projectile_count -= 1
                 bullets_destroyed += 1
             }
         }
@@ -635,17 +644,19 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     // --- Update Projectiles ---
-    for i := len(g.projectiles) - 1; i >= 0; i -= 1 {
+    for i := g.projectile_count - 1; i >= 0; i -= 1 {
         p := &g.projectiles[i]
         if !p.alive {
-            unordered_remove(&g.projectiles, i)
+            g.projectiles[i] = g.projectiles[g.projectile_count - 1]
+            g.projectile_count -= 1
             continue
         }
         p.pos += p.vel * sim_dt
 
         // Check Out of bounds
         if p.pos.x < -50 || p.pos.x > SCREEN_WIDTH + 50 || p.pos.y < -50 || p.pos.y > SCREEN_HEIGHT + 50 {
-            unordered_remove(&g.projectiles, i)
+            g.projectiles[i] = g.projectiles[g.projectile_count - 1]
+            g.projectile_count -= 1
             continue
         }
 
@@ -662,7 +673,8 @@ game_update :: proc(g: ^Game, dt: f32) {
                 }
                 g.boss.hp -= dmg
                 spawn_particles(p.pos, 6, rl.GOLD)
-                unordered_remove(&g.projectiles, i)
+                g.projectiles[i] = g.projectiles[g.projectile_count - 1]
+                g.projectile_count -= 1
 
                 if g.boss.hp <= 0.0 {
                     g.boss.hp = 0.0
@@ -685,7 +697,8 @@ game_update :: proc(g: ^Game, dt: f32) {
                 spawn_floating_text(fmt.tprintf("-%.0f", dmg), g.player.pos + {0, -30}, rl.RED)
                 trigger_camera_shake(6.0)
                 spawn_particles(g.player.pos, 12, rl.RED)
-                unordered_remove(&g.projectiles, i)
+                g.projectiles[i] = g.projectiles[g.projectile_count - 1]
+                g.projectile_count -= 1
 
                 if g.player.hp <= 0.0 {
                     g.player.hp = 0.0
@@ -699,12 +712,13 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     // --- Update Particles ---
-    for i := len(g.particles) - 1; i >= 0; i -= 1 {
+    for i := g.particle_count - 1; i >= 0; i -= 1 {
         p := &g.particles[i]
         p.pos += p.vel * sim_dt
         p.alpha -= sim_dt * 2.0
         if p.alpha <= 0.0 {
-            unordered_remove(&g.particles, i)
+            g.particles[i] = g.particles[g.particle_count - 1]
+            g.particle_count -= 1
         }
     }
 }
@@ -726,7 +740,8 @@ game_render :: proc(g: ^Game) {
     }
 
     // --- Draw Particles ---
-    for p in g.particles {
+    for i in 0 ..< g.particle_count {
+        p := &g.particles[i]
         c := p.color
         c.a = u8(clamp(p.alpha * 255.0, 0, 255))
         rl.DrawCircleV(p.pos + g.camera_offset, p.size, c)
@@ -765,7 +780,8 @@ game_render :: proc(g: ^Game) {
     }
 
     // --- Draw Projectiles ---
-    for p in g.projectiles {
+    for i in 0 ..< g.projectile_count {
+        p := &g.projectiles[i]
         rl.DrawCircleV(p.pos + g.camera_offset, p.radius, p.color)
     }
 
