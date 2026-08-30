@@ -26,8 +26,16 @@ For a bounded channel of fixed capacity $C$:
 - **Full Condition:** $\text{count} == C$
 
 ### Channel Architectures:
-1. **Unbuffered (Rendezvous / Capacity 0):**
-   - A sending fiber blocks until a receiving fiber arrives to accept the message (and vice-versa). Direct zero-copy handoff.
+1. **Symmetrical Unbuffered Rendezvous (`capacity == 0`):**
+   - **Sender Arrives Before Receiver:**
+     1. Sender deposits payload into `buffer[0]` and sets `count = 1`.
+     2. Enqueues calling fiber into `ch.send_waiters` and suspends.
+     3. When receiver arrives, it detects `count == 1`, consumes `buffer[0]`, resets `head = 0, tail = 0, count = 0`, and pops/wakes the suspended sender in $O(1)$ time.
+   - **Receiver Arrives Before Sender:**
+     1. Receiver detects `count == 0`, enqueues into `ch.recv_waiters`, and suspends.
+     2. When sender arrives, it pops the waiting receiver from `ch.recv_waiters`, writes `buffer[0] = value`, sets `count = 1`, wakes receiver to the ready queue, and completes in $O(1)$ time without suspending.
+   - **Multi-Channel Select Extraction:**
+     `chan_select_recv` / `chan_try_select_recv` seamlessly extract from unbuffered channels with pre-queued senders, waking the sender and completing the rendezvous.
 2. **Bounded FIFO Buffered (Capacity $N$):**
    - Fixed-size circular ring buffer with $O(1)$ head/tail index advancement.
    - `chan_send`: Pushes value into ring buffer; suspends fiber only when the buffer is completely full.
@@ -103,8 +111,7 @@ While `Signal` broadcasts void notifications (0 data), `Event(T)` provides 1-to-
 
 ```odin
 Event :: struct($T: typeid) {
-    waiters:   Wait_Queue,
-    allocator: mem.Allocator,
+    waiters: Wait_Queue,
 }
 ```
 

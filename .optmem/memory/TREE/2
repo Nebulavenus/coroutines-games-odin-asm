@@ -28,3 +28,4 @@ Purged Cancel_Token for pure structured concurrency; fixed EMP attack duplicatio
 100% Pure Structured Concurrency via Fiber_Scope sub-scopes and race+Signal stuns; hardened chan_recv_timeout unbuffered fast-path, scheduler_destroy wait-queue unlinking UAF guard, and stack canary breach detection.
 Pruned cosmetic Join_Kind.Fallback variant leaving 3 fundamental orthogonal join combinators (Sync, Race, Rush); stored persistent allocator in Fiber_Pool and Scheduler; cleaned up redundant Event(T) runtime size checks.
 Audited docs to GFM; hardened unbuffered rendezvous deadlock symmetry, Windows PAGE_NOACCESS guard pages, spawn_real_val overload, compile constants, and verified 161 tests across 12-target matrix.
+Cleaned Test 66 globals; restructured documentation into 4 engineering tracks, reconciled async_token_complete, 11 footguns, symmetrical rendezvous, PAGE_NOACCESS, spawn_real_val, and simulate_until pause overrides across all docs.

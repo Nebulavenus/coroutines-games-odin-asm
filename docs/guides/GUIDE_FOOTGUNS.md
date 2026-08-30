@@ -1,22 +1,23 @@
-# The 10 Cooperative Fiber Footguns & Prevention Guide
+# The 11 Cooperative Fiber Footguns & Prevention Guide
 
 > **MANDATORY READING FOR ALL GAMEPLAY AND SYSTEMS ENGINEERS**:
 > Stackful cooperative coroutines provide unmatched clarity for complex gameplay state machines, hierarchical AI, cutscenes, and async pipelines. However, because fibers are **cooperative single-threaded execution contexts**, misuse can cause subtle deadlocks, memory corruption, or frame freezes.
-> This guide details the **10 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
+> This guide details the **11 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
 
 ---
 
-## The 10 Footguns Overview
+## The 11 Footguns Overview
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          THE 10 FIBER FOOTGUNS                              │
+│                          THE 11 FIBER FOOTGUNS                              │
 ├──────────────────────────────────────┬──────────────────────────────────────┤
-│ 1. The Non-Yielding Infinite Loop    │ 6. The Orphaned Channel Receiver     │
-│ 2. The 32KB Stack Overflow           │ 7. Cross-Fiber Temp Allocator Escape │
-│ 3. The Dangling Ephemeral Pointer    │ 8. Save-Game Stack Serialization     │
-│ 4. Stale Pointers Across Sleeps      │ 9. Cumulative Time Drift Loop        │
-│ 5. The Deadlocked Mutex / Semaphore  │ 10. Unstructured Task Slices (Orphans)│
+│ 1. The Non-Yielding Infinite Loop    │ 7. Cross-Fiber Temp Allocator Escape │
+│ 2. The 32KB Stack Overflow           │ 8. Save-Game Stack Serialization     │
+│ 3. The Dangling Ephemeral Pointer    │ 9. Cumulative Time Drift Loop        │
+│ 4. Stale Pointers Across Sleeps      │ 10. Unstructured Task Slices (Orphans)│
+│ 5. The Deadlocked Mutex / Semaphore  │ 11. Storing Raw ^Fiber Pointers      │
+│ 6. The Orphaned Channel Receiver     │                                      │
 └──────────────────────────────────────┴──────────────────────────────────────┘
 ```
 

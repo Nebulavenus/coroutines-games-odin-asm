@@ -59,3 +59,4 @@
 #58 2026-08-30 Audited and updated all 35 documentation files to GFM compatibility, 156-test catalog, pure structured concurrency, and persistent allocator memory models.
 #59 2026-08-30 Hardened unbuffered rendezvous deadlock safety, Windows PAGE_NOACCESS guard pages, spawn_real_val, compile constants, and verified 161 tests across 12-target LLVM matrix.
 #60 2026-08-30 Cleaned up Test 66 package-global variable and renamed Tests 108/110; verified 161 tests across 12-target LLVM build matrix with zero errors.
+#61 2026-08-30 Documentation suite restructured into 4 engineering tracks; reconciled async_token_complete and 11 footguns; documented symmetrical rendezvous, PAGE_NOACCESS, spawn_real_val, and simulate_until pause overrides

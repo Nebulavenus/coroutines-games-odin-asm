@@ -118,9 +118,9 @@ Stack overflows in native stackful coroutines are notoriously catastrophic if un
 
 ### Tier 3: Hardware OS Virtual Memory Protection (`Virtual_Memory_OS`)
 - Configured via `Stack_Allocation_Mode.Virtual_Memory_OS`.
-- On Windows: Uses `VirtualAlloc` with `PAGE_GUARD` on the boundary page.
+- On Windows: Uses `VirtualAlloc` with permanent `PAGE_NOACCESS` (via `VirtualProtect`) on the boundary guard page.
 - On Linux / POSIX: Uses `mmap` with `mprotect(PROT_NONE)`.
-- If a deep recursion touches the guard page, the CPU hardware memory management unit (MMU) raises a page fault exception instantly, preventing silent memory corruption of adjacent fibers.
+- **1:1 Hardware Parity:** Permanent `PAGE_NOACCESS` mirrors POSIX `PROT_NONE` directly (unlike one-shot `PAGE_GUARD` flags which clear after a single access). If a deep recursion touches the guard page, the CPU hardware memory management unit (MMU) raises a page fault / access violation exception instantly, preventing silent memory corruption of adjacent fibers.
 
 ---
 

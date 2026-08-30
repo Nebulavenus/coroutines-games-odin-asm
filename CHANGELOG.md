@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Documentation Modernization & Learning Tracks] - 2026-08-30
+
+### Documentation
+- **4 Structured Engineering Tracks (`README.md`)**:
+  - Reorganized entire documentation suite into 4 dedicated learning tracks: Track 1 (Gameplay Scripting), Track 2 (Engine Integration), Track 3 (Low-Level Specs & Hardware Math), and Track 4 (Reliability, Safety Harness & Developer Tooling).
+- **API Signature Reconciliation (`docs/tutorials/06_async_background_jobs.md`)**:
+  - Corrected `async_token_complete(&job.token, true)` signature and documented payload encapsulation within job structs.
+- **The 11 Cooperative Fiber Footguns (`docs/guides/GUIDE_FOOTGUNS.md`, `COOKBOOK.md`)**:
+  - Synchronized header, overview table, and cheat sheet to feature all 11 footguns (including Footgun 11: Storing Raw `^Fiber` Pointers Instead of Packed Generational Handles).
+- **Symmetrical Unbuffered Rendezvous Documentation (`docs/tech/TECH_PRIMITIVES.md`, `COOKBOOK.md`)**:
+  - Documented zero-deadlock symmetrical unbuffered rendezvous semantics (`capacity == 0`) and multi-channel select extraction.
+- **Hardware MMU Parity Documentation (`docs/tech/TECH_MEMORY.md`)**:
+  - Documented permanent `PAGE_NOACCESS` on Windows virtual memory slabs for 1:1 hardware parity with POSIX `PROT_NONE`.
+- **Real-Time Inline Payloads & Headless Simulation Docs (`docs/tech/TECH_CLOCK.md`, `docs/tutorials/08_multi_domain_clocks.md`, `docs/tutorials/09_headless_ci_testing.md`)**:
+  - Added explicit code examples and mathematical analysis for `spawn_real_val` and pause-immune/watchdog-safe `simulate_until`.
+
 ## [Technical Hardening & Quality Audit] - 2026-08-30
 
 ### Fixed

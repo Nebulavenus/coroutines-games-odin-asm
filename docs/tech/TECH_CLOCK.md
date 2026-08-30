@@ -64,9 +64,12 @@ $$\epsilon(T) = 2^{\lfloor \log_2(T) \rfloor - 23}$$
 
 | Clock Domain | Yield Primitive | Spawning Primitive | Time Query | Delta Query |
 | :--- | :--- | :--- | :--- | :--- |
-| **Simulation** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
-| **Real-Time** | `coroutine.wait_real(f, seconds)` | `coroutine.spawn_real(&sched, proc)` | `coroutine.real_time(f)` | `coroutine.delta_real(f)` |
-| **Discrete Ticks** | `coroutine.wait_ticks(f, ticks)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_ticks(f)` | $1 / f_{\text{tick}}$ |
+| **Simulation** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc)` / `spawn_val` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
+| **Real-Time** | `coroutine.wait_real(f, seconds)` | `coroutine.spawn_real(&sched, proc)` / `spawn_real_val` | `coroutine.real_time(f)` | `coroutine.delta_real(f)` |
+| **Discrete Ticks** | `coroutine.wait_ticks(f, ticks)` | `coroutine.spawn(&sched, proc)` / `spawn_val` | `coroutine.current_ticks(f)` | $1 / f_{\text{tick}}$ |
+
+> **Inline By-Value Payloads on Real-Time Domain (`spawn_real_val`):**
+> Just like `spawn_val`, `spawn_real_val` copies structs or scalar values (up to 128 bytes) directly into `fiber.payload_storage` via `#assert(size_of(T) <= 128)`, guaranteeing zero allocations and lifetime safety during pause menus and UI modal overlays.
 
 ---
 

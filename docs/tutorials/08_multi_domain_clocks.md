@@ -66,7 +66,31 @@ main :: proc() {
 
 ---
 
-## 2. Bullet-Time Slow Motion with `time_scale`
+## 2. Inline Real-Time Payloads with `spawn_real_val`
+
+When spawning UI dialogs, damage numbers, or pause banners, passing transient parameters by pointer risks dangling memory once the caller returns. `spawn_real_val` copies the data (up to 128 bytes) directly into `fiber.payload_storage` and binds the fiber to the **Real-Time clock domain**:
+
+```odin
+Pause_Banner_Data :: struct {
+    title:        string,
+    elapsed_time: f32,
+}
+
+ui_banner_coroutine :: proc(f: ^coroutine.Fiber, data: Pause_Banner_Data) {
+    for {
+        fmt.printf("  [UI Banner: %s] Blinking... (real_time: %.2fs)\n", data.title, coroutine.real_time(f))
+        coroutine.wait_real(f, 0.5) // Advances even when sched.is_paused == true!
+    }
+}
+
+// Spawn with by-value inline payload on the real-time clock domain:
+banner := Pause_Banner_Data{title = "PAUSED"}
+coroutine.spawn_real_val(&sched, ui_banner_coroutine, banner)
+```
+
+---
+
+## 3. Bullet-Time Slow Motion with `time_scale`
 
 You can create cinematic Matrix-style slow-motion effects by calling `coroutine.scheduler_set_time_scale`:
 
@@ -83,7 +107,7 @@ coroutine.scheduler_set_time_scale(&sched, 0.20)
 
 ---
 
-## 3. Domain 3: Deterministic Physics with `wait_ticks`
+## 4. Domain 3: Deterministic Physics with `wait_ticks`
 
 For fighting games, rollback netcode, or deterministic physics engines:
 
@@ -102,7 +126,7 @@ coroutine.scheduler_step_ticks(&sched, 1)
 
 ---
 
-## 4. Structured Sub-Scope Lifecycle Management (`Fiber_Scope`)
+## 5. Structured Sub-Scope Lifecycle Management (`Fiber_Scope`)
 
 In addition to entity root scopes, you can structure component behaviors into sub-scopes (e.g. `combat_scope`, `particle_scope`, `movement_scope`) to perform selective lifecycle management:
 

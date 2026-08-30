@@ -69,46 +69,47 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sand
 
 ---
 
-## Complete Documentation Index
+## Documentation & Learning Tracks
 
-```
-coroutines_asm/
-├── README.md                  # Master Overview, Highlights & Quickstart
-├── ARCHITECTURE.md            # Complete Engine Architectural Specification
-├── ASM.md                     # Odin Inline Assembly Reference & Grammar
-├── CHANGELOG.md               # Version History & Release Notes
-├── REPORTS.md                 # Verification Matrix & 161-Test Compliance Report
-├── COOKBOOK.md                # 17 Production Gameplay Architecture Recipes
-│
-├── docs/
-│   ├── tech/
-│   │   ├── TECH_ASM.md         # Low-Level ASM Switch, Registers & ABI Spec
-│   │   ├── TECH_CLOCK.md       # 3-Tier Clock Math, Precision & Drivers
-│   │   ├── TECH_MEMORY.md      # Slabs, Canaries, Guard Pages & Temp Arenas
-│   │   ├── TECH_CONCURRENCY.md # Structured Concurrency & Coordinator Lifecycle
-│   │   ├── TECH_PRIMITIVES.md  # Channels, Generators, Async Bridge, Mutexes & Events
-│   │   └── TECH_SDS_AND_HANDLES.md # SDS, ZII, Packed Generational Handles & Futex Queues
-│   │
-│   ├── tutorials/
-│   │   ├── 01_hello_coroutines.md      # Getting Started & Basic Yields
-│   │   ├── 02_parameter_passing.md     # Pointers vs By-Value 128B Payloads
-│   │   ├── 03_structured_concurrency.md# Boss Fight with sync and race
-│   │   ├── 04_advanced_control_flow.md # AI Trees with rush, fallback & timeouts
-│   │   ├── 05_synchronization.md       # Signals, Mutexes, Events & Semaphores
-│   │   ├── 06_async_background_jobs.md # Offloading Compute via await_async
-│   │   ├── 07_stateful_generators.md   # Procedural Loot with Generator(T)
-│   │   ├── 08_multi_domain_clocks.md   # Pausing, Time Scale & Fixed Ticking
-│   │   └── 09_headless_ci_testing.md   # Headless Simulation with simulate_until
-│   │
-│   └── guides/
-│       ├── GUIDE_TIMING_AND_DRIFT.md # Frame Quantization & Time Drift Prevention
-│       ├── GUIDE_FOOTGUNS.md    # The 10 Fiber Footguns & Prevention Guide
-│       ├── GUIDE_INTEGRATION.md # Engine Integration (Raylib, Sokol, Custom)
-│       ├── GUIDE_SCHEDULERS.md   # Multi-Scheduler Architecture (World vs. UI)
-│       ├── GUIDE_DETERMINISM.md  # Determinism, Physics & Rollback Netcode
-│       ├── GUIDE_MIGRATION.md    # Migration from Unity / Unreal / AST
-│       └── GUIDE_DEBUGGER.md     # In-Engine Tree Inspector & Freeze-Step
-```
+The documentation is organized into **4 structured engineering tracks**:
+
+### Track 1: Gameplay Scripting & Quickstart
+*Target Audience: Gameplay programmers, quest designers, combat scripters.*
+* [`docs/tutorials/01_hello_coroutines.md`](docs/tutorials/01_hello_coroutines.md) — Getting Started, Scheduler Lifecycle & Basic Yields
+* [`docs/tutorials/02_parameter_passing.md`](docs/tutorials/02_parameter_passing.md) — Pointers vs. 128B Inline By-Value Payloads
+* [`docs/tutorials/03_structured_concurrency.md`](docs/tutorials/03_structured_concurrency.md) — Boss Combat with `sync` and `race`
+* [`docs/tutorials/04_advanced_control_flow.md`](docs/tutorials/04_advanced_control_flow.md) — AI Decision Trees with `rush`, `fallback` & `with_timeout`
+* [`docs/tutorials/05_synchronization.md`](docs/tutorials/05_synchronization.md) — True ZII Signals, `Fiber_Mutex`, `Channel(T)` & `Event(T)`
+* [`COOKBOOK.md`](COOKBOOK.md) — 17 Production Gameplay Architecture Recipes
+
+### Track 2: Engine Integration & Architecture
+*Target Audience: Lead gameplay engineers, engine architects.*
+* [`docs/tutorials/06_async_background_jobs.md`](docs/tutorials/06_async_background_jobs.md) — Offloading Heavy Compute via `await_async` & Thread Pools
+* [`docs/tutorials/07_stateful_generators.md`](docs/tutorials/07_stateful_generators.md) — Lazy Procedural Iterators with 16KB `Generator(T)`
+* [`docs/tutorials/08_multi_domain_clocks.md`](docs/tutorials/08_multi_domain_clocks.md) — 3-Tier Clock, Pausable Simulation, Real-Time UI & Fixed Ticks
+* [`docs/tutorials/09_headless_ci_testing.md`](docs/tutorials/09_headless_ci_testing.md) — Headless Simulation Testing with `simulate_until`
+* [`docs/guides/GUIDE_INTEGRATION.md`](docs/guides/GUIDE_INTEGRATION.md) — Drop-in Blueprints for Raylib, Sokol, SDL, GLFW & Custom Loops
+* [`docs/guides/GUIDE_SCHEDULERS.md`](docs/guides/GUIDE_SCHEDULERS.md) — Multi-Scheduler Architecture (World vs. UI)
+* [`docs/guides/GUIDE_MIGRATION.md`](docs/guides/GUIDE_MIGRATION.md) — Rosetta Stone: Unity `IEnumerator`, Unreal Latent Actions & ASTs
+
+### Track 3: Low-Level Hardware, Memory & Concurrency Specs
+*Target Audience: Systems programmers, runtime developers.*
+* [`docs/tech/TECH_ASM.md`](docs/tech/TECH_ASM.md) — AMD64 Inline ASM Switch, ABI Registers, Trampolines & `#volatile` Barriers
+* [`docs/tech/TECH_CLOCK.md`](docs/tech/TECH_CLOCK.md) — 3-Tier Clock Math, Precision Limits, Dual Min-Heaps & Zero-Drift Ticks
+* [`docs/tech/TECH_MEMORY.md`](docs/tech/TECH_MEMORY.md) — 1MB Slabs, Canaries, Hardware `PAGE_NOACCESS` / `PROT_NONE`, 4KB Arenas & Memory Wall
+* [`docs/tech/TECH_CONCURRENCY.md`](docs/tech/TECH_CONCURRENCY.md) — Structured Concurrency Tree Topology & 4-Stage Zero-Shift Dispatch Pipeline
+* [`docs/tech/TECH_PRIMITIVES.md`](docs/tech/TECH_PRIMITIVES.md) — CSP Channels, Symmetrical Rendezvous, Generators, Async Bridge & Mutexes
+* [`docs/tech/TECH_SDS_AND_HANDLES.md`](docs/tech/TECH_SDS_AND_HANDLES.md) — Static Data Structures, Packed Generational Handles ($O(1)$) & Intrusive Futex Queues
+
+### Track 4: Reliability, Safety Harness & Developer Tooling
+*Target Audience: QA engineers, tool developers, production teams.*
+* [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) — The 11 Cooperative Fiber Footguns & Prevention Guide
+* [`docs/guides/GUIDE_TIMING_AND_DRIFT.md`](docs/guides/GUIDE_TIMING_AND_DRIFT.md) — Frame Quantization, Time Drift & `Ticker` Self-Correction
+* [`docs/guides/GUIDE_DETERMINISM.md`](docs/guides/GUIDE_DETERMINISM.md) — Discrete Integer Ticks, Float Safety, Netcode & Replays
+* [`docs/guides/GUIDE_PERFORMANCE.md`](docs/guides/GUIDE_PERFORMANCE.md) — Zero-Allocation Guarantees, Pre-Warming & Cache Sizing
+* [`docs/guides/GUIDE_DEBUGGER.md`](docs/guides/GUIDE_DEBUGGER.md) — Visual F1 Hierarchy Tree HUD, Stack Usage Profiling & Freeze-Step Control
+* [`ARCHITECTURE.md`](ARCHITECTURE.md) — Complete Engine Architecture Specification
+* [`REPORTS.md`](REPORTS.md) — Verification Matrix & 161-Test Compliance Report
 
 ---
 
@@ -177,9 +178,8 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, target: coroutine.Fiber_Handle
 ### 3. Typed Multicast Event (`Event(T)`)
 
 ```odin
+// True ZII: Ready to use immediately upon declaration (0 heap allocations)
 death_event: coroutine.Event(Player_Death_Info)
-coroutine.event_init(&death_event)
-defer coroutine.event_destroy(&death_event)
 
 // Multiple systems wait on same event:
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_Death_Info)) {
@@ -263,7 +263,7 @@ A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows
 # Run the 6-Suite Performance Benchmark Runner
 .\build.ps1 run-bench
 
-# Run All 156 Unit Tests
+# Run All 161 Unit Tests
 .\build.ps1 test
 
 # Run Full LLVM Optimization & Architecture Matrix (12 builds)

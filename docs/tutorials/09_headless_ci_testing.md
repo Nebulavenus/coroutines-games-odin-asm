@@ -36,7 +36,7 @@ Boss_Combat_State :: struct {
 }
 
 boss_ai_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Combat_State) {
-    // Phase 1: Fight for up to 10 seconds or until HP < 50
+    // Phase 1: Fight for up to 10 seconds or until HP <= 50
     coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Combat_State) {
             coroutine.wait(f, 10.0) // 10s timer
@@ -59,24 +59,38 @@ test_boss_phase_transition_simulation :: proc(t: ^testing.T) {
     boss := Boss_Combat_State{hp = 100, phase = 1}
     coroutine.spawn_ptr(&sched, boss_ai_timeline, &boss)
 
-    // 1. Simulate 4.0 seconds headlessly
-    coroutine.simulate_until(&sched, 4.0, dt = 0.1)
-    testing.expect_value(t, boss.phase, 1) // Still in Phase 1
+    // 1. Simulate up to 4.0 seconds with dt = 0.1s headlessly
+    met, elapsed := coroutine.simulate_until(&sched, 0.1, 4.0, proc(b: ^Boss_Combat_State) -> bool {
+        return b.phase == 2
+    }, &boss)
+    testing.expect_value(t, met, false)       // Condition not met yet
+    testing.expect_value(t, boss.phase, 1)    // Still in Phase 1
 
     // 2. Player deals damage dropping HP to 40%
     boss.hp = 40
 
-    // 3. Step single frame (0.1s)
-    coroutine.scheduler_step(&sched, 0.1)
+    // 3. Fast-forward until phase 2 condition is satisfied:
+    met, elapsed = coroutine.simulate_until(&sched, 0.1, 5.0, proc(b: ^Boss_Combat_State) -> bool {
+        return b.phase == 2
+    }, &boss)
 
-    // 4. Assert Phase 2 triggered immediately!
+    // 4. Assert Phase 2 triggered deterministically!
+    testing.expect_value(t, met, true)
     testing.expect_value(t, boss.phase, 2)
 }
 ```
 
 ---
 
-## 3. Running Headless Tests in CI/CD
+## 3. Pause-Immune & Watchdog-Safe Mechanics
+
+When running automated headless test pipelines:
+1. **Automatic Pause Override:** If the scheduler starts in a paused state (`clock.is_paused == true`), `simulate_until` temporarily forces simulation time advancement (`sched.clock.is_paused = false`) and restores the initial pause state upon exit via `defer`.
+2. **Watchdog Suppression & Restoration:** In debug builds, `simulate_until` temporarily suppresses the runtime slice watchdog (`sched.watchdog_enabled = false`) so that continuous simulation loops running thousands of iterations do not trip runaway watchdog panics.
+
+---
+
+## 4. Running Headless Tests in CI/CD
 
 To run these tests in GitHub Actions, GitLab CI, or local command line:
 

@@ -57,8 +57,8 @@ pathfinder_worker_thread :: proc(raw_data: rawptr) {
     job.result.waypoints[1] = { (job.start.x + job.goal.x) / 2.0, job.start.y + 50.0 }
     job.result.waypoints[2] = job.goal
 
-    // Mark completed atomically!
-    coroutine.async_token_complete(&job.token, &job.result)
+    // Mark completed atomically! (Result data lives directly in job.result)
+    coroutine.async_token_complete(&job.token, true)
 }
 
 // Main-Thread Coroutine Procedure

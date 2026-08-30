@@ -23,7 +23,7 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 16. [Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)](#recipe-16-structured-emergency-task-abort-race--signal)
 17. [Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)](#recipe-17-custom-in-engine-hierarchy-tree-debuggers-scheduler_walk_tree)
 
-> 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) for the 8 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
+> 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) for the 11 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
 
 ---
 
