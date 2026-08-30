@@ -200,6 +200,7 @@ Signal :: struct {
 
 Fiber_Mutex :: struct {
     locked:  bool,
+    owner:   Fiber_Handle,
     waiters: Wait_Queue,
 }
 

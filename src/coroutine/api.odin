@@ -272,7 +272,7 @@ fiber_status :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_
 }
 
 fiber_join :: proc(f: ^Fiber, target_handle: Fiber_Handle) -> (ok: bool) {
-    if f == nil || f.sched == nil || target_handle == 0 do return false
+    if f == nil || f.sched == nil || target_handle == 0 || target_handle == f.handle do return false
 
     // If target is already dead/finished
     if !fiber_is_alive(f.sched, target_handle) {
@@ -628,7 +628,8 @@ fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc
         child.sched = f.sched
         child.debug_name = b.name
         child.stored_context = context
-        child.start_time = f.sched.clock.sim_time
+        child.wake_clock = f.wake_clock
+        child.start_time = f.wake_clock == .Real_Time ? f.sched.clock.real_time : f.sched.clock.sim_time
         if b.has_payload {
             child.payload_storage = b.payload_storage
             child.user_data = &child.payload_storage[0]
@@ -914,6 +915,34 @@ with_timeout_nil :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber), name: 
 // Unified overloaded entry point
 with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, with_timeout_nil}
 
+// with_timeout_real Helper (Real-Time Domain)
+with_timeout_real_branch :: proc(f: ^Fiber, seconds: f32, task: Branch_Desc) -> (timed_out: bool) {
+    if f == nil || f.sched == nil do return false
+
+    winner := race(f,
+        task,
+        branch(proc(f: ^Fiber, sec: f32) {
+            wait_real(f, sec)
+        }, seconds, "with_timeout_real_timer"),
+    )
+
+    return winner == 1
+}
+
+with_timeout_real_ptr :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "") -> (timed_out: bool) {
+    return with_timeout_real_branch(f, seconds, branch_ptr(entry, data, name))
+}
+
+with_timeout_real_val :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber, data: $T), data: T, name: string = "") -> (timed_out: bool) where !intrinsics.type_is_pointer(T) {
+    return with_timeout_real_branch(f, seconds, branch_val(entry, data, name))
+}
+
+with_timeout_real_nil :: proc(f: ^Fiber, seconds: f32, entry: proc(f: ^Fiber), name: string = "") -> (timed_out: bool) {
+    return with_timeout_real_branch(f, seconds, branch_nil(entry, name))
+}
+
+with_timeout_real :: proc{with_timeout_real_branch, with_timeout_real_ptr, with_timeout_real_val, with_timeout_real_nil}
+
 // ============================================================================
 // Condition Timeouts (wait_until_timeout & wait_while_timeout)
 // ============================================================================
@@ -1184,6 +1213,8 @@ mutex_init :: proc(m: ^Fiber_Mutex) {
 
 mutex_destroy :: proc(m: ^Fiber_Mutex) {
     if m == nil do return
+    m.owner = 0
+    m.locked = false
     wait_queue_destroy(&m.waiters)
 }
 
@@ -1191,6 +1222,7 @@ mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
     if m == nil do return false
     if !m.locked {
         m.locked = true
+        if f != nil do m.owner = f.handle
         return true
     }
     return false
@@ -1201,6 +1233,7 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
 
     if !m.locked {
         m.locked = true
+        m.owner = f.handle
         return
     }
 
@@ -1210,6 +1243,7 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     context = f.stored_context
+    m.owner = f.handle
 }
 
 mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
@@ -1219,13 +1253,23 @@ mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
         next_fiber, ok := wait_queue_pop_front(&m.waiters)
         if !ok do break
         if next_fiber != nil && next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
+            m.owner = next_fiber.handle
             next_fiber.status = .Ready
             append(&sched.ready_queue, next_fiber.handle)
             return
         }
     }
 
+    m.owner = 0
     m.locked = false
+}
+
+mutex_owner :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> Fiber_Handle {
+    return m != nil ? m.owner : 0
+}
+
+mutex_is_locked :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> bool {
+    return m != nil && m.locked
 }
 
 mutex_waiter_count :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> int {
@@ -1417,7 +1461,11 @@ semaphore_acquire :: proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
 semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int = 1) {
     if sched == nil || sem == nil || count <= 0 do return
 
-    sem.permits = min(sem.permits + count, sem.max_permits)
+    if sem.max_permits > 0 {
+        sem.permits = min(sem.permits + count, sem.max_permits)
+    } else {
+        sem.permits += count
+    }
 
     for sem.permits > 0 {
         next_fiber, ok := wait_queue_pop_front(&sem.waiters)
@@ -1545,6 +1593,7 @@ latch_destroy :: proc(latch: ^Fiber_Latch) {
 
 latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
     if sched == nil || latch == nil || n <= 0 do return
+    if latch.count == 0 do return
 
     latch.count = max(0, latch.count - n)
     if latch.count == 0 {
@@ -1943,6 +1992,56 @@ chan_recv_timeout :: proc(f: ^Fiber, ch: ^Channel($T), timeout_seconds: f32) -> 
     return res.val, res.ok, res.timed_out
 }
 
+chan_send_timeout :: proc(f: ^Fiber, ch: ^Channel($T), value: T, timeout_seconds: f32) -> (ok: bool, timed_out: bool) {
+    if f == nil || ch == nil do return false, false
+
+    // Fast-path: try send immediately without suspending
+    if chan_try_send(ch, value) {
+        return true, false
+    }
+
+    if ch.is_closed {
+        return false, false
+    }
+
+    if timeout_seconds <= 0.0 {
+        return false, true
+    }
+
+    Send_Result :: struct {
+        ok:        bool,
+        timed_out: bool,
+    }
+    res := Send_Result{}
+
+    Chan_Send_Pair :: struct {
+        ch:              ^Channel(T),
+        val:             T,
+        res:             ^Send_Result,
+        timeout_seconds: f32,
+    }
+    pair := Chan_Send_Pair{ch = ch, val = value, res = &res, timeout_seconds = timeout_seconds}
+
+    winner := race(f,
+        branch(proc(f: ^Fiber, p: ^Chan_Send_Pair) {
+            ok_send := chan_send(f, p.ch, p.val)
+            p.res.ok = ok_send
+            p.res.timed_out = false
+        }, &pair, name = "Chan Send Branch"),
+
+        branch(proc(f: ^Fiber, p: ^Chan_Send_Pair) {
+            wait(f, p.timeout_seconds)
+            p.res.timed_out = true
+            p.res.ok = false
+        }, &pair, name = "Chan Send Timeout Branch"),
+    )
+
+    if winner == 1 {
+        return false, true
+    }
+    return res.ok, res.timed_out
+}
+
 // --- Multi-Channel Select (CSP Multiplexer) ---
 
 chan_try_select_recv :: proc(channels: []^Channel($T)) -> (ready_index: int, value: T, ok: bool) {
@@ -2202,5 +2301,39 @@ simulate_until_nil :: proc(
     }
 }
 
+simulate_until_val :: proc(
+    sched: ^Scheduler,
+    step_dt: f32,
+    max_sim_seconds: f64,
+    condition: proc(user_data: $T) -> bool,
+    data: T,
+) -> (condition_met: bool, elapsed_sim_time: f64) where !intrinsics.type_is_pointer(T) {
+    if sched == nil do return false, 0.0
+    dt := step_dt > 0.0 ? step_dt : 0.016
+    start_time := sched.clock.sim_time
+
+    // Temporarily disable watchdog and unpause for high-speed headless simulation
+    prev_watchdog := sched.watchdog_enabled
+    sched.watchdog_enabled = false
+    defer sched.watchdog_enabled = prev_watchdog
+
+    was_paused := sched.clock.is_paused
+    sched.clock.is_paused = false
+    defer sched.clock.is_paused = was_paused
+
+    for {
+        if condition != nil && condition(data) {
+            return true, sched.clock.sim_time - start_time
+        }
+        if sched.clock.sim_time - start_time >= max_sim_seconds {
+            return false, sched.clock.sim_time - start_time
+        }
+        if len(sched.ready_queue) == 0 && len(sched.timer_heap) == 0 && len(sched.real_timer_heap) == 0 && len(sched.tick_waiters) == 0 && len(sched.frame_waiters) == 0 && len(sched.condition_waiters) == 0 {
+            return (condition != nil && condition(data)), sched.clock.sim_time - start_time
+        }
+        scheduler_step(sched, dt)
+    }
+}
+
 // Unified overloaded entry point
-simulate_until :: proc{simulate_until_ptr, simulate_until_nil}
+simulate_until :: proc{simulate_until_ptr, simulate_until_val, simulate_until_nil}

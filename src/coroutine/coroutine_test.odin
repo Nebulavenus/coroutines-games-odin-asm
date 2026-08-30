@@ -8053,3 +8053,234 @@ test_generator_early_destruction_and_clean_state :: proc(t: ^testing.T) {
     testing.expect_value(t, gen.is_done, true)
     testing.expect_value(t, gen.handle, 0)
 }
+
+// ============================================================================
+// Test 181: True ZII Semaphore Unbounded Permits & Multi-Fiber Acquisition
+// ============================================================================
+
+@(test)
+test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // True ZII: 0 permits, max_permits = 0 (unbounded mode)
+    sem: Fiber_Semaphore
+    acquired_count := 0
+
+    Acquire_Ctx :: struct {
+        sem:   ^Fiber_Semaphore,
+        count: ^int,
+    }
+    ctx := Acquire_Ctx{sem = &sem, count = &acquired_count}
+
+    for i in 0 ..< 5 {
+        spawn(&sched, proc(f: ^Fiber, c: ^Acquire_Ctx) {
+            semaphore_acquire(f, c.sem)
+            c.count^ += 1
+        }, &ctx, name = "ZII Sem Consumer")
+    }
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, acquired_count, 0)
+    testing.expect_value(t, wait_queue_count(&sem.waiters), 5)
+
+    // Release 3 permits
+    semaphore_release(&sched, &sem, 3)
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, acquired_count, 3)
+    testing.expect_value(t, wait_queue_count(&sem.waiters), 2)
+
+    // Release 2 more permits
+    semaphore_release(&sched, &sem, 2)
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, acquired_count, 5)
+    testing.expect_value(t, wait_queue_count(&sem.waiters), 0)
+}
+
+// ============================================================================
+// Test 182: Mutex Owner Tracking, Lock State & Safe Handover
+// ============================================================================
+
+@(test)
+test_mutex_owner_tracking_and_unlock_safety :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    testing.expect_value(t, mutex_owner(&m), 0)
+    testing.expect_value(t, mutex_is_locked(&m), false)
+
+    step_log: [dynamic]int
+    step_log = make([dynamic]int, context.allocator)
+    defer delete(step_log)
+
+    Mutex_Test_Ctx :: struct {
+        m:        ^Fiber_Mutex,
+        step_log: ^[dynamic]int,
+        id:       int,
+    }
+
+    ctx1 := Mutex_Test_Ctx{m = &m, step_log = &step_log, id = 1}
+    ctx2 := Mutex_Test_Ctx{m = &m, step_log = &step_log, id = 2}
+
+    h1 := spawn(&sched, proc(f: ^Fiber, c: ^Mutex_Test_Ctx) {
+        mutex_lock(f, c.m)
+        append(c.step_log, c.id * 10 + 1)
+        yield_frame(f)
+        append(c.step_log, c.id * 10 + 2)
+        mutex_unlock(f.sched, c.m)
+    }, &ctx1, name = "Mutex Owner 1")
+
+    h2 := spawn(&sched, proc(f: ^Fiber, c: ^Mutex_Test_Ctx) {
+        mutex_lock(f, c.m)
+        append(c.step_log, c.id * 10 + 1)
+        yield_frame(f)
+        append(c.step_log, c.id * 10 + 2)
+        mutex_unlock(f.sched, c.m)
+    }, &ctx2, name = "Mutex Owner 2")
+
+    // Frame 1: Fiber 1 locks mutex and yields
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, mutex_is_locked(&m), true)
+    testing.expect_value(t, mutex_owner(&m), h1)
+    testing.expect_value(t, len(step_log), 1)
+    testing.expect_value(t, step_log[0], 11)
+
+    // Frame 2: Fiber 1 finishes and unlocks; lock passes to Fiber 2
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, mutex_is_locked(&m), true)
+    testing.expect_value(t, mutex_owner(&m), h2)
+
+    // Frame 3: Fiber 2 finishes and unlocks
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, mutex_is_locked(&m), false)
+    testing.expect_value(t, mutex_owner(&m), 0)
+    testing.expect_value(t, len(step_log), 4)
+    testing.expect_value(t, step_log[0], 11)
+    testing.expect_value(t, step_log[1], 12)
+    testing.expect_value(t, step_log[2], 21)
+    testing.expect_value(t, step_log[3], 22)
+}
+
+// ============================================================================
+// Test 183: Self-Join Deadlock Rejection Guard
+// ============================================================================
+
+@(test)
+test_fiber_self_join_deadlock_guard :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    join_result := true
+
+    spawn(&sched, proc(f: ^Fiber, res: ^bool) {
+        // Attempt self-join
+        ok := fiber_join(f, f.handle)
+        res^ = ok
+    }, &join_result, name = "Self Joiner")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, join_result, false)
+}
+
+// ============================================================================
+// Test 184: Symmetrical CSP Channel Send Timeout
+// ============================================================================
+
+@(test)
+test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Unbuffered channel with no receiver -> send must time out after 0.05s
+    ch: Channel(int)
+    chan_init(&ch, 0)
+    defer chan_destroy(&ch)
+
+    timed_out_flag := false
+    send_ok_flag := true
+
+    Send_Ctx :: struct {
+        ch:        ^Channel(int),
+        timed_out: ^bool,
+        send_ok:   ^bool,
+    }
+    ctx := Send_Ctx{ch = &ch, timed_out = &timed_out_flag, send_ok = &send_ok_flag}
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Send_Ctx) {
+        ok, timed_out := chan_send_timeout(f, c.ch, 42, 0.05)
+        c.send_ok^ = ok
+        c.timed_out^ = timed_out
+    }, &ctx, name = "Timeout Sender")
+
+    // Run past 0.05s timeout
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, timed_out_flag, true)
+    testing.expect_value(t, send_ok_flag, false)
+}
+
+// ============================================================================
+// Test 185: Real-Time Domain Timeouts (with_timeout_real)
+// ============================================================================
+
+@(test)
+test_with_timeout_real_domain_execution :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    timed_out_result := false
+
+    spawn_real(&sched, proc(f: ^Fiber, res: ^bool) {
+        timed_out := with_timeout_real(f, 0.05, proc(f: ^Fiber) {
+            wait_real(f, 0.50) // Runs 500ms, timeout is 50ms
+        }, name = "Long Real-Time Task")
+        res^ = timed_out
+    }, &timed_out_result, name = "Real-Time Timeout Parent")
+
+    // Advance real-time by 100ms
+    for _ in 0 ..< 10 {
+        scheduler_advance_real(&sched, 0.01)
+    }
+
+    testing.expect_value(t, timed_out_result, true)
+}
+
+// ============================================================================
+// Test 186: By-Value Headless Simulation Runner (simulate_until_val)
+// ============================================================================
+
+@(test)
+test_simulate_until_val_by_value_dispatch :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Sim_State :: struct {
+        target_score: int,
+    }
+
+    spawn(&sched, proc(f: ^Fiber) {
+        for i in 1 ..< 100 {
+            f.sched.clock.sim_time += 0.1
+            yield_frame(f)
+        }
+    }, name = "Sim Driver")
+
+    state := Sim_State{target_score = 50}
+
+    met, elapsed := simulate_until(&sched, 0.016, 10.0, proc(s: Sim_State) -> bool {
+        return s.target_score == 50
+    }, state)
+
+    testing.expect_value(t, met, true)
+    testing.expect_value(t, elapsed, 0.0)
+}
+

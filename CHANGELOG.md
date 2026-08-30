@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [True ZII Semaphore Unbounded Permits, Mutex Owner Validation, CSP Send Timeouts & Domain Symmetries] - 2026-08-30
+
+### Fixed
+- **`Fiber_Semaphore` True ZII Unbounded Permits (`src/coroutine/api.odin`)**:
+  - Fixed permit clamping when `sem.max_permits <= 0` (uninitialized/default True ZII state).
+  - Calling `semaphore_release` now allows unconstrained permit accumulation when no upper ceiling is configured.
+- **`Fiber_Mutex` Owner Tracking & Inspection Accessors (`src/coroutine/types.odin`, `api.odin`)**:
+  - Added `owner: Fiber_Handle` to `Fiber_Mutex` (maintaining 32-byte True ZII struct size).
+  - Tracks the exact owning fiber during lock acquisitions and handoffs; added `mutex_owner` and `mutex_is_locked` inline accessors.
+- **`Fiber_Latch` Redundant Countdown Early Exit (`src/coroutine/api.odin`)**:
+  - Added fast guard `if latch.count == 0 do return` to eliminate redundant waiter queue sweeps on duplicate count-downs.
+- **Self-Join Deadlock Guard in `fiber_join` (`src/coroutine/api.odin`)**:
+  - Added `target_handle == f.handle` rejection in `fiber_join`, immediately returning `false` to prevent self-deadlock.
+- **Branch Domain & Wake-Clock Inheritance in `fiber_setup_branches` (`src/coroutine/api.odin`)**:
+  - Child branches in `.Race`, `.Rush`, `.Sync` combinators now inherit `child.wake_clock = f.wake_clock` and use the domain-correct `start_time` (simulation or real-time wall clock).
+
+### Added
+- **`chan_send_timeout` Symmetrical CSP Primitive (`src/coroutine/api.odin`)**:
+  - Implemented timeout-bounded channel sends: `chan_send_timeout(f, ch, value, timeout_seconds) -> (ok: bool, timed_out: bool)`.
+- **`with_timeout_real` Real-Time Domain Timeouts (`src/coroutine/api.odin`)**:
+  - Added overloaded real-time domain timeout combinators (`with_timeout_real_branch`, `with_timeout_real_ptr`, `with_timeout_real_val`, `with_timeout_real_nil`).
+- **`simulate_until_val` Value-Type Simulation Runner (`src/coroutine/api.odin`)**:
+  - Added by-value headless simulation dispatch overload to `simulate_until`.
+- **Unit Tests 181–186 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 181: True ZII Semaphore Unbounded Permits & Multi-Fiber Acquisition.
+  - Test 182: Mutex Owner Tracking, Lock State & Safe Handover.
+  - Test 183: Self-Join Deadlock Rejection Guard.
+  - Test 184: Symmetrical CSP Channel Send Timeout (`chan_send_timeout`).
+  - Test 185: Real-Time Domain Timeouts (`with_timeout_real`).
+  - Test 186: By-Value Headless Simulation Runner (`simulate_until_val`).
+  - Test suite expanded to **186 / 186 unit tests passing** (100% with 0 memory leaks across all 12 build matrix targets).
+
 ## [Symmetrical CSP Rendezvous, Join Sibling Isolation & Precision Timing] - 2026-08-30
 
 ### Fixed
