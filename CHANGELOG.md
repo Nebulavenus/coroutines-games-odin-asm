@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Comprehensive Logic & Concurrency Hardening] - 2026-08-30
+
+### Fixed
+- **Unbuffered Channel Multi-Sender FIFO & Symmetrical Rendezvous (`src/coroutine/api.odin`)**:
+  - Prevented buffer overwriting and lost messages when multiple senders attempt to send on an unbuffered channel (`capacity == 0`) before a receiver arrives. Senders now queue cleanly in `send_waiters` without clobbering `ch.buffer[0]`.
+  - Added automatic wake-up of the next waiting sender when an unbuffered rendezvous finishes, enabling seamless continuous multi-message throughput in FIFO order.
+- **Unbuffered Sender Cancellation & Abort Cleanup (`src/coroutine/api.odin`)**:
+  - Registered an intrusive cleanup callback on unbuffered senders waiting in rendezvous. If a sender is cancelled or aborted mid-rendezvous, `ch.count` is safely reset to 0, preventing ghost messages or stalled channels.
+- **Real-Time Fiber & Ticker Execution When Simulation is Paused (`src/coroutine/api.odin`)**:
+  - Implemented `yield_real(f)` and updated `wait_real(f, 0.0)` / real-time `Ticker` to yield to the real-time clock domain instead of simulation `frame_waiters`, completely eliminating UI/ticker freezes when the game is paused.
+- **Fiber Recycle & Pool Sanitization (`src/coroutine/pool.odin`)**:
+  - Sanitized all fiber state fields upon acquisition and recycling (`wake_clock = .Sim_Scaled`, `wake_ticks = 0`, `next_in_scope = nil`, `prev_in_scope = nil`, `cleanup_proc = nil`, `cleanup_data = nil`, `condition_data = nil`), eliminating stale real-time clock inheritance and dirty scope links across generational pool reuse.
+- **Cleanup User Data Isolation (`src/coroutine/types.odin`, `api.odin`, `pool.odin`, `scheduler.odin`)**:
+  - Added dedicated `cleanup_data: rawptr` to `Fiber` struct. `fiber_set_cleanup(f, proc, data)` no longer clobbers `fiber.user_data`, preserving entry arguments and payload storage integrity.
+- **Defensive Scheduler & Scope Destruction (`src/coroutine/scheduler.odin`)**:
+  - `scheduler_destroy` now cleanly detaches all active fibers from external `Fiber_Scope` instances (`fiber_scope_detach`), preventing dangling node pointers in outliving scopes.
+  - Added defensive null-guards to `async_token_init`, `async_token_complete`, and hierarchy unlinking (`fiber_unlink_child`).
+
+### Added
+- **Unit Tests 163–169 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 163: Unbuffered channel multi-sender concurrent rendezvous safety (zero data loss across 3 senders and 1 receiver).
+  - Test 164: Unbuffered channel sender abort cleanup and ghost message prevention.
+  - Test 165: Real-time fiber paused yield safety via `yield_real` and `wait_real(f, 0.0)` (continuous stepping while paused).
+  - Test 166: Real-time `Ticker` continuous execution while simulation clock is paused.
+  - Test 167: `fiber_set_cleanup` user data isolation and callback fidelity.
+  - Test 168: Fiber pool recycle wake clock sanitization from `.Real_Time` back to `.Sim_Scaled`.
+  - Test 169: `scheduler_destroy` external `Fiber_Scope` clean detachment and zeroing.
+  - Test suite expanded to **169 / 169 unit tests passing** (100% with 0 memory leaks across all 12 build matrix configurations).
+
 ## [Code Purity & Legacy Fallback Pruning] - 2026-08-30
 
 ### Refactored

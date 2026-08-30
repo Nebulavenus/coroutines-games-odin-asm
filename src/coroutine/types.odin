@@ -178,6 +178,7 @@ Fiber :: struct {
     user_fn:          rawptr,          // Function pointer for generic/value entry thunks
     payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
     cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
+    cleanup_data:     rawptr,                  // Dedicated user data pointer for cleanup proc
 
     // --- Isolated Temporary Allocator ---
     temp_arena:        mem.Arena,

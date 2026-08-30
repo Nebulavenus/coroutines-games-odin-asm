@@ -170,7 +170,7 @@ wait :: proc(f: ^Fiber, seconds: f32) {
 wait_real :: proc(f: ^Fiber, seconds: f32) {
     if f == nil || f.sched == nil do return
     if seconds <= 0.0 {
-        yield_frame(f)
+        yield_real(f)
         return
     }
 
@@ -329,6 +329,18 @@ yield_frame :: proc(f: ^Fiber) {
     wait_frames(f, 1)
 }
 
+yield_real :: proc(f: ^Fiber) {
+    if f == nil || f.sched == nil do return
+    f.wake_time = f.sched.clock.real_time
+    f.wake_clock = .Real_Time
+    f.status = .Sleeping_Real_Time
+    real_timer_heap_push(f.sched, f)
+
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
 // ============================================================================
 // Zero-Drift Periodic Ticker
 // ============================================================================
@@ -362,16 +374,18 @@ ticker_wait :: proc(f: ^Fiber, t: ^Ticker) {
             wait(f, remaining)
         }
     } else {
-        yield_frame(f)
+        if t.use_real {
+            yield_real(f)
+        } else {
+            yield_frame(f)
+        }
     }
 }
 
 fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
     if f == nil do return
     f.cleanup_proc = cleanup_proc
-    if user_data != nil {
-        f.user_data = user_data
-    }
+    f.cleanup_data = user_data
 }
 
 scheduler_set_watchdog :: proc(sched: ^Scheduler, enabled: bool, max_slice_ms: f64 = 100.0) {
@@ -1443,11 +1457,13 @@ latch_is_ready :: #force_inline proc(latch: ^Fiber_Latch) -> bool {
 // ============================================================================
 
 async_token_init :: proc(token: ^Async_Token) {
+    if token == nil do return
     token.state = .Pending
     token.waiter_fiber = nil
 }
 
 async_token_complete :: proc(token: ^Async_Token, success := true) {
+    if token == nil do return
     intrinsics.atomic_store(&token.state, success ? .Completed : .Failed)
 }
 
@@ -1623,29 +1639,63 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
         if ch.is_closed do return false
 
         if ch.capacity == 0 {
-            for {
-                receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
-                if !popped do break
-                if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
-                    ch.buffer[0] = value
-                    ch.count = 1
-                    receiver.status = .Ready
-                    append(&receiver.sched.ready_queue, receiver)
-                    return true
+            if ch.count == 0 {
+                for {
+                    receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
+                    if !popped do break
+                    if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
+                        ch.buffer[0] = value
+                        ch.count = 1
+                        receiver.status = .Ready
+                        append(&receiver.sched.ready_queue, receiver)
+                        return true
+                    }
                 }
+
+                // Unbuffered rendezvous: store value in buffer[0], set count = 1, and wait for receiver
+                ch.buffer[0] = value
+                ch.count = 1
+
+                cleanup_unbuf_sender :: proc(user_data: rawptr) {
+                    chan_ptr := (^Channel(T))(user_data)
+                    if chan_ptr != nil && chan_ptr.capacity == 0 && chan_ptr.count > 0 {
+                        chan_ptr.count = 0
+                    }
+                }
+                f.cleanup_proc = cleanup_unbuf_sender
+                f.cleanup_data = rawptr(ch)
+
+                wait_queue_push_back(&ch.send_waiters, f)
+                f.status = .Suspended_Join
+                f.stored_context = context
+                fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+                context = f.stored_context
+
+                f.cleanup_proc = nil
+                f.cleanup_data = nil
+
+                // If other unbuffered senders are queued, wake the next one to take its turn
+                for {
+                    next_sender, popped := wait_queue_pop_front(&ch.send_waiters)
+                    if !popped do break
+                    if next_sender != nil && next_sender.status == .Suspended_Join && fiber_is_alive(next_sender.sched, next_sender.handle) {
+                        next_sender.status = .Ready
+                        append(&next_sender.sched.ready_queue, next_sender)
+                        break
+                    }
+                }
+
+                if ch.is_closed && ch.count > 0 do return false
+                return true
             }
 
-            // Unbuffered rendezvous: store value in buffer[0], set count = 1, and wait for receiver
-            ch.buffer[0] = value
-            ch.count = 1
+            // Another unbuffered sender is already waiting in rendezvous; wait in send_waiters
             wait_queue_push_back(&ch.send_waiters, f)
             f.status = .Suspended_Join
             f.stored_context = context
             fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
             context = f.stored_context
-
-            if ch.is_closed && ch.count > 0 do return false
-            return true
+            continue
         } else if ch.count < ch.capacity {
             ch.buffer[ch.tail] = value
             ch.tail = (ch.tail + 1) % len(ch.buffer)

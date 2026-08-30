@@ -7202,4 +7202,301 @@ test_intrusive_fiber_scope_lifecycle :: proc(t: ^testing.T) {
     testing.expect_value(t, f3_done, false)
 }
 
+// ============================================================================
+// Test 163: Unbuffered Channel Multi-Sender Rendezvous Safety (Zero Data Loss)
+// ============================================================================
+
+@(test)
+test_chan_unbuffered_multi_sender_rendezvous :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 0)
+    defer chan_destroy(&ch)
+
+    results: [dynamic]int
+    defer delete(results)
+
+    Send_Context :: struct {
+        ch:  ^Channel(int),
+        val: int,
+    }
+    s1 := Send_Context{ch = &ch, val = 100}
+    s2 := Send_Context{ch = &ch, val = 200}
+    s3 := Send_Context{ch = &ch, val = 300}
+
+    // Spawn 3 concurrent senders on unbuffered channel
+    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
+        chan_send(f, ctx.ch, ctx.val)
+    }, &s1, name = "Sender 1")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
+        chan_send(f, ctx.ch, ctx.val)
+    }, &s2, name = "Sender 2")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
+        chan_send(f, ctx.ch, ctx.val)
+    }, &s3, name = "Sender 3")
+
+    Recv_Context :: struct {
+        ch:      ^Channel(int),
+        results: ^[dynamic]int,
+    }
+    rctx := Recv_Context{ch = &ch, results = &results}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Recv_Context) {
+        for i := 0; i < 3; i += 1 {
+            val, ok := chan_recv(f, ctx.ch)
+            if ok {
+                append(ctx.results, val)
+            }
+        }
+    }, &rctx, name = "Receiver")
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, len(results), 3)
+    if len(results) == 3 {
+        testing.expect_value(t, results[0], 100)
+        testing.expect_value(t, results[1], 200)
+        testing.expect_value(t, results[2], 300)
+    }
+    testing.expect_value(t, chan_count(&ch), 0)
+}
+
+// ============================================================================
+// Test 164: Unbuffered Channel Sender Abort Cleanup (Ghost Message Prevention)
+// ============================================================================
+
+@(test)
+test_chan_unbuffered_sender_abort_cleanup :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, capacity = 0)
+    defer chan_destroy(&ch)
+
+    sender_h := spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        chan_send(f, ch, 999) // Will suspend waiting for receiver
+    }, &ch, name = "Aborting Sender")
+
+    // Step scheduler: sender puts 999 into buffer[0], count = 1, and suspends in send_waiters
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, chan_count(&ch), 1)
+    testing.expect_value(t, chan_send_waiter_count(&ch), 1)
+
+    // Abort the sender while waiting in rendezvous
+    cancelled := fiber_cancel(&sched, sender_h)
+    testing.expect_value(t, cancelled, true)
+    // Cleanup proc must reset ch.count = 0 and remove from send_waiters
+    testing.expect_value(t, chan_count(&ch), 0)
+    testing.expect_value(t, chan_send_waiter_count(&ch), 0)
+
+    // Now spawn a valid sender with 42
+    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
+        chan_send(f, ch, 42)
+    }, &ch, name = "Valid Sender")
+
+    received_val := 0
+    Recv_Target :: struct {
+        ch:  ^Channel(int),
+        out: ^int,
+    }
+    target := Recv_Target{ch = &ch, out = &received_val}
+    spawn_ptr(&sched, proc(f: ^Fiber, t: ^Recv_Target) {
+        val, ok := chan_recv(f, t.ch)
+        if ok {
+            t.out^ = val
+        }
+    }, &target, name = "Actual Receiver")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, received_val, 42)
+    testing.expect_value(t, chan_count(&ch), 0)
+}
+
+// ============================================================================
+// Test 165: Real-Time Fiber Paused Yield Safety (No Freeze in Frame Waiters)
+// ============================================================================
+
+@(test)
+test_real_time_fiber_paused_yield :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Pause simulation clock
+    scheduler_set_paused(&sched, true)
+
+    step_count := 0
+    spawn_real(&sched, proc(f: ^Fiber, counter: ^int) {
+        for i := 0; i < 5; i += 1 {
+            counter^ += 1
+            if i % 2 == 0 {
+                yield_real(f)
+            } else {
+                wait_real(f, 0.0) // Must not freeze in frame_waiters when paused!
+            }
+        }
+    }, &step_count, name = "Realtime Paused Worker")
+
+    // Run 5 steps while paused
+    for i := 0; i < 5; i += 1 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, step_count, 5)
+}
+
+// ============================================================================
+// Test 166: Real-Time Ticker Paused Execution Safety
+// ============================================================================
+
+@(test)
+test_real_time_ticker_paused_zero_freeze :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    scheduler_set_paused(&sched, true)
+
+    ticks := 0
+    spawn_real(&sched, proc(f: ^Fiber, counter: ^int) {
+        t: Ticker
+        ticker_init(&t, 0.01, use_real_time = true)
+        for i := 0; i < 4; i += 1 {
+            ticker_wait(f, &t)
+            counter^ += 1
+        }
+    }, &ticks, name = "Realtime Ticker Worker")
+
+    for i := 0; i < 5; i += 1 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, ticks, 4)
+}
+
+// ============================================================================
+// Test 167: Fiber Cleanup Callback Preserves User Data
+// ============================================================================
+
+@(test)
+test_fiber_cleanup_preserves_user_data :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    entry_data := 777
+    cleanup_called := false
+    cleanup_received_val := 0
+    entry_read_val := 0
+
+    Cleanup_Context :: struct {
+        called: ^bool,
+        out:    ^int,
+        val:    int,
+    }
+    cctx := Cleanup_Context{called = &cleanup_called, out = &cleanup_received_val, val = 999}
+
+    Worker_Context :: struct {
+        data_in:  ^int,
+        data_out: ^int,
+    }
+    wctx := Worker_Context{data_in = &entry_data, data_out = &entry_read_val}
+
+    worker_h := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Worker_Context) {
+        ctx.data_out^ = ctx.data_in^
+    }, &wctx, name = "Clean Worker")
+
+    if fiber := fiber_find_by_handle(&sched, worker_h); fiber != nil {
+        fiber_set_cleanup(fiber, proc(user_data: rawptr) {
+            ctx := (^Cleanup_Context)(user_data)
+            ctx.called^ = true
+            ctx.out^ = ctx.val
+        }, &cctx)
+    }
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, entry_read_val, 777)
+    testing.expect_value(t, cleanup_called, true)
+    testing.expect_value(t, cleanup_received_val, 999)
+    testing.expect_value(t, entry_data, 777)
+}
+
+// ============================================================================
+// Test 168: Fiber Pool Recycle Wake Clock Sanitization
+// ============================================================================
+
+@(test)
+test_fiber_pool_recycle_wake_clock_sanitization :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    real_clock_observed: Time_Clock
+    sim_clock_observed: Time_Clock
+
+    // Spawn real-time fiber
+    h_real := spawn_real(&sched, proc(f: ^Fiber, out: ^Time_Clock) {
+        out^ = f.wake_clock
+    }, &real_clock_observed, name = "Real Worker")
+
+    scheduler_step(&sched, 0.016)
+
+    // Now spawn a standard fiber which will acquire the recycled fiber
+    h_sim := spawn(&sched, proc(f: ^Fiber, out: ^Time_Clock) {
+        out^ = f.wake_clock
+    }, &sim_clock_observed, name = "Sim Worker")
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, real_clock_observed, Time_Clock.Real_Time)
+    testing.expect_value(t, sim_clock_observed, Time_Clock.Sim_Scaled)
+    testing.expect_value(t, fiber_is_alive(&sched, h_real), false)
+    testing.expect_value(t, fiber_is_alive(&sched, h_sim), false)
+}
+
+// ============================================================================
+// Test 169: Scheduler Destroy External Scope Detachment Safety
+// ============================================================================
+
+@(test)
+test_scheduler_destroy_scope_detachment :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+
+    scope: Fiber_Scope
+
+    spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    }, scope = &scope, name = "Scoped Fiber 1")
+
+    spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    }, scope = &scope, name = "Scoped Fiber 2")
+
+    spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    }, scope = &scope, name = "Scoped Fiber 3")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, scope_active_count(&scope), 3)
+
+    // Destroy scheduler while scope has active fibers
+    scheduler_destroy(&sched)
+
+    // Scope must be completely detached and zeroed
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect_value(t, scope_is_busy(&scope), false)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+    testing.expect(t, scope.head == nil)
+    testing.expect(t, scope.tail == nil)
+}
+
 

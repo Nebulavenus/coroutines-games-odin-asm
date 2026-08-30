@@ -1,191 +1,176 @@
-# Universal TokToken MCP Enforcement, Navigation & Engineering Directives
+# Universal TokToken MCP Enforcement & Engineering Manual
 
-> **MANDATORY DIRECTIVE FOR ALL CODING AGENTS**:
-> This repository is semantically indexed and managed by **TokToken MCP**. You are **STRICTLY PROHIBITED** from using native file reading tools (`view_file`) or unconstrained pattern searches (`grep_search`) on source code files. All code exploration, symbol navigation, context assembly, dependency tracing, and impact analysis **MUST** be performed via the `toktoken` MCP gateway (`call_mcp_tool`).
-
----
-
-## 1. File Routing & Tool Prohibitions
-
-Native tool usage on source files causes severe context dilution, token exhaustion, and lost reasoning fidelity. Follow these routing boundaries without exception:
-
-### 🚫 Strictly Banned for `view_file` & Native `grep_search`
-Never use native inspection tools on any indexed source language files:
-* **Compiled / Systems**: `.c`, `.h`, `.cpp`, `.hpp`, `.cc`, `.cxx`, `.rs`, `.go`, `.odin`, `.zig`, `.d`, `.nim`
-* **Managed / Enterprise**: `.cs`, `.java`, `.kt`, `.kts`, `.scala`, `.swift`
-* **Scripting / Dynamic**: `.py`, `.rb`, `.php`, `.lua`, `.pl`, `.sh`, `.bash`, `.zsh`
-* **Web / Frontend**: `.js`, `.jsx`, `.mjs`, `.ts`, `.tsx`, `.vue`, `.svelte`
-
-### ✅ Permitted `view_file` Exceptions (Non-Code Documentation & Configs Only)
-`view_file` is authorized **ONLY** for static text, project meta-documentation, and configuration manifests:
-* `*.md`, `*.markdown`, `*.txt`, `*.rst`
-* `*.json`, `*.toml`, `*.yaml`, `*.yml`, `*.ini`, `*.env*`
-* Build scripts / CLI wrappers: `*.ps1`, `*.sh`, `Makefile`, `Justfile`, `CMakeLists.txt`
-
-### ⚡ Universal Intent-to-Tool Dispatch Matrix
-
-| Intent / Action | ❌ FORBIDDEN Native Tool | ✅ MANDATORY TokToken MCP Tool | Invocation Arguments |
-| :--- | :--- | :--- | :--- |
-| **Locate symbol / function / type** | `grep_search` | `search_symbols` | `{"query": "name", "kind": "function,class", "compact": true}` |
-| **Inspect complete symbol + context** | `view_file` | `inspect_bundle` | `{"id": "path/file.ext::symbol#kind", "compact": true}` |
-| **Read exact symbol source body** | `view_file` | `inspect_symbol` | `{"id": "path/file.ext::symbol#kind", "compact": true}` |
-| **Search string literals / comments** | `grep_search` | `search_text` | `{"query": "literal", "filter": "src", "group_by": "file"}` |
-| **Explore file outline / signatures** | `view_file` | `inspect_outline` | `{"file": "path/file.ext", "compact": true}` |
-| **Read non-symbol bounded lines** | `view_file` | `inspect_file` | `{"file": "path/file.ext", "lines": "10-45"}` |
-| **Find call-sites of function** | `grep_search` | `find_callers` | `{"id": "path/file.ext::symbol#kind"}` |
-| **Trace import references** | `grep_search` | `find_references` | `{"id": "path/file.ext::symbol#kind"}` |
-| **Trace file import dependencies** | `grep_search` | `inspect_dependencies` | `{"file": "path/file.ext", "depth": 2}` |
-| **Impact analysis before editing** | `grep_search` | `inspect_blast_radius` | `{"id": "path/file.ext::symbol#kind"}` |
-| **Explore workspace / project tree** | `list_dir` | `suggest` / `inspect_tree` | `{"depth": 2}` |
-| **Re-index single file after edit** | *None* | `index_file` | `{"file": "path/file.ext"}` |
+> [!IMPORTANT]
+> **MANDATORY INSTRUCTION FOR ALL AI CODING AGENTS**:
+> This repository is indexed and managed by **TokToken v0.6.0**. You are **STRICTLY PROHIBITED** from using native whole-file reading tools (`view_file`) or unconstrained pattern searches (`grep_search`) on source code files. All code exploration, symbol navigation, context assembly, dependency tracing, and impact analysis **MUST** be performed via the `toktoken` Dynamic Universal MCP Gateway (`call_mcp_tool`).
 
 ---
 
-## 2. Complete 27-Tool TokToken MCP Catalog
+## 1. Tool Routing Boundaries & Hard Directives
 
-All tools are executed via `call_mcp_tool(ServerName="toktoken", ToolName="", Arguments={})`. Always pass `"compact": true` to minimize token payload overhead.
+> [!CAUTION]
+> ### Strictly Forbidden on Source Files (`.c`, `.h`, `.odin`, `.rs`, `.go`, `.py`, `.ts`, `.js`, `.cpp`, `.cs`, `.java`, `.php`, `.zig`, etc.)
+> - **NEVER** call `view_file` to read source files, headers, or implementations.
+> - **NEVER** run unconstrained `grep_search` or `find_by_name` across the codebase.
+> - **NEVER** use `inspect_file` to scan or browse source files (causes severe context leaks).
 
-### 2.1 Index Lifecycle & Workspace Management
-* **`codebase_detect`**: Verify if a given directory is an indexed codebase.
-  * *Arguments*: `{"path": "optional/project/path"}`
-* **`index_create`**: Initialize and generate a full SQLite symbol index.
-  * *Arguments*: `{"path": ".", "full": false, "include": ["vendor"], "languages": "c,cpp,odin,rust"}`
-* **`index_update`**: Perform incremental re-indexing based on file content hashing.
-  * *Arguments*: `{"path": "."}`
-* **`index_file`**: **Mandatory post-edit sync.** Re-indexes a single modified file in-place immediately.
-  * *Arguments*: `{"file": "src/core/engine.ext"}`
-* **`index_github`**: Clone and build an index for any remote public GitHub repository without polluting local workspace.
-  * *Arguments*: `{"repository": "owner/repo"}`
-* **`projects_list`**: Enumerate all indexed projects, cache database paths, and index timestamps.
-  * *Arguments*: `{}`
-* **`cache_clear`**: Purge project index or entire global TokToken cache.
-  * *Arguments*: `{"path": "..."}` or `{"all": true, "force": true}`
-
-### 2.2 Semantic Code Discovery & Search
-* **`suggest`**: Repository onboarding metadata (language distribution, symbol density, top entrypoints, key imports).
-  * *Arguments*: `{}`
-* **`search_symbols`**: FTS5 symbol lookup with centrality scoring, kind filtering, and ranking.
-  * *Arguments*: `{"query": "init_session", "kind": "function,method", "limit": 10, "compact": true}`
-* **`search_text`**: Fast ripgrep-backed literal/regex search with file grouping and context lines.
-  * *Arguments*: `{"query": "TODO:", "group_by": "file", "filter": "src", "context": 2, "limit": 15}`
-* **`search_similar`**: Discover symbols with structural, naming, or signature similarity to a target symbol ID.
-  * *Arguments*: `{"id": "src/auth.py::TokenValidator#class", "limit": 5}`
-* **`search_cooccurrence`**: Find files where two or more architectural concepts/symbols appear together.
-  * *Arguments*: `{"query": "Mutex,ThreadPool", "limit": 10}`
-
-### 2.3 Inspection, Slicing & Context Assembly
-* **`inspect_bundle`**: **Primary context retrieval tool.** Returns definition source, import list, type dependencies, and local outline in one call.
-  * *Arguments*: `{"id": "src/parser.rs::parse_expr#function", "format": "markdown", "compact": true}`
-* **`inspect_symbol`**: Retrieve the exact source implementation of one or more symbols. Comma-separate IDs for batching.
-  * *Arguments*: `{"id": "path/file.ext::symA#function,path/file.ext::symB#type", "compact": true}`
-* **`inspect_outline`**: Retrieve hierarchical symbol table of a file without source code bodies.
-  * *Arguments*: `{"file": "src/pipeline.cpp", "compact": true}`
-* **`inspect_file`**: Windowed line-range viewing for non-symbol blocks (e.g. constant arrays, header directives).
-  * *Arguments*: `{"file": "src/config.h", "lines": "25-60"}`
-* **`inspect_tree`**: Render directory and file hierarchy up to a defined depth.
-  * *Arguments*: `{"depth": 2, "compact": true}`
-* **`inspect_hierarchy`**: Class/type inheritance tree and nested member relationships.
-  * *Arguments*: `{"file": "src/models/user.ts"}`
-
-### 2.4 Graph, Dependency & Impact Analysis
-* **`find_callers`**: Identify all functions, methods, or symbols calling a target symbol ID.
-  * *Arguments*: `{"id": "src/db.go::Connect#function"}`
-* **`find_references`**: Identify all direct import statements and identifier references targeting a symbol.
-  * *Arguments*: `{"id": "src/utils.py::format_date#function", "check": false}`
-* **`find_importers`**: List all files across the project that directly import the specified file.
-  * *Arguments*: `{"file": "src/types.h"}`
-* **`inspect_dependencies`**: Recursively trace the entire outbound import graph of a file.
-  * *Arguments*: `{"file": "src/main.rs", "depth": 3}`
-* **`inspect_blast_radius`**: **Mandatory refactor check.** Transitive reverse dependency analysis showing all files/symbols affected by modifying target.
-  * *Arguments*: `{"id": "src/api.ts::UserSchema#type"}`
-* **`inspect_cycles`**: Detect circular import chains across the workspace dependency graph.
-  * *Arguments*: `{}`
-* **`find_dead`**: Identify unreferenced symbols, dead functions, and unused exports across the codebase.
-  * *Arguments*: `{"exclude_tests": true}`
-
-### 2.5 Metrics & Documentation
-* **`stats`**: Retrieve session token savings, indexing throughput, and database size.
-  * *Arguments*: `{}`
-* **`help`**: Inspect schemas, parameter definitions, and CLI documentation for any TokToken tool.
-  * *Arguments*: `{"command": "search_symbols"}`
+> [!NOTE]
+> ### Permitted Native Tool Usages
+> - `view_file`: Non-code documentation and configuration files ONLY (`README.md`, `AGENTS.md`, `*.json`, `*.toml`, `*.yaml`, `*.env`, build manifests).
+> - `replace_file_content`: Surgical source modifications.
+> - `run_command`: Subprocess, build, test, and shell executions (wrap compiler/test tasks with `toktoken exec -- <cmd>`).
 
 ---
 
-## 3. Multi-Language AST to Canonical Kind Taxonomy
+## 2. Dynamic Universal Gateway Protocol
 
-TokToken normalizes language-specific syntax into **15 canonical kinds**. Never query language-specific syntax terms (e.g., `proc`, `struct`, `fn`, `typedef`). Use the taxonomy below:
+All MCP operations route through the single unified `toktoken` gateway tool:
 
-| Language | `language` Filter | Native Language Construct | Mapped Canonical Kind (`kind`) |
-| :--- | :--- | :--- | :--- |
-| **C / C++** | `c`, `cpp` | `struct`, `class``function`, prototypemethod`typedef`, `union``#define`, macro`enum` | `class``function``method``type``constant``enum` |
-| **Rust** | `rust` | `fn` (standalone)`fn` (inside `impl`)`struct`, `enum``trait``type` alias`macro_rules!` | `function``method``class`, `enum``trait``type``constant` |
-| **Go** | `go` | `func` (package level)`func` (receiver method)`struct``interface``type` alias / def | `function``method``class``interface``type` |
-| **Python** | `python` | `def` (module function)`def` (class method)`class`module-level constant / variable | `function``method``class``constant`, `variable` |
-| **TypeScript / JS**| `typescript`, `javascript` | `function`, arrow function`class``interface`, `type`class method / getter`const`, `let` | `function``class``interface`, `type``method``constant`, `variable` |
-| **Odin** | `odin` | `proc` / procedure`struct``enum``union`, `bit_set`, `distinct`constant values | `function``class``enum``type``constant` |
-| **Zig** | `zig` | `fn``struct`, `enum`, `union``const` declarations | `function``class`, `enum`, `type``constant` |
-| **C# / Java** | `csharp`, `java` | `class`, `record``interface``enum`methodfield, property | `class``interface``enum``method``property`, `variable` |
-| **PHP** | `php` | `function``class``trait`, `interface`class method | `function``class``trait`, `interface``method` |
-| **Markdown / Docs**| `markdown` | `# Heading 1``## Heading 2``### Heading 3+` | `chapter``section``subsection` |
-
----
-
-## 4. Standard Operational Protocols
-
-### Protocol 1: Targeted Symbol Discovery (2 Steps)
 ```json
-// Step 1: Discover the precise symbol identifier
 call_mcp_tool(
   ServerName="toktoken",
-  ToolName="search_symbols",
-  Arguments={"query": "process_event", "kind": "function,method", "limit": 5, "compact": true}
+  ToolName="toktoken",
+  Arguments={
+    "action": "<action_or_subtool>",
+    "target": "<query_or_symbol_or_path>",
+    "options": {
+      "compact": true,
+      "limit": 10
+    }
+  }
 )
-
-// Step 2: Inspect full definition, dependencies, and enclosing context
-call_mcp_tool(
-  ServerName="toktoken",
-  ToolName="inspect_bundle",
-  Arguments={"id": "src/events/dispatcher.ext::process_event#function", "compact": true}
-)
-
 ```
 
-### Protocol 2: Safe Modification & Synchronization Loop (Strict 4-Step Cycle)
+> [!TIP]
+> ### The Deterministic 4-Step Modification Loop
+> Every source code modification MUST follow this strict cycle:
+> 1. **Inspect**: `toktoken(action="inspect", target="path/file.ext::symbol#kind")` (or `action="inspect_bundle"`)
+> 2. **Edit**: `replace_file_content(TargetFile="...", TargetContent="...", ReplacementContent="...")`
+> 3. **Sync**: `toktoken(action="index", target="path/to/modified_file.ext")` *(Mandatory immediately after write)*
+> 4. **Verify**: `run_command(CommandLine="toktoken exec -- <build/test command>")`
 
+---
+
+## 3. Complete TokToken Command Catalog (All 27 Capabilities)
+
+All sub-actions are executed via `ToolName="toktoken"`. Target parameters automatically map to the appropriate subtool:
+
+### 3.1 Code Search & Discovery
+| Action / Subtool | Target Format | Key Options | Description & Usage |
+| :--- | :--- | :--- | :--- |
+| `"search"` / `"search_symbols"` | `"query"` | `{"kind": "function,class", "compact": true, "limit": 10}` | Search symbols across languages with rank weighting. |
+| `"search_text"` / `"grep"` | `"pattern"` | `{"filter": "src", "group_by": "file", "limit": 10}` | Literal string or regex code search (always filter directory). |
+| `"search_similar"` | `"path::symbol#kind"` | `{"limit": 5}` | Discover related symbols or alternative implementations. |
+| `"search_cooccurrence"` | `"SymbolA,SymbolB"` | `{"limit": 5}` | Find files sharing architectural patterns or co-occurring symbols. |
+| `"suggest"` / `"overview"` | `""` | `{}` | Overview of unfamiliar repos (entrypoints, distributions, keywords). |
+
+### 3.2 Code Inspection & Context Assembly
+| Action / Subtool | Target Format | Key Options | Description & Usage |
+| :--- | :--- | :--- | :--- |
+| `"inspect"` / `"inspect_symbol"` | `"path::symbol#kind"` | `{"compact": true, "virtual": false}` | Retrieve exact definition source code (comma-separate IDs for batching). |
+| `"inspect_bundle"` | `"path::symbol#kind"` | `{"compact": true, "format": "markdown"}` | **Primary context tool**: source + imports + outline + siblings in one turn. |
+| `"inspect_outline"` | `"path/to/file.ext"` | `{"compact": true}` | File symbol table of contents (without implementation bodies). |
+| `"inspect_file"` | `"path/to/file.ext"` | `{"lines": "10-45"}` | Bounded line viewing for non-symbol blocks ONLY (max 35 lines). |
+| `"inspect_tree"` | `""` | `{"depth": 2}` | High-level workspace directory structure. |
+| `"inspect_hierarchy"` | `"path/to/file.ext"` | `{}` | Class/type inheritance tree and nested member hierarchy. |
+
+### 3.3 Dependency Graph & Impact Analysis
+| Action / Subtool | Target Format | Key Options | Description & Usage |
+| :--- | :--- | :--- | :--- |
+| `"graph"` / `"find_callers"` | `"path::symbol#kind"` | `{}` | Locate all call-sites of a function/method across the project. |
+| `"inspect_blast_radius"` | `"path::symbol#kind"` | `{}` | **Mandatory before API refactors.** Reverse transitive dependency impact. |
+| `"find_references"` | `"path::symbol#kind"` | `{"check": false}` | Find import statements and identifier references targeting a symbol. |
+| `"find_importers"` | `"path/to/file.ext"` | `{}` | List all files that directly import the specified file. |
+| `"inspect_dependencies"` / `"deps"` | `"path/to/file.ext"` | `{"depth": 2}` | Recursively trace outbound import dependencies of a file. |
+| `"inspect_cycles"` | `""` | `{"cross_dir": true}` | Detect circular import chains across the dependency graph. |
+| `"find_dead"` / `"unused"` | `""` | `{"exclude_tests": true}` | Detect unreferenced symbols, dead functions, and unused exports. |
+
+### 3.4 Index Lifecycle & Project Admin
+| Action / Subtool | Target Format | Key Options | Description & Usage |
+| :--- | :--- | :--- | :--- |
+| `"index"` / `"index_file"` | `"path/to/file.ext"` | `{}` | **Mandatory post-edit sync.** Re-index a single modified file in-place. |
+| `"index_update"` | `""` | `{}` | Incremental multi-file sync based on content hashes. |
+| `"index_create"` | `""` | `{"full": true}` | Rebuild complete SQLite index database from scratch. |
+| `"index_github"` | `"owner/repo"` | `{}` | Clone and build index for a remote public GitHub repo. |
+| `"codebase_detect"` | `""` | `{}` | Check if repository index database is active. |
+| `"stats"` | `""` | `{}` | Review session token savings, indexing throughput, and database size. |
+| `"projects_list"` | `""` | `{}` | List all indexed workspaces and index timestamps. |
+| `"cache_clear"` | `""` | `{"all": true, "force": true}` | Purge index cache for current project or globally. |
+| `"help"` | `"tool_name"` | `{}` | View parameter schemas, usage examples, and canonical kinds. |
+
+---
+
+## 4. Multi-Language 15 Canonical Kinds Taxonomy
+
+Never query language-specific syntax keywords (e.g. `proc`, `struct`, `fn`, `typedef`). Use the 15 canonical kinds below:
+
+- **Code**: `class`, `interface`, `trait`, `enum`, `function`, `method`, `constant`, `property`, `variable`, `namespace`, `type`, `directive`
+- **Documentation**: `chapter` (`#`), `section` (`##`), `subsection` (`###+`)
+
+| Language | `language` Filter | Native Language Constructs | Mapped Canonical Kind (`kind`) |
+| :--- | :--- | :--- | :--- |
+| **Odin** | `odin` | `proc` / procedure<br>`struct`<br>`enum`<br>`union`, `bit_set`, `distinct`<br>constant values | `function`<br>`class`<br>`enum`<br>`type`<br>`constant` |
+| **Rust** | `rust` | `fn` (standalone / method)<br>`struct`, `impl`<br>`trait`<br>`enum`<br>`macro`<br>`mod` | `function`, `method`<br>`class`<br>`trait`<br>`enum`<br>`constant`<br>`namespace` |
+| **Go** | `go` | `func` (package level / method)<br>`struct`<br>`interface`<br>`package`<br>`type` alias / def | `function`, `method`<br>`class`<br>`interface`<br>`namespace`<br>`type` |
+| **C / C++** | `c` / `cpp` | `struct`, `class`<br>function / prototype<br>method<br>`typedef`, `union`<br>`#define`, macro<br>`enum` | `class`<br>`function`<br>`method`<br>`type`<br>`constant`<br>`enum` |
+| **TypeScript / JS** | `typescript` / `javascript` | `class`<br>`interface`<br>`type` alias<br>`function`, arrow function<br>`method`<br>`const`, `let`, `var` | `class`<br>`interface`<br>`type`<br>`function`<br>`method`<br>`constant`, `variable` |
+| **Python** | `python` | `class`<br>`def` (module function)<br>`def` (class method)<br>module variable | `class`<br>`function`<br>`method`<br>`variable` |
+| **Zig** | `zig` | `fn`<br>`struct`, `enum`, `union`<br>`const` declarations | `function`<br>`class`, `enum`, `type`<br>`constant` |
+| **C# / Java** | `csharp` / `java` | `class`, `record`<br>`interface`<br>`enum`<br>method<br>field, property | `class`<br>`interface`<br>`enum`<br>`method`<br>`property`, `variable` |
+| **PHP** | `php` | `function`<br>`class`<br>`trait`, `interface`<br>class method | `function`<br>`class`<br>`trait`, `interface`<br>`method` |
+| **Blade / Twig / Razor** | `blade` / `twig` / `razor` | `@section`, `{% block %}`, `@code`<br>components, directives | `directive`, `function`, `variable` |
+| **Markdown / Docs** | `markdown` | `# Heading 1`<br>`## Heading 2`<br>`### Heading 3+` | `chapter`<br>`section`<br>`subsection` |
+
+---
+
+## 5. Self-Healing & Error Guard Protocol
+
+When TokToken returns an error payload with `"did_you_mean"`, **immediately self-heal** by re-invoking with the suggested identifier:
+
+```json
+// Example: Symbol not found -> automatically invoke suggested did_you_mean target
+{
+  "error": "not_found",
+  "item": "parse_exp",
+  "did_you_mean": "src/parser.c::parse_expr#function",
+  "hint": "Use did_you_mean identifier"
+}
 ```
-1. Inspect   ──► inspect_bundle(id="...") OR inspect_file(file="...", lines="START-END")
-2. Modify    ──► replace_file_content(...) OR write_to_file(...)
-3. Sync Index──► index_file(file="path/to/modified_file.ext")  <-- MANDATORY BEFORE PROCEEDING
-4. Verify    ──► Execute project test/build command via task runner / shell
+**Action**: Immediately execute `toktoken(action="inspect", target="src/parser.c::parse_expr#function")`. Never enter manual retry loops.
 
+---
+
+## 6. Anti-Patterns & Operational Rules
+
+1. **NO Linear File Scanning**: Never use `inspect_file` to search for functions or scan files sequentially. Use `search` $\rightarrow$ `inspect_bundle` / `inspect`. `inspect_file` is strictly for non-symbol chunks (max 35 lines).
+2. **NO Sequential Single-Symbol Loops**: Never call `inspect` in multiple turns for related items. Batch them in a single call: `target: "id1,id2,id3"`.
+3. **NO Single-Letter Kind Codes**: Never use abbreviations (e.g. `kind: "f,c"` will error). Use canonical kind names (e.g. `kind: "function,class"`).
+4. **Always Pass Compact**: Always set `"compact": true` on all search and inspection calls (~47% smaller payloads).
+5. **Always Set Limits**: Set explicit limits (`"limit": 10`) on discovery queries to avoid context pollution.
+6. **Virtual Context Handles**: When exploring large symbols that might not be modified, pass `"virtual": true` to receive a lightweight `$tok:ref_xxxx` handle (~30 tokens) that can be resolved on-demand.
+7. **Subagent Protocol**: When spawning subagents via `invoke_subagent`, subagents inherit this exact MCP Gateway protocol and must follow the same 4-step modification loop.
+
+---
+
+## 7. Companion CLI Operations & Build Reference
+
+### 7.1 `toktoken exec` — Smart Output Pruner
+Always wrap long build and test commands with `toktoken exec` to truncate cascades and collapse passing test suites:
+```bash
+# Filter compiler output (truncates 800 lines to top actionable errors)
+toktoken exec -- cmake --build build --config Debug
+
+# Filter test output (collapses 400 lines to 1 summary line)
+toktoken exec -- ctest --test-dir build --output-on-failure
 ```
 
-### Protocol 3: Refactoring & Blast Radius Analysis (Pre-Edit Check)
+### 7.2 Session Diagnostics
+```bash
+toktoken session audit        # Check base context (S) token weight
+toktoken session watchdog     # Monitor step count (n > 45) and cache TTL
+```
 
-Before altering any exported function signature, struct field, or public API:
-
-1. **Trace Callers**: `find_callers(id="path/file.ext::target_symbol#kind")`
-2. **Compute Impact**: `inspect_blast_radius(id="path/file.ext::target_symbol#kind")`
-3. **Batch Inspect Usages**: `inspect_symbol(id="site1#method,site2#function", compact=true)`
-4. **Execute edits and sync each modified file with index_file**.
-
-## 5. Strict Behavioral Rules & Anti-Patterns
-
-1. **No Guesswork Inspection (inspect_file Abuse)**:
-- Never use `inspect_file` to search for functions or scan files sequentially.
-- Locate symbols with `search_symbols`, then retrieve definitions using `inspect_bundle` or `inspect_symbol`.
-- Use `inspect_file` **only** when exact line boundaries are known for non-symbol blocks (e.g. data arrays, license headers).
-2. **Mandatory Post-Edit Index Sync**:
-- Every file write (`replace_file_content` / `write_to_file`) **MUST** immediately be followed by `index_file` on that file path. Stale indexes cause symbol lookup failures and corrupted line calculations.
-3. **Batch Symbol Retrievals**:
-- Never issue individual `inspect_symbol` calls in consecutive turns. Pass comma-separated IDs: `id: "id_1,id_2,id_3"`.
-4. **Mandatory Compact Payloads**:
-- Always set `"compact": true` on all search and inspection calls.
-- Always set explicit limits (`"limit": 10`) on discovery queries to avoid context pollution.
-5. **No Blind Full-File Dumps**:
-- Never dump more than 60 lines of source code into the conversational context. Present surgical diffs and targeted excerpts.
-
-## Memory (Project-Scoped Durable Memory)
+# Memory (Project-Scoped Durable Memory)
 
 Your memory is OptMem:
 - Tool: `.\memo.ps1`
@@ -194,11 +179,11 @@ Your memory is OptMem:
 OptMem outlives sessions, context compactions, model changes, and tool reboots.
 Without it you do not know prior architectural decisions, invariant rules, or previous diagnoses.
 
-### At startup: activating OptMem (mandatory)
+## At startup: activating OptMem (mandatory)
 
 Run `.\memo.ps1 wake` before any other tool call in every session, and follow its output to completion.
 
-### Proactive Recall & Zoom (Mandatory Action Triggers)
+## Proactive Recall & Zoom (Mandatory Action Triggers)
 
 1. **Before modifying any existing subsystem or file:**
    Run `.\memo.ps1 recall <keyword>` (e.g., `.\memo.ps1 recall scheduler`, `.\memo.ps1 recall coroutine`) to check for historic invariant rules, previous regressions, and design rationale.
@@ -207,7 +192,7 @@ Run `.\memo.ps1 wake` before any other tool call in every session, and follow it
 3. **Before asking the user about past architectural choices:**
    Run `.\memo.ps1 recall <topic>` first. Never ask about something already resolved in memory.
 
-### While working: register durable memories (selective)
+## While working: register durable memories (selective)
 
 Call `.\memo.ps1 note "<1 line, max 280 bytes>"` ONLY when establishing durable project knowledge.
 
@@ -219,12 +204,12 @@ Apply the **30-Day Test**: *Will this fact affect an engineering decision 30 day
 If `.\memo.ps1 note` prompts for a compression (`nap`): complete it before proceeding with other work.
 Never edit or delete anything under `.\.optmem\memory` manually: the tool manages it.
 
-### Subagents
+## Subagents
 
 Parallel primary sessions in this workspace may write memories. A subagent must not:
 When spawning a subagent, explicitly instruct: `You are a subagent. Don't run memo.`---
 
-## Odin Programming Specific Guideline
+# Odin Programming Specific Guideline
 The project folder contains .\build.ps1 script to run Odin commands like build, check, test. Adjust it as needed and use instead of calling manually Odin commands. Sometimes it may be used if .\build.ps1 don't contains them and they are too specific.
 Read ARCHITECTURE.md to understand what project goal is and its design decision.
 For this project we need TDD approach, to cover it with unit tests and progress with an implementation.

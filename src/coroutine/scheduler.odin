@@ -71,9 +71,13 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
                 wait_queue_remove(fiber.current_wait_queue, fiber)
                 fiber.current_wait_queue = nil
             }
+            if fiber.scope != nil {
+                fiber_scope_detach(fiber)
+            }
             if fiber.cleanup_proc != nil {
-                fiber.cleanup_proc(fiber.user_data)
+                fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
                 fiber.cleanup_proc = nil
+                fiber.cleanup_data = nil
             }
         }
     }
@@ -255,6 +259,8 @@ fiber_link_child :: proc(parent: ^Fiber, child: ^Fiber) {
 }
 
 fiber_unlink_child :: proc(parent: ^Fiber, child: ^Fiber) {
+    if parent == nil || child == nil || child.parent != parent do return
+
     if child.prev_sibling != nil {
         child.prev_sibling.next_sibling = child.next_sibling
     } else if parent.first_child == child {
@@ -620,8 +626,9 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     // 1. Run cleanup procedure if registered
     if fiber.cleanup_proc != nil {
-        fiber.cleanup_proc(fiber.user_data)
+        fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
         fiber.cleanup_proc = nil
+        fiber.cleanup_data = nil
     }
 
     // 2. Unlink from intrusive Wait_Queue if still attached

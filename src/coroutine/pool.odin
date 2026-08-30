@@ -242,7 +242,9 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.active_coord = {}
     fiber.branch_index = 0
     fiber.wake_time = 0
+    fiber.wake_ticks = 0
     fiber.wake_frame = 0
+    fiber.wake_clock = .Sim_Scaled
     fiber.heap_index = -1
     fiber.condition_fn = nil
     fiber.condition_data = nil
@@ -250,10 +252,16 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.user_data = nil
     fiber.user_fn = nil
     fiber.cleanup_proc = nil
+    fiber.cleanup_data = nil
     fiber.debug_name = ""
     fiber.start_time = 0
     fiber.stack_high_water = 0
     fiber.scope = nil
+    fiber.next_in_scope = nil
+    fiber.prev_in_scope = nil
+    fiber.next_waiter = nil
+    fiber.prev_waiter = nil
+    fiber.current_wait_queue = nil
 
     // Initialize isolated temporary arena for this fiber
     mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
@@ -305,7 +313,23 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.prev_sibling = nil
     fiber.child_count = 0
     fiber.join_coord = nil
+    fiber.active_coord = {}
+    fiber.branch_index = 0
+    fiber.wake_time = 0
+    fiber.wake_ticks = 0
+    fiber.wake_frame = 0
+    fiber.wake_clock = .Sim_Scaled
+    fiber.heap_index = -1
+    fiber.condition_fn = nil
+    fiber.condition_data = nil
+    fiber.entry_proc = nil
+    fiber.user_data = nil
+    fiber.user_fn = nil
+    fiber.cleanup_proc = nil
+    fiber.cleanup_data = nil
     fiber.scope = nil
+    fiber.next_in_scope = nil
+    fiber.prev_in_scope = nil
     fiber.next_waiter = nil
     fiber.prev_waiter = nil
     fiber.current_wait_queue = nil
@@ -433,8 +457,9 @@ fiber_trampoline_entry :: proc "c" () {
 
     // 4. Run cleanup proc if registered
     if fiber.cleanup_proc != nil {
-        fiber.cleanup_proc(fiber.user_data)
+        fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
         fiber.cleanup_proc = nil
+        fiber.cleanup_data = nil
     }
 
     // 5. Notify completion to coordinator & parent

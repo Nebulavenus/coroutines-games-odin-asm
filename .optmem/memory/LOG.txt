@@ -62,3 +62,4 @@
 #61 2026-08-30 Documentation suite restructured into 4 engineering tracks; reconciled async_token_complete and 11 footguns; documented symmetrical rendezvous, PAGE_NOACCESS, spawn_real_val, and simulate_until pause overrides
 #62 2026-08-30 Migrated Fiber_Scope to intrusive doubly-linked list (head, tail, count) with O(1) in-place unlinking; converted demo projectiles, particles, and logs to fixed SDS arrays (162/162 tests passing across 12-target LLVM matrix).
 #63 2026-08-30 Pruned unused allocator parameters from True ZII sync inits; streamlined scheduler_destroy and fiber_pool_destroy to use persistent struct allocators (162/162 tests passing across 12-target matrix).
+#64 2026-08-30 Hardened unbuffered CSP channels (FIFO multi-send, abort cleanup), real-time paused yield/ticker, pool state sanitization, cleanup data isolation, and scope destruction detachment (169/169 tests passing across 12-target LLVM matrix).
