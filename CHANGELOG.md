@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Generational Ready-Queue ABA Guard, Scoped Lock Abort Safety & Concurrency Hardening] - 2026-08-30
+
+### Fixed
+- **Ready Queue Generational Handle ABA & Recycled Fiber Execution Guard (`src/coroutine/types.odin`, `scheduler.odin`, `api.odin`)**:
+  - Upgraded `Scheduler.ready_queue` from `[dynamic]^Fiber` to `[dynamic]Fiber_Handle` (32-bit packed generational handle).
+  - Ready-queue dispatch now checks `f := fiber_find_by_handle(sched, h)` in $O(1)$ time with generation verification before execution.
+  - Guarantees that when a queued fiber is aborted and its memory recycled within the same frame, stale slots in `ready_queue` are safely skipped, preventing re-allocated fibers from executing twice in a single tick.
+- **Paused State Condition Waiters Polling Starvation (`src/coroutine/scheduler.odin`)**:
+  - Added in-place linear partitioning of `sched.condition_waiters` inside `scheduler_advance_real`.
+  - Ensures async background jobs (`await_async` / `Async_Token`), real-time condition waits (`wait_until_timeout`, `wait_while_timeout`), and pause UI fibers are polled and woken seamlessly even while `sched.clock.is_paused` is active.
+- **Automatic Abort Safety & Lock Release in `with_mutex` (`src/coroutine/api.odin`)**:
+  - Integrated automatic abort cleanup hooks (`Scoped_Mutex_Cleanup_Ctx` / `cleanup_mutex_hook`) into `with_mutex_ptr`, `with_mutex_val`, and `with_mutex_nil`.
+  - Guarantees that if a fiber holding a mutex is cancelled or aborted mid-operation (e.g. via `scope_cancel`, `race`, or `fiber_cancel`), the mutex is automatically unlocked and handed over to waiting fibers without deadlock or manual boilerplate.
+- **Automatic Abort Safety & Permit Restoration in `with_semaphore` (`src/coroutine/api.odin`)**:
+  - Integrated automatic abort cleanup hooks (`Scoped_Sem_Cleanup_Ctx` / `cleanup_sem_hook`) into `with_semaphore_ptr`, `with_semaphore_val`, and `with_semaphore_nil`.
+  - Guarantees that aborted fibers automatically restore their acquired semaphore permit count.
+- **CSP Select Message Priority Over Closed Channels (`src/coroutine/api.odin`)**:
+  - Upgraded `chan_select_recv` to a two-pass evaluation: Pass 1 prioritizes available buffered data across all selected channels; Pass 2 handles closed channel EOF only when all channels are empty.
+  - Eliminates message starvation when selecting across a closed empty channel alongside active buffered sister channels.
+
+### Added
+- **Unit Tests 170–174 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 170: Ready queue generational handle ABA & pointer recycling guard (no duplicate execution on same-frame replacement).
+  - Test 171: Paused state condition waiters polling in `scheduler_advance_real` (`await_async` completion while paused).
+  - Test 172: Automatic abort safety in `with_mutex` (immediate lock release upon fiber cancellation).
+  - Test 173: Automatic abort safety in `with_semaphore` (immediate permit restoration upon fiber cancellation).
+  - Test 174: `chan_select_recv` buffered message priority over closed channels (zero message loss).
+  - Test suite expanded to **174 / 174 unit tests passing** (100% with 0 memory leaks across all 12 build matrix targets).
+
 ## [Comprehensive Logic & Concurrency Hardening] - 2026-08-30
 
 ### Fixed

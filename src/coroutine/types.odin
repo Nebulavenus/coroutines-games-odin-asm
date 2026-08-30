@@ -327,7 +327,7 @@ Scheduler :: struct {
     allocator:         mem.Allocator,
 
     // Queues
-    ready_queue:       [dynamic]^Fiber,
+    ready_queue:       [dynamic]Fiber_Handle,
     timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)
     real_timer_heap:   [dynamic]^Fiber, // Min-Heap sorted by wake_time (Real/Wall Clock)
     tick_waiters:      [dynamic]^Fiber, // Waiting on integer simulation ticks

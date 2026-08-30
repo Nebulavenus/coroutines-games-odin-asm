@@ -7499,4 +7499,254 @@ test_scheduler_destroy_scope_detachment :: proc(t: ^testing.T) {
     testing.expect(t, scope.tail == nil)
 }
 
+// ============================================================================
+// Test 170: Ready Queue Generational Handle ABA & Pointer Recycling Guard
+// ============================================================================
+
+@(test)
+test_ready_queue_generational_aba_guard :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    exec_counts := [3]int{0, 0, 0}
+
+    // Spawn fiber 1: will run first, cancel fiber 2, and spawn fiber 3 (which reuses fiber 2's pool slot)
+    Spawn_Ctx :: struct {
+        sched:       ^Scheduler,
+        counts:      ^[3]int,
+        target_h:    Fiber_Handle,
+    }
+
+    ctx := Spawn_Ctx{
+        sched  = &sched,
+        counts = &exec_counts,
+    }
+
+    // Fiber 1
+    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
+        c.counts[0] += 1
+        // Cancel fiber 2 which is sitting in the ready queue after fiber 1
+        fiber_cancel(c.sched, c.target_h)
+        // Immediately spawn fiber 3 - will acquire the recycled slot of fiber 2
+        spawn_ptr(c.sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
+            c.counts[2] += 1
+        }, c, name = "Spawned Replacement Fiber 3")
+    }, &ctx, name = "Fiber 1")
+
+    // Fiber 2 (queued right after fiber 1)
+    h2 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
+        c.counts[1] += 1
+    }, &ctx, name = "Fiber 2")
+
+    ctx.target_h = h2
+
+    // Step scheduler: fiber 1 executes, cancels fiber 2, and spawns fiber 3.
+    // Fiber 2's stale ready queue slot must be safely skipped, and fiber 3 must run exactly once!
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, exec_counts[0], 1) // Fiber 1 ran once
+    testing.expect_value(t, exec_counts[1], 0) // Fiber 2 was canceled and never ran
+    testing.expect_value(t, exec_counts[2], 1) // Fiber 3 ran exactly once (no double execution!)
+}
+
+// ============================================================================
+// Test 171: Paused State Condition Waiters Polling in scheduler_advance_real
+// ============================================================================
+
+@(test)
+test_paused_condition_waiters_polling :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    token: Async_Token
+    async_token_init(&token)
+
+    completed := false
+
+    // Real-time fiber waiting on async background task
+    spawn_real(&sched, proc(f: ^Fiber, data: ^struct { tok: ^Async_Token, comp: ^bool }) {
+        ok := await_async(f, data.tok)
+        if ok {
+            data.comp^ = true
+        }
+    }, &struct { tok: ^Async_Token, comp: ^bool }{tok = &token, comp = &completed}, name = "Async Awaiter")
+
+    // Step 1: Start fiber, begins waiting on condition
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, completed, false)
+
+    // Pause simulation
+    scheduler_set_paused(&sched, true)
+    testing.expect(t, scheduler_is_paused(&sched))
+
+    // Complete token in background thread / host
+    async_token_complete(&token, true)
+
+    // Step while paused -> scheduler_advance_real must poll condition_waiters and complete real-time fiber
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, completed, true)
+}
+
+// ============================================================================
+// Test 172: Automatic Abort Safety in with_mutex
+// ============================================================================
+
+@(test)
+test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    worker2_completed := false
+
+    Worker_Ctx :: struct {
+        m:     ^Fiber_Mutex,
+        comp:  ^bool,
+    }
+    ctx := Worker_Ctx{m = &m, comp = &worker2_completed}
+
+    // Fiber 1: Enters with_mutex and sleeps
+    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Worker_Ctx) {
+        with_mutex(f, c.m, proc(f: ^Fiber, c: ^Worker_Ctx) {
+            wait(f, 10.0) // Long sleep while holding lock
+        }, c)
+    }, &ctx, name = "Lock Holder")
+
+    // Fiber 2: Waits for the mutex
+    h2 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Worker_Ctx) {
+        with_mutex(f, c.m, proc(f: ^Fiber, c: ^Worker_Ctx) {
+            c.comp^ = true
+        }, c)
+    }, &ctx, name = "Lock Waiter")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect(t, m.locked)
+    testing.expect_value(t, worker2_completed, false)
+    testing.expect_value(t, mutex_waiter_count(&m), 1)
+
+    // Cancel fiber 1 while it is holding with_mutex
+    // Automatic abort cleanup must unlock m and hand it over to fiber 2!
+    fiber_cancel(&sched, h1)
+    testing.expect(t, m.locked) // Transferred to fiber 2
+
+    // Step scheduler so fiber 2 executes
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, worker2_completed, true)
+    testing.expect_value(t, m.locked, false)
+}
+
+// ============================================================================
+// Test 173: Automatic Abort Safety in with_semaphore
+// ============================================================================
+
+@(test)
+test_with_semaphore_automatic_abort_cleanup :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, 1, 1)
+    defer semaphore_destroy(&sem)
+
+    worker2_completed := false
+
+    Sem_Ctx :: struct {
+        sem:   ^Fiber_Semaphore,
+        comp:  ^bool,
+    }
+    ctx := Sem_Ctx{sem = &sem, comp = &worker2_completed}
+
+    // Fiber 1 acquires permit via with_semaphore and sleeps
+    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Ctx) {
+        with_semaphore(f, c.sem, proc(f: ^Fiber, c: ^Sem_Ctx) {
+            wait(f, 10.0)
+        }, c)
+    }, &ctx, name = "Permit Holder")
+
+    // Fiber 2 tries to acquire permit via with_semaphore
+    h2 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Ctx) {
+        with_semaphore(f, c.sem, proc(f: ^Fiber, c: ^Sem_Ctx) {
+            c.comp^ = true
+        }, c)
+    }, &ctx, name = "Permit Waiter")
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, semaphore_available_permits(&sem), 0)
+    testing.expect_value(t, worker2_completed, false)
+    testing.expect_value(t, semaphore_waiter_count(&sem), 1)
+
+    // Abort fiber 1: automatic cleanup hook must restore permit and wake fiber 2
+    fiber_cancel(&sched, h1)
+
+    // Step scheduler so fiber 2 acquires permit and completes
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, worker2_completed, true)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+// ============================================================================
+// Test 174: chan_select_recv Buffered Message Priority Over Closed Channel
+// ============================================================================
+
+@(test)
+test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch_closed: Channel(int)
+    chan_init(&ch_closed, 4)
+    defer chan_destroy(&ch_closed)
+
+    ch_data: Channel(int)
+    chan_init(&ch_data, 4)
+    defer chan_destroy(&ch_data)
+
+    // Preload ch_data with values
+    chan_try_send(&ch_data, 42)
+    chan_try_send(&ch_data, 99)
+
+    // Close ch_closed (empty closed channel)
+    chan_close(&ch_closed)
+
+    received_values := make([dynamic]int, context.allocator)
+    defer delete(received_values)
+
+    Select_Ctx :: struct {
+        chans:    [2]^Channel(int),
+        received: ^[dynamic]int,
+    }
+    ctx := Select_Ctx{
+        chans    = {&ch_closed, &ch_data},
+        received = &received_values,
+    }
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Ctx) {
+        for {
+            idx, val, ok := chan_select_recv(f, c.chans[:])
+            if !ok {
+                break // EOF / closed
+            }
+            append(c.received, val)
+        }
+    }, &ctx, name = "Select Consumer")
+
+    // Run until select consumer consumes all buffered messages and exits
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, len(received_values), 2)
+    testing.expect_value(t, received_values[0], 42)
+    testing.expect_value(t, received_values[1], 99)
+}
+
+
 

@@ -18,7 +18,7 @@ scheduler_init :: proc(
     allocator := context.allocator,
 ) {
     sched.allocator = allocator.procedure != nil ? allocator : context.allocator
-    sched.ready_queue = make([dynamic]^Fiber, sched.allocator)
+    sched.ready_queue = make([dynamic]Fiber_Handle, sched.allocator)
     sched.timer_heap = make([dynamic]^Fiber, sched.allocator)
     sched.real_timer_heap = make([dynamic]^Fiber, sched.allocator)
     sched.tick_waiters = make([dynamic]^Fiber, sched.allocator)
@@ -43,7 +43,7 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
         allocator = context.allocator
     }
     sched.allocator = allocator
-    sched.ready_queue = make([dynamic]^Fiber, sched.allocator)
+    sched.ready_queue = make([dynamic]Fiber_Handle, sched.allocator)
     sched.timer_heap = make([dynamic]^Fiber, sched.allocator)
     sched.real_timer_heap = make([dynamic]^Fiber, sched.allocator)
     sched.tick_waiters = make([dynamic]^Fiber, sched.allocator)
@@ -357,22 +357,41 @@ scheduler_advance_real :: proc(sched: ^Scheduler, real_dt: f32) {
             f := real_timer_heap_pop(sched)
             if f != nil && f.status == .Sleeping_Real_Time {
                 f.status = .Ready
-                append(&sched.ready_queue, f)
+                append(&sched.ready_queue, f.handle)
             }
         } else {
             break
         }
     }
 
-    // 3. Execute only real-time fibers in ready queue (Zero-Shift O(N) linear sweep)
+    // 3. Poll Condition Waiters (Linear In-Place Partition)
+    if len(sched.condition_waiters) > 0 {
+        write_idx := 0
+        for i := 0; i < len(sched.condition_waiters); i += 1 {
+            f := sched.condition_waiters[i]
+            if f.condition_fn != nil && f.condition_fn(f.condition_data) {
+                if f.status == .Waiting_Condition {
+                    f.status = .Ready
+                    append(&sched.ready_queue, f.handle)
+                }
+            } else {
+                sched.condition_waiters[write_idx] = f
+                write_idx += 1
+            }
+        }
+        resize(&sched.condition_waiters, write_idx)
+    }
+
+    // 4. Execute only real-time fibers in ready queue (Zero-Shift O(N) linear sweep with generational handle guard)
     write_idx := 0
     for i := 0; i < len(sched.ready_queue); i += 1 {
-        f := sched.ready_queue[i]
+        h := sched.ready_queue[i]
+        f := fiber_find_by_handle(sched, h)
         if f == nil || f.status != .Ready do continue
 
         if f.wake_clock != .Real_Time {
             // Keep simulation fibers deferred in place without array shifts!
-            sched.ready_queue[write_idx] = f
+            sched.ready_queue[write_idx] = h
             write_idx += 1
             continue
         }
@@ -423,28 +442,28 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
             f := real_timer_heap_pop(sched)
             if f != nil && f.status == .Sleeping_Real_Time {
                 f.status = .Ready
-                append(&sched.ready_queue, f)
+                append(&sched.ready_queue, f.handle)
             }
         } else {
             break
         }
     }
 
-    // 4. Wake Scaled-Sim Timers from Timer Min-Heap
+    // 4. Wake Scaled Simulation Timers from Timer Min-Heap
     for len(sched.timer_heap) > 0 {
         root := sched.timer_heap[0]
         if root.wake_time <= sched.clock.sim_time {
             f := timer_heap_pop(sched)
             if f != nil && f.status == .Sleeping_Time {
                 f.status = .Ready
-                append(&sched.ready_queue, f)
+                append(&sched.ready_queue, f.handle)
             }
         } else {
             break
         }
     }
 
-    // 5. Wake Discrete Tick Waiters (Linear In-Place Partition)
+    // 5. Wake Discrete Simulation Tick Waiters (Linear In-Place Partition)
     if sim_ticks > 0 && len(sched.tick_waiters) > 0 {
         write_idx := 0
         for i := 0; i < len(sched.tick_waiters); i += 1 {
@@ -452,7 +471,7 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
             if f.wake_ticks <= sched.clock.sim_ticks {
                 if f.status == .Sleeping_Ticks {
                     f.status = .Ready
-                    append(&sched.ready_queue, f)
+                    append(&sched.ready_queue, f.handle)
                 }
             } else {
                 sched.tick_waiters[write_idx] = f
@@ -470,7 +489,7 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
             if f.wake_frame <= sched.clock.frame_count {
                 if f.status == .Sleeping_Frames {
                     f.status = .Ready
-                    append(&sched.ready_queue, f)
+                    append(&sched.ready_queue, f.handle)
                 }
             } else {
                 sched.frame_waiters[write_idx] = f
@@ -488,7 +507,7 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
             if f.condition_fn != nil && f.condition_fn(f.condition_data) {
                 if f.status == .Waiting_Condition {
                     f.status = .Ready
-                    append(&sched.ready_queue, f)
+                    append(&sched.ready_queue, f.handle)
                 }
             } else {
                 sched.condition_waiters[write_idx] = f
@@ -498,9 +517,10 @@ scheduler_advance :: proc(sched: ^Scheduler, real_dt: f32, sim_dt: f64, sim_tick
         resize(&sched.condition_waiters, write_idx)
     }
 
-    // 8. Execute Ready Queue (Zero-Shift O(N) Sequential Cursor)
+    // 8. Execute Ready Queue (Zero-Shift O(N) Sequential Cursor with Generational Handle Guard)
     for i := 0; i < len(sched.ready_queue); i += 1 {
-        f := sched.ready_queue[i]
+        h := sched.ready_queue[i]
+        f := fiber_find_by_handle(sched, h)
         if f == nil || f.status != .Ready do continue
 
         f.status = .Running
@@ -560,7 +580,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     // Wake up parent if waiting
                     if parent.status == .Suspended_Join {
                         parent.status = .Ready
-                        append(&fiber.sched.ready_queue, parent)
+                        append(&fiber.sched.ready_queue, parent.handle)
                     }
                 }
             } else if coord.active_branches <= 0 && !coord.completed {
@@ -570,7 +590,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 parent := coord.parent
                 if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent)
+                    append(&fiber.sched.ready_queue, parent.handle)
                 }
             }
         } else if coord.kind == .Rush {
@@ -595,7 +615,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     // Wake up parent if waiting
                     if parent.status == .Suspended_Join {
                         parent.status = .Ready
-                        append(&fiber.sched.ready_queue, parent)
+                        append(&fiber.sched.ready_queue, parent.handle)
                     }
                 }
             } else if coord.active_branches <= 0 && !coord.completed {
@@ -606,7 +626,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 parent := coord.parent
                 if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent)
+                    append(&fiber.sched.ready_queue, parent.handle)
                 }
             }
         } else if coord.kind == .Sync {
@@ -616,7 +636,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 parent := coord.parent
                 if parent != nil && parent.status == .Suspended_Join {
                     parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent)
+                    append(&fiber.sched.ready_queue, parent.handle)
                 }
             }
         }
