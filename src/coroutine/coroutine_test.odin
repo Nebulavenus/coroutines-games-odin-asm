@@ -1209,12 +1209,12 @@ test_signal_broadcast :: proc(t: ^testing.T) {
     }
 
     scheduler_step(&sched, 0.016) // Put all into signal.waiters
-    testing.expect_value(t, len(sig.waiters), 3)
+    testing.expect_value(t, signal_waiter_count(&sig), 3)
     testing.expect_value(t, woken_count, 0)
 
     // Emit signal
     signal_emit(&sched, &sig)
-    testing.expect_value(t, len(sig.waiters), 0)
+    testing.expect_value(t, signal_waiter_count(&sig), 0)
 
     scheduler_step(&sched, 0.016) // Execute ready fibers
     testing.expect_value(t, woken_count, 3)
@@ -3433,7 +3433,7 @@ test_cancel_token_wait_and_broadcast :: proc(t: ^testing.T) {
     testing.expect(t, !w1_done)
     testing.expect(t, !w2_done)
     testing.expect(t, !w3_done)
-    testing.expect_value(t, len(tok.waiters), 3)
+    testing.expect_value(t, cancel_token_waiter_count(&tok), 3)
 
     // Cancel token
     cancel_token_cancel(&sched, &tok)
@@ -3601,7 +3601,7 @@ test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
     }, &sem)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(sem.waiters), 1)
+    testing.expect_value(t, semaphore_waiter_count(&sem), 1)
 
     // Abort the waiting fiber
     fiber_cancel(&sched, h)
@@ -3681,7 +3681,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     }, &m)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(m.waiters), 1)
+    testing.expect_value(t, mutex_waiter_count(&m), 1)
 
     // Cancel the waiter
     fiber_cancel(&sched, waiter)
@@ -3724,7 +3724,7 @@ test_cancel_fiber_waiting_on_latch :: proc(t: ^testing.T) {
     }, &ctx2)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(latch.waiters), 2)
+    testing.expect_value(t, latch_waiter_count(&latch), 2)
 
     // Cancel h1
     fiber_cancel(&sched, h1)
@@ -3757,7 +3757,7 @@ test_cancel_fiber_waiting_on_cancel_token :: proc(t: ^testing.T) {
     }, &tok)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(tok.waiters), 1)
+    testing.expect_value(t, cancel_token_waiter_count(&tok), 1)
 
     // Cancel the waiting fiber
     fiber_cancel(&sched, h)
@@ -3788,7 +3788,7 @@ test_cancel_fiber_waiting_on_event :: proc(t: ^testing.T) {
     }, &ev)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(ev.waiters), 1)
+    testing.expect_value(t, event_waiter_count(&ev), 1)
 
     // Cancel the listener fiber
     fiber_cancel(&sched, h)
@@ -4074,7 +4074,7 @@ test_cancel_token_multicast_cascade_with_dynamic_waiters :: proc(t: ^testing.T) 
     }
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(tok.waiters), 8)
+    testing.expect_value(t, cancel_token_waiter_count(&tok), 8)
 
     // Abort 3 waiters before token cancellation
     fiber_cancel(&sched, handles[1])
@@ -4335,7 +4335,7 @@ test_latch_partial_countdown_with_waiter_cancellations :: proc(t: ^testing.T) {
     }
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(latch.waiters), 4)
+    testing.expect_value(t, latch_waiter_count(&latch), 4)
 
     // Countdown 2
     latch_count_down(&sched, &latch, 2)
@@ -4521,7 +4521,7 @@ test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
     }
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(ch.recv_waiters), 4)
+    testing.expect_value(t, chan_recv_waiter_count(ch), 4)
 
     // Destroying the channel must auto-close and wake all 4 receivers with ok = false
     chan_destroy(ch)
@@ -4569,7 +4569,7 @@ test_chan_destroy_auto_wakes_blocked_senders :: proc(t: ^testing.T) {
     }
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(ch.send_waiters), 3)
+    testing.expect_value(t, chan_send_waiter_count(ch), 3)
 
     // Destroy channel
     chan_destroy(ch)
@@ -4763,7 +4763,7 @@ test_channel_close_multicast_with_interleaved_receivers :: proc(t: ^testing.T) {
     }
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(ch.recv_waiters), 5)
+    testing.expect_value(t, chan_recv_waiter_count(&ch), 5)
 
     chan_close(&ch)
     scheduler_step(&sched, 0.01)
@@ -4951,7 +4951,7 @@ test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
 
     // Run 1 frame so f1 locks and f2 suspends into m.waiters
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(m.waiters), 1)
+    testing.expect_value(t, mutex_waiter_count(&m), 1)
 
     // Cancel fiber 2 externally while in waiters queue
     fiber_cancel(&sched, f2_handle)
@@ -5205,7 +5205,7 @@ test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     }, &ch)
 
     scheduler_step(&sched, 0.01)
-    testing.expect_value(t, len(ch.recv_waiters), 1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch), 1)
 
     // Cancel receiver while waiting in recv_waiters
     fiber_cancel(&sched, f_recv_handle)
@@ -5213,7 +5213,7 @@ test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     // Send value to channel - should skip dead waiter and not panic/hang
     sent := chan_try_send(&ch, 100)
     testing.expect(t, !sent)
-    testing.expect_value(t, len(ch.recv_waiters), 0)
+    testing.expect_value(t, chan_recv_waiter_count(&ch), 0)
 }
 
 // ============================================================================
@@ -5289,33 +5289,32 @@ test_with_semaphore_val :: proc(t: ^testing.T) {
 }
 
 // ============================================================================
-// Test 129: Zero-Polling Event-Driven Multi-Channel Select
+// Test 129: Multi-Channel Select Receive (chan_select_recv)
 // ============================================================================
 
 @(test)
-test_event_driven_multi_channel_select :: proc(t: ^testing.T) {
+test_chan_select_recv_multiplexing :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
 
     ch_a, ch_b, ch_c: Channel(int)
-    chan_init(&ch_a, 2)
-    chan_init(&ch_b, 2)
-    chan_init(&ch_c, 2)
+    chan_init(&ch_a, 0)
+    chan_init(&ch_b, 0)
+    chan_init(&ch_c, 0)
     defer {
         chan_destroy(&ch_a)
         chan_destroy(&ch_b)
         chan_destroy(&ch_c)
     }
 
-    channels := [3]^Channel(int){&ch_a, &ch_b, &ch_c}
-
     Select_Result :: struct {
         idx: int,
         val: int,
         ok:  bool,
     }
-    res := Select_Result{idx = -1, val = 0, ok = false}
+    res := Select_Result{idx = -1, val = -1, ok = false}
+    channels := [3]^Channel(int){&ch_a, &ch_b, &ch_c}
 
     // Receiver fiber selects across all 3 channels (event-driven suspension)
     spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { chs: []^Channel(int), r: ^Select_Result }) {
@@ -5328,9 +5327,9 @@ test_event_driven_multi_channel_select :: proc(t: ^testing.T) {
     // Step 1: Fiber runs, registers on ch_a, ch_b, ch_c recv_waiters, and suspends
     scheduler_step(&sched, 0.01)
     testing.expect(t, !res.ok)
-    testing.expect_value(t, len(ch_a.recv_waiters), 1)
-    testing.expect_value(t, len(ch_b.recv_waiters), 1)
-    testing.expect_value(t, len(ch_c.recv_waiters), 1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_a), 1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_b), 1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_c), 1)
 
     // Producer sends to ch_b
     chan_try_send(&ch_b, 777)
@@ -5342,9 +5341,9 @@ test_event_driven_multi_channel_select :: proc(t: ^testing.T) {
     testing.expect_value(t, res.val, 777)
 
     // Verify unregistration from other channels
-    testing.expect_value(t, len(ch_a.recv_waiters), 0)
-    testing.expect_value(t, len(ch_b.recv_waiters), 0)
-    testing.expect_value(t, len(ch_c.recv_waiters), 0)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_a), 0)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_b), 0)
+    testing.expect_value(t, chan_recv_waiter_count(&ch_c), 0)
 }
 
 // ============================================================================
@@ -5748,4 +5747,210 @@ test_chan_cap_inspection :: proc(t: ^testing.T) {
     testing.expect_value(t, chan_count(&ch_buf), 0)
     testing.expect(t, chan_is_empty(&ch_buf))
     testing.expect(t, !chan_is_full(&ch_buf))
+}
+
+// ============================================================================
+// Test 139: PLAN 5 Packed Generational Handles Bitwise Operations
+// ============================================================================
+
+@(test)
+test_plan5_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
+    // 1. Pack index 0, gen 1
+    h1 := fiber_handle_pack(0, 1)
+    testing.expect_value(t, fiber_handle_index(h1), 0)
+    testing.expect_value(t, fiber_handle_gen(h1), 1)
+
+    // 2. Pack index 512, gen 42
+    h2 := fiber_handle_pack(512, 42)
+    testing.expect_value(t, fiber_handle_index(h2), 512)
+    testing.expect_value(t, fiber_handle_gen(h2), 42)
+
+    // 3. Max boundaries: index 65535, gen 65535
+    h_max := fiber_handle_pack(65535, 65535)
+    testing.expect_value(t, fiber_handle_index(h_max), 65535)
+    testing.expect_value(t, fiber_handle_gen(h_max), 65535)
+    testing.expect_value(t, u32(h_max), 0xFFFF_FFFF)
+}
+
+// ============================================================================
+// Test 140: PLAN 5 Handle Slot Reuse and ABA Invalidation Safety
+// ============================================================================
+
+@(test)
+test_plan5_handle_slot_reuse_and_aba_safety :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Spawn fiber 1
+    h1 := spawn_nil(&sched, proc(f: ^Fiber) {
+        // Runs and finishes
+    })
+
+    idx1 := fiber_handle_index(h1)
+    gen1 := fiber_handle_gen(h1)
+
+    testing.expect(t, fiber_is_alive(&sched, h1))
+    scheduler_step(&sched, 0.01) // Run to completion & recycle
+
+    testing.expect(t, !fiber_is_alive(&sched, h1))
+    status1, ok1 := fiber_status(&sched, h1)
+    testing.expect(t, ok1)
+    testing.expect_value(t, status1, Fiber_Status.Completed)
+
+    // Spawn fiber 2: must reuse the exact same slot index with an incremented generation!
+    h2 := spawn_nil(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    })
+
+    idx2 := fiber_handle_index(h2)
+    gen2 := fiber_handle_gen(h2)
+
+    testing.expect_value(t, idx2, idx1)
+    testing.expect_value(t, gen2, gen1 + 1)
+
+    // Stale handle h1 must NOT be alive and fiber_find_by_handle must return nil for h1
+    testing.expect(t, !fiber_is_alive(&sched, h1))
+    testing.expect(t, fiber_find_by_handle(&sched, h1) == nil)
+
+    // Active handle h2 must be alive and fiber_find_by_handle must find it in O(1)
+    testing.expect(t, fiber_is_alive(&sched, h2))
+    f2 := fiber_find_by_handle(&sched, h2)
+    testing.expect(t, f2 != nil)
+    testing.expect_value(t, f2.handle, h2)
+}
+
+// ============================================================================
+// Test 141: Intrusive Wait_Queue Zero-Allocation Doubly-Linked Operations
+// ============================================================================
+
+@(test)
+test_plan5_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
+    // 1. True ZII: default zero-initialized struct is immediately ready
+    q: Wait_Queue
+    testing.expect(t, wait_queue_is_empty(&q))
+    testing.expect_value(t, wait_queue_count(&q), 0)
+
+    dummy_fibers: [10]Fiber
+    for i in 0 ..< 10 {
+        dummy_fibers[i].handle = fiber_handle_pack(u16(i), 1)
+    }
+
+    // 2. Push 10 fibers to tail (unbounded, 100% zero-allocation)
+    for i in 0 ..< 10 {
+        wait_queue_push_back(&q, &dummy_fibers[i])
+    }
+    testing.expect(t, !wait_queue_is_empty(&q))
+    testing.expect_value(t, wait_queue_count(&q), 10)
+    testing.expect_value(t, q.head, &dummy_fibers[0])
+    testing.expect_value(t, q.tail, &dummy_fibers[9])
+
+    // 3. Remove Head node (&dummy_fibers[0]) in O(1) in-place
+    removed_head := wait_queue_remove(&q, &dummy_fibers[0])
+    testing.expect(t, removed_head)
+    testing.expect_value(t, wait_queue_count(&q), 9)
+    testing.expect_value(t, q.head, &dummy_fibers[1])
+    testing.expect(t, dummy_fibers[0].next_waiter == nil)
+    testing.expect(t, dummy_fibers[0].prev_waiter == nil)
+
+    // 4. Remove Middle node (&dummy_fibers[5]) in O(1) in-place
+    removed_mid := wait_queue_remove(&q, &dummy_fibers[5])
+    testing.expect(t, removed_mid)
+    testing.expect_value(t, wait_queue_count(&q), 8)
+    testing.expect(t, dummy_fibers[5].next_waiter == nil)
+    testing.expect(t, dummy_fibers[5].prev_waiter == nil)
+
+    // 5. Remove Tail node (&dummy_fibers[9]) in O(1) in-place
+    removed_tail := wait_queue_remove(&q, &dummy_fibers[9])
+    testing.expect(t, removed_tail)
+    testing.expect_value(t, wait_queue_count(&q), 7)
+    testing.expect_value(t, q.tail, &dummy_fibers[8])
+    testing.expect(t, dummy_fibers[9].next_waiter == nil)
+    testing.expect(t, dummy_fibers[9].prev_waiter == nil)
+
+    // 6. Pop remaining elements in exact FIFO order: 1, 2, 3, 4, 6, 7, 8
+    expected_order := [7]^Fiber{
+        &dummy_fibers[1],
+        &dummy_fibers[2],
+        &dummy_fibers[3],
+        &dummy_fibers[4],
+        &dummy_fibers[6],
+        &dummy_fibers[7],
+        &dummy_fibers[8],
+    }
+    for expected in expected_order {
+        f, ok := wait_queue_pop_front(&q)
+        testing.expect(t, ok)
+        testing.expect_value(t, f, expected)
+        testing.expect(t, f.next_waiter == nil)
+        testing.expect(t, f.prev_waiter == nil)
+    }
+    testing.expect(t, wait_queue_is_empty(&q))
+    testing.expect_value(t, wait_queue_count(&q), 0)
+    testing.expect(t, q.head == nil)
+    testing.expect(t, q.tail == nil)
+}
+
+// ============================================================================
+// Test 142: PLAN 5 O(1) Generational Lookups Under High Fiber Load
+// ============================================================================
+
+@(test)
+test_plan5_o1_handle_lookups_under_high_fiber_load :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // Prewarm and spawn 256 fibers
+    FIBER_COUNT :: 256
+    handles: [FIBER_COUNT]Fiber_Handle
+
+    for i in 0 ..< FIBER_COUNT {
+        handles[i] = spawn_nil(&sched, proc(f: ^Fiber) {
+            wait(f, 100.0)
+        })
+    }
+
+    scheduler_step(&sched, 0.01)
+
+    // Verify all 256 fibers can be looked up instantly in O(1) time
+    for h in handles {
+        f := fiber_find_by_handle(&sched, h)
+        testing.expect(t, f != nil)
+        testing.expect_value(t, f.handle, h)
+        testing.expect(t, fiber_is_alive(&sched, h))
+        slot := fiber_handle_index(h)
+        testing.expect_value(t, sched.fiber_pool.all_fibers[slot].handle, h)
+    }
+
+    // Cancel even-indexed fibers (128 fibers)
+    for i := 0; i < FIBER_COUNT; i += 2 {
+        fiber_cancel(&sched, handles[i])
+        testing.expect(t, !fiber_is_alive(&sched, handles[i]))
+        testing.expect(t, fiber_find_by_handle(&sched, handles[i]) == nil)
+    }
+
+    // Odd-indexed fibers must remain alive and instant to find
+    for i := 1; i < FIBER_COUNT; i += 2 {
+        testing.expect(t, fiber_is_alive(&sched, handles[i]))
+        f := fiber_find_by_handle(&sched, handles[i])
+        testing.expect(t, f != nil)
+        testing.expect_value(t, f.handle, handles[i])
+    }
+}
+
+// ============================================================================
+// Test 143: PLAN 5 Config Constants & Static Bounds Integration
+// ============================================================================
+
+@(test)
+test_plan5_config_constants_integration :: proc(t: ^testing.T) {
+    testing.expect(t, STACK_SIZE >= 16 * 1024)
+    testing.expect_value(t, STACK_SIZE % 16, 0)
+    testing.expect(t, STACKS_PER_SLAB >= 1)
+    testing.expect(t, PAYLOAD_SIZE >= 64)
+    testing.expect(t, TEMP_ARENA_SIZE >= 1024)
+    testing.expect_value(t, CANARY_SIZE, 64)
+    testing.expect_value(t, u64(CANARY_MAGIC), 0xDEAD_BEEF_CAFE_BABE)
+    testing.expect_value(t, HANDLE_HISTORY_CAPACITY, 2048)
 }

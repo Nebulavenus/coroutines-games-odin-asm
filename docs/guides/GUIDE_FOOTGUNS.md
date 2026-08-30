@@ -312,6 +312,31 @@ boss_spawn_minions :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 
 ---
 
+## Footgun 11: Storing Raw `^Fiber` Pointers Instead of Packed Generational Handles
+
+### The Trap
+Storing a bare `^Fiber` pointer across multiple frames or in external entity structs risks accessing recycled slab memory if that fiber terminates and its memory is repurposed for a new task:
+
+```odin
+// DANGEROUS: If target fiber finishes, raw_ptr becomes dangling or points to a recycled fiber!
+stored_fiber: ^coroutine.Fiber = coroutine.spawn(&sched, enemy_ai_proc, &enemy)
+
+// 5 seconds later:
+if stored_fiber.status == .Running { // CRASH or corrupted state!
+    // ...
+}
+```
+
+### How the Engine Mitigates It
+1. **Packed Generational Handles (`Fiber_Handle`)**: A 32-bit packed integer (`u16 slot | u16 generation`).
+2. When a fiber slot is recycled, its generation counter is automatically incremented.
+3. Checking `coroutine.fiber_is_alive(&sched, handle)` or `coroutine.fiber_find_by_handle(&sched, handle)` performs a single-instruction direct array lookup in $O(1)$ time, instantly detecting stale handles with **100% ABA safety**.
+
+### The Rule
+> **Never store raw `^Fiber` pointers across yield points or in game structs. Always store `Fiber_Handle` (32-bit value) and resolve it via `fiber_find_by_handle(sched, handle)` or `fiber_is_alive(sched, handle)`.**
+
+---
+
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
 ```text
@@ -328,5 +353,6 @@ boss_spawn_minions :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 │ 8. Save game state, not stacks: Re-spawn coroutines from phase checkpoints. │
 │ 9. Use Ticker for periodic loops: Eliminates cumulative delta-time drift.   │
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
+│ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

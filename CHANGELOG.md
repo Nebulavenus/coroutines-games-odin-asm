@@ -2,7 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Condition Timeouts, Dynamic Fiber Renaming & Channel Capacity] - 2026-08-29
+## [PLAN 5: Centralized Configuration, Intrusive Wait Queues & Generational Handles] - 2026-08-30
+
+### Added
+- **Centralized Engine Configuration (`src/coroutine/config.odin`)**:
+  - Consolidated all engine memory bounds, stack sizes, slab counts, payload capacities, temporary arena buffers, canaries, and tick frequencies into a unified `#config` module.
+  - Supports build-time `-define:KEY=VALUE` overrides (e.g. `CORO_STACK_SIZE`, `CORO_PAYLOAD_SIZE`, `CORO_TEMP_ARENA_SIZE`, `CORO_HANDLE_HISTORY_CAPACITY`).
+- **Packed Generational Handles ($O(1)$ Direct Slot Lookups)**:
+  - Upgraded `Fiber_Handle` (packed 32-bit integer: lower 16 bits = slot index `0..65535`, upper 16 bits = generation `1..65535`).
+  - Added `#force_inline` bitwise helpers: `fiber_handle_pack`, `fiber_handle_index`, `fiber_handle_gen`.
+  - Replaced $O(N)$ linear scans with single-instruction $O(1)$ direct array index lookups in `fiber_find_by_handle`, `fiber_is_alive`, `fiber_status`, and `fiber_cancel`.
+  - Complete ABA and use-after-free protection via generational slot increment on recycle.
+- **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**:
+  - Replaced array/overflow hybrid buffers with **doubly-linked intrusive wait queues (`Wait_Queue`)**.
+  - `Fiber` embeds `next_waiter: ^Fiber` and `prev_waiter: ^Fiber`, achieving **100% zero heap allocations** for all synchronization queues.
+  - Enables unbounded waiter capacity with true **Zero Is Initialization (ZII)**: primitives (`Fiber_Mutex`, `Signal`, `Fiber_Latch`, `Cancel_Token`) are immediately valid upon declaration without calling `_init`.
+  - Added $O(1)$ in-place unlinking (`wait_queue_remove`), allowing instant fiber removal on timeouts, cancellations, and multi-channel select without linear queue scans.
+  - Primitives shrunk down to ultra-compact structs (`Fiber_Mutex` is only 24 bytes, `Signal` is 16 bytes).
+- **Unit Tests 139–143 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 139: Packed generational handle bitwise packing & unpacking.
+  - Test 140: Handle slot reuse, generation increment, and ABA safety.
+  - Test 141: Intrusive `Wait_Queue` operations (ZII, $O(1)$ push, $O(1)$ pop, $O(1)$ in-place node removals).
+  - Test 142: $O(1)$ generational handle lookups under high fiber load (256 fibers).
+  - Test 143: `#config` compile-time constants integration and static bounds.
+  - Test suite expanded to **143 / 143 unit tests passing** (100% with 0 memory leaks).
 
 ### Added
 - **Condition Timeouts (`wait_until_timeout` & `wait_while_timeout`) (`src/coroutine/api.odin`)**:

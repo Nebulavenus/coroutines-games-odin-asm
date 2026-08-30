@@ -29,28 +29,29 @@ Dynamic memory allocation (`new` / `malloc`) per fiber creation introduces OS sy
 
 ## 2. Detailed Memory Layout of `Fiber`
 
-Each `Fiber` struct is a self-contained descriptor containing execution state, coordination pointers, memory arenas, and inline payload storage:
+Each `Fiber` struct is a self-contained descriptor containing execution state, coordination pointers, memory arenas, generational handle data, intrusive wait links, and inline payload storage:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Fiber Struct                         │
 ├────────────────────────────────┬────────────────────────────┤
-│ id: Fiber_ID                   │ Unique integer identifier  │
-│ state: Fiber_State             │ Running, Ready, Sleeping...│
-│ stack_base: rawptr             │ Top address of stack memory│
-│ stack_limit: rawptr            │ Bottom overflow limit      │
-│ saved_rsp: rawptr              │ CPU stack pointer at yield │
-│ user_entry: proc(f: ^Fiber)    │ Entry procedure pointer    │
+│ handle: Fiber_Handle (u32)     │ Packed index (16) | gen (16│
+│ pool_index: u16, gen: u16      │ Fixed array slot & cycle   │
+│ status: Fiber_Status           │ Running, Ready, Sleeping...│
+│ saved_sp: rawptr               │ CPU stack pointer at yield │
+│ entry_proc: proc(f, data)      │ Entry procedure pointer    │
 ├────────────────────────────────┼────────────────────────────┤
 │ parent: ^Fiber                 │ Hierarchical parent pointer│
 │ first_child: ^Fiber            │ Head of active child list  │
-│ sibling_next: ^Fiber           │ Intrusive sibling link     │
-│ join_coord: Join_Coordinator   │ Concurrency coordinator    │
+│ next_sibling: ^Fiber           │ Intrusive sibling link     │
+│ next_waiter: ^Fiber            │ Intrusive Futex queue next │
+│ prev_waiter: ^Fiber            │ Intrusive Futex queue prev │
+│ join_coord: ^Join_Coordinator  │ Concurrency coordinator    │
 ├────────────────────────────────┼────────────────────────────┤
 │ temp_arena: mem.Arena          │ Embedded 4KB Arena struct  │
 │ temp_buffer: [4096]u8          │ Isolated temp allocator mem│
 ├────────────────────────────────┼────────────────────────────┤
-│ payload: [128]u8               │ Inline by-value copy buffer│
+│ payload_storage: [128]u8       │ Inline by-value copy buffer│
 ├────────────────────────────────┼────────────────────────────┤
 │ wake_time: f64                 │ Absolute simulation wake   │
 │ real_wake_time: f64            │ Absolute real-clock wake   │
@@ -58,6 +59,9 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 │ real_heap_index: int           │ Cached in real_timer_heap  │
 └────────────────────────────────┴────────────────────────────┘
 ```
+
+> [!NOTE]
+> For a full breakdown of the 32-bit bitwise handle layout and intrusive doubly-linked wait queue mechanics, see [`docs/tech/TECH_SDS_AND_HANDLES.md`](TECH_SDS_AND_HANDLES.md).
 
 ---
 

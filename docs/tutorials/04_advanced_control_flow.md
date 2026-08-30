@@ -197,5 +197,36 @@ for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds
 
 ---
 
+## 6. Time-Bounded Condition Waiting (`wait_until_timeout` & `wait_while_timeout`)
+
+When awaiting a game condition that must abort if not met within a deadline (e.g. waiting for an elevator to arrive or an enemy to enter range), use the 1-line condition timeout combinators:
+
+```odin
+Elevator :: struct {
+    floor:      int,
+    door_open:  bool,
+}
+
+elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
+    fmt.println("Calling elevator to floor 5...")
+
+    // Suspends until elevator reaches floor 5 OR 4.0 seconds elapse:
+    reached, timed_out := coroutine.wait_until_timeout(f, 4.0, proc(e: ^Elevator) -> bool {
+        return e.floor == 5 && e.door_open
+    }, e)
+
+    if reached {
+        fmt.println("Elevator arrived on time! Boarding...")
+    } else if timed_out {
+        fmt.println("Elevator timed out! Taking the stairs!")
+    }
+}
+```
+
+- **Zero Leaks**: Automatically cleans up the internal race branches upon either condition fulfillment or timeout expiry.
+- **Overloaded Ergonomics**: Supports pointer state (`_ptr`), by-value inline payloads (`_val`), and parameterless predicates (`_nil`).
+
+---
+
 ## Next Steps
 In [Tutorial 5: Synchronization & Communication](05_synchronization.md), you will learn how to synchronize independent fibers using `with_mutex`, `Fiber_Semaphore`, `Event(T)`, and `Channel(T)`.

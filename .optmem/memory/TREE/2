@@ -18,3 +18,5 @@ GFM KaTeX math underscore rule; Event(T) compile-time size asserts, sync allocat
 Added wait_until_timeout/wait_while_timeout, dynamic fiber_set_name/fiber_name, and chan_cap inspector, integrated across all 3 interactive demo games.
 Implemented 6-suite benchmark runner with 19.35ns ASM switch & 88.9M msgs/s CSP streaming; sanitized all documentation links to GitHub-compatible relative paths.
 Optimized scheduler with zero-shift ready queue cursor & in-place waiter partitioning; fully documented CPU cache physics & DRAM memory wall across technical guides.
+Normalized LaTeX math in TECH_CONCURRENCY.md; implemented PLAN 5 with centralized config.odin, O(1) packed generational handles, and zero-allocation Waiter_List across all sync primitives.
+Implemented OS Kernel intrusive wait queues (Wait_Queue doubly-linked) across sync primitives with true ZII, and authored TECH_SDS_AND_HANDLES.md detailing static data structures, ZII, packed generational handles (O(1) lookups), and futex queues.

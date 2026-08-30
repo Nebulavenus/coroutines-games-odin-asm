@@ -122,6 +122,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 fiber := new(Fiber, allocator)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
+                fiber.pool_index = u16(len(pool.all_fibers))
+                fiber.generation = 1
                 fiber.status = .Unused
                 fiber.heap_index = -1
                 fiber_watermark_stack(fiber)
@@ -147,6 +149,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 fiber := new(Fiber, allocator)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
+                fiber.pool_index = u16(len(pool.all_fibers))
+                fiber.generation = 1
                 fiber.status = .Unused
                 fiber.heap_index = -1
                 fiber_watermark_stack(fiber)
@@ -171,6 +175,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         fiber := new(Fiber, allocator)
         fiber.stack_base = stack_base
         fiber.stack_size = pool.stack_size
+        fiber.pool_index = u16(len(pool.all_fibers))
+        fiber.generation = 1
         fiber.status = .Unused
         fiber.heap_index = -1
         fiber_watermark_stack(fiber)
@@ -207,9 +213,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     }
 
     fiber := pop(&pool.free_fibers)
-    fiber.handle = Fiber_Handle(pool.next_handle_id)
-    pool.next_handle_id += 1
-    if pool.next_handle_id == 0 do pool.next_handle_id = 1 // Avoid 0
+    fiber.handle = fiber_handle_pack(fiber.pool_index, fiber.generation)
 
     pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
         handle = fiber.handle,
@@ -264,12 +268,23 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
         panic("Stack overflow detected in fiber! Canary corrupted.")
     }
 
+    // Record terminal status in handle history before clearing handle
+    if fiber.handle != 0 {
+        pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
+            handle = fiber.handle,
+            status = fiber.status,
+        }
+    }
+
     // Record high-water stack usage before recycle
     used, _ := fiber_calc_stack_usage(fiber)
     fiber.stack_high_water = used
 
     // Free isolated temporary arena
     mem.arena_free_all(&fiber.temp_arena)
+
+    fiber.generation += 1
+    if fiber.generation == 0 do fiber.generation = 1 // Avoid 0
 
     fiber.status = .Unused
     fiber.handle = 0
@@ -367,15 +382,6 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
             mem.zero(rawptr(sp), 64)
 
             sp_words := ([^]rawptr)(rawptr(sp))
-            // sp_words[0] -> top-64 (R15)
-            // sp_words[1] -> top-56 (R14)
-            // sp_words[2] -> top-48 (R13)
-            // sp_words[3] -> top-40 (R12)
-            // sp_words[4] -> top-32 (RBX)
-            // sp_words[5] -> top-24 (RBP)
-            // sp_words[6] -> top-16 (RET)
-            // sp_words[7] -> top-8  (Dummy)
-
             sp_words[3] = rawptr(fiber) // R12
             sp_words[6] = rawptr(fiber_trampoline_entry)
 
@@ -406,23 +412,21 @@ fiber_trampoline_entry :: proc "c" () {
         fiber.entry_proc(fiber, fiber.user_data)
     }
 
-    when ODIN_ARCH == .amd64 {
-        #no_bounds_check {
-            fiber = (^Fiber)(get_r12_reg())
-        }
-    }
-
-    if fiber == nil do return
-
     // 3. Mark completed if not already aborted / failed
     if fiber.status == .Running {
         fiber.status = .Completed
     }
 
-    // 4. Notify completion to coordinator & parent
+    // 4. Run cleanup proc if registered
+    if fiber.cleanup_proc != nil {
+        fiber.cleanup_proc(fiber.user_data)
+        fiber.cleanup_proc = nil
+    }
+
+    // 5. Notify completion to coordinator & parent
     fiber_on_finish(fiber)
 
-    // 5. Final yield to scheduler
+    // 6. Final yield to scheduler
     fiber_yield_final(fiber)
 }
 
@@ -430,4 +434,98 @@ fiber_yield_final :: proc "c" (fiber: ^Fiber) {
     if fiber.sched != nil {
         fiber_context_switch(&fiber.saved_sp, fiber.sched.scheduler_sp)
     }
+}
+
+// ============================================================================
+// Intrusive Wait_Queue Operations (Doubly-Linked OS Kernel / Futex Pattern)
+// ============================================================================
+
+wait_queue_init :: #force_inline proc "contextless" (q: ^Wait_Queue) {
+    if q == nil do return
+    q.head = nil
+    q.tail = nil
+}
+
+wait_queue_destroy :: #force_inline proc "contextless" (q: ^Wait_Queue) {
+    if q == nil do return
+    wait_queue_clear(q)
+}
+
+wait_queue_is_empty :: #force_inline proc "contextless" (q: ^Wait_Queue) -> bool {
+    return q == nil || q.head == nil
+}
+
+wait_queue_count :: #force_inline proc "contextless" (q: ^Wait_Queue) -> int {
+    if q == nil || q.head == nil do return 0
+    count := 0
+    curr := q.head
+    for curr != nil {
+        count += 1
+        curr = curr.next_waiter
+    }
+    return count
+}
+
+wait_queue_push_back :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) {
+    if q == nil || f == nil do return
+    f.next_waiter = nil
+    f.prev_waiter = q.tail
+
+    if q.tail != nil {
+        q.tail.next_waiter = f
+    } else {
+        q.head = f
+    }
+    q.tail = f
+}
+
+wait_queue_pop_front :: proc "contextless" (q: ^Wait_Queue) -> (f: ^Fiber, ok: bool) {
+    if q == nil || q.head == nil do return nil, false
+
+    f = q.head
+    q.head = f.next_waiter
+    if q.head != nil {
+        q.head.prev_waiter = nil
+    } else {
+        q.tail = nil
+    }
+
+    f.next_waiter = nil
+    f.prev_waiter = nil
+    return f, true
+}
+
+wait_queue_remove :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) -> bool {
+    if q == nil || f == nil do return false
+    // Verify f is actually queued (either it has linked neighbors, or it is the head)
+    if f.prev_waiter == nil && f.next_waiter == nil && q.head != f do return false
+
+    if f.prev_waiter != nil {
+        f.prev_waiter.next_waiter = f.next_waiter
+    } else if q.head == f {
+        q.head = f.next_waiter
+    }
+
+    if f.next_waiter != nil {
+        f.next_waiter.prev_waiter = f.prev_waiter
+    } else if q.tail == f {
+        q.tail = f.prev_waiter
+    }
+
+    f.next_waiter = nil
+    f.prev_waiter = nil
+    return true
+}
+
+wait_queue_clear :: proc "contextless" (q: ^Wait_Queue) {
+    if q == nil do return
+    curr := q.head
+    for curr != nil {
+        next := curr.next_waiter
+        curr.next_waiter = nil
+        curr.prev_waiter = nil
+        curr = next
+    }
+    q.head = nil
+    q.tail = nil
 }

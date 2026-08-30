@@ -84,15 +84,16 @@ Modern games often offload heavy compute (A* pathfinding, mesh generation, asset
 
 ## 4. Cooperative Mutual Exclusion (`Fiber_Mutex` & `Signal`)
 
-### `Fiber_Mutex`
+### `Fiber_Mutex` (24 bytes, True ZII)
 - Zero-OS-contention mutual exclusion for shared gameplay resources (e.g., single-occupant charging pads, exclusive interaction terminals).
-- If locked, `mutex_lock(f, &m)` suspends the caller and queues its `^Fiber` into the mutex's intrusive waitlist.
-- When `mutex_unlock(&m)` is called, the next waiting fiber is moved to the ready queue in $O(1)$ time.
+- If locked, `mutex_lock(f, &m)` suspends the caller and enqueues its intrusive `next_waiter` pointer into the mutex's `Wait_Queue` with **0 heap allocations**.
+- When `mutex_unlock(sched, &m)` is called, the next waiting fiber is popped in $O(1)$ time and moved to the scheduler ready queue.
+- **True ZII**: Valid immediately upon declaration (`m: coroutine.Fiber_Mutex`).
 
-### `Signal`
+### `Signal` (16 bytes, True ZII)
 - Event broadcast primitive (`signal_wait`, `signal_emit`).
 - Allows multiple fibers to suspend awaiting a named event (e.g. `on_boss_enrage`, `on_alarm_tripped`).
-- `signal_emit(&sig)` wakes all listening fibers simultaneously in a single frame.
+- `signal_emit(sched, &sig)` pops and wakes all listening fibers from its `Wait_Queue` in a single frame.
 
 ---
 
@@ -102,30 +103,30 @@ While `Signal` broadcasts void notifications (0 data), `Event(T)` provides 1-to-
 
 ```odin
 Event :: struct($T: typeid) {
-    waiters:   [dynamic]^Fiber,
+    waiters:   Wait_Queue,
     allocator: mem.Allocator,
 }
 ```
 
-- `event_wait(f, &ev)`: Suspends fiber and registers it in `ev.waiters`.
-- `event_emit(sched, &ev, payload)`: Delivers a copy of `payload` to all active listeners and queues them for execution on the next frame. Zero CPU polling.
+- `event_wait(f, &ev)`: Suspends fiber and appends it to `ev.waiters` in $O(1)$ time.
+- `event_emit(sched, &ev, payload)`: Delivers a copy of `payload` (up to 128 bytes) directly into each listener's `payload_storage` and wakes all living listeners simultaneously without CPU polling.
 
 ---
 
 ## 6. Counting Semaphores & Countdown Latches
 
-### `Fiber_Semaphore` (Counting Semaphore)
-- Generalizes mutual exclusion to up to $N$ concurrent permits.
+### `Fiber_Semaphore` (Counting Semaphore, 32 bytes)
+- Generalizes mutual exclusion to up to $N$ concurrent permits with an embedded `Wait_Queue`.
 - Ideal for concurrency limits (e.g. max 3 concurrent pathfinding queries, max 2 concurrent audio streams).
 - `semaphore_acquire`: Suspends if available permits are 0.
-- `semaphore_release`: Increments permits and wakes queued fibers in FIFO order.
+- `semaphore_release`: Increments permits and wakes queued fibers in FIFO order in $O(1)$ time.
 - `semaphore_try_acquire`: Non-blocking permit check.
 
-### `Fiber_Latch` (Countdown Rendezvous Barrier)
-- Synchronization barrier initialized with count $N$.
+### `Fiber_Latch` (Countdown Rendezvous Barrier, 24 bytes, True ZII)
+- Synchronization barrier initialized with count $N$ (`latch := coroutine.Fiber_Latch{count = 3}`).
 - Multiple fibers can wait with `latch_wait(f, &latch)`.
 - Other systems decrement the barrier with `latch_count_down(sched, &latch, count)`.
-- When the count reaches 0, all waiting fibers are unblocked simultaneously.
+- When the count reaches 0, all waiting fibers are unblocked simultaneously in $O(1)$ time per node.
 
 ---
 
@@ -137,7 +138,7 @@ Allows any fiber to await the termination of an independent fiber handle:
 ok := coroutine.fiber_join(f, target_handle)
 ```
 
-- If target fiber is already completed/recycled, returns immediately.
+- If target fiber is already completed/recycled, returns immediately in $O(1)$ time using packed generational handle slot lookup.
 - Suspends calling fiber until target terminates. Returns `true` if target completed with `.Completed`, and `false` if target was aborted or failed.
 
 ---
@@ -156,25 +157,23 @@ ready_idx, val, ok := coroutine.chan_select_recv(f, []^coroutine.Channel(string)
 
 - **Semantics:** 
   1. Fast path: probes all channels with `chan_try_recv` in $O(N)$ time.
-  2. Event-driven suspension: if all channels are empty, appends calling fiber `f` to `ch.recv_waiters` across **all open channels** simultaneously and suspends once with zero CPU frame polling.
-  3. Wakeup & cleanup: on wakeup from any sender, automatically unregisters `f` from all other channels and pops data from the ready channel.
+  2. Event-driven suspension: if all channels are empty, registers calling fiber `f` into `ch.recv_waiters` across **all open channels** simultaneously in $O(1)$ time per channel.
+  3. Wakeup & $O(1)$ in-place unlinking: on wakeup from any sender, calls `wait_queue_remove(&ch.recv_waiters, f)` across all selected channels to unlink `f` in $O(1)$ time without linear searching.
 
 ---
 
 ## 9. Explicit Cancellation Token (`Cancel_Token` & `with_cancel_token`)
 
-A lightweight, decoupled cancellation primitive for cross-subsystem coordination:
+A lightweight, decoupled cancellation primitive (24 bytes, True ZII) for cross-subsystem coordination:
 
 ```odin
 Cancel_Token :: struct {
     is_cancelled: bool,
-    waiters:      [dynamic]^Fiber,
+    waiters:      Wait_Queue,
     allocator:    mem.Allocator,
 }
 
-// Lifecycle & Control
-cancel_token_init(&tok)
-cancel_token_destroy(&tok)
+// Lifecycle & Control (True ZII: tok: Cancel_Token is immediately ready!)
 cancel_token_cancel(&sched, &tok)
 cancel_token_wait(f, &tok)
 is_cancelled := cancel_token_is_cancelled(&tok)

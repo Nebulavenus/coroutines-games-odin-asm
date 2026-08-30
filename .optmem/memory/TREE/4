@@ -8,3 +8,4 @@ Enriched 9 runnable tutorials, implemented pure sync primitives, pool telemetry,
 Implemented event-driven chan_select_recv, by-value scoped locks, scheduler_walk_tree diagnostics, zero-drift Ticker, and with_cancel_token; integrated across all 3 demos and updated all documentation.
 Hardened engine with Event(T) compile asserts, sync allocator fidelity, simulate_until watchdog bypass, condition timeouts, dynamic fiber naming, chan_cap, and zero-alloc VFX across all 3 games.
 Implemented 6-suite benchmark runner, zero-shift scheduler cursor, and in-place waiter partitioning; documented CPU cache physics & DRAM memory wall across technical guides.
+Completed PLAN 5 & Futex architecture: Centralized config.odin, packed 32-bit generational handles (O(1) lookups), OS Kernel intrusive wait queues with true ZII across all sync primitives, and authored TECH_SDS_AND_HANDLES.md.

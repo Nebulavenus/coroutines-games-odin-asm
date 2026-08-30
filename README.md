@@ -4,7 +4,7 @@ A high-performance, deterministic **stackful coroutine engine** for [Odin](https
 
 Write gameplay scripts as straight-line code — `wait`, `sync`, `race`, `rush`, `fallback`, `tween` — while the scheduler handles suspension, cancellation, and hierarchy behind the scenes. No callback spaghetti, no state machines, no OOP boilerplate.
 
-**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick`) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · multi-channel select (`chan_select_recv`) · cancellation tokens (`Cancel_Token`) · category mass cancellation (`scheduler_cancel_by_tag`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` / POSIX `PROT_NONE` · built-in tweening · headless CI simulation (`simulate_until`).
+**SkookumScript-inspired** Structured Concurrency (`sync`/`race`/`rush`/`fallback`) · Centralized `#config` with build-time `-define` overrides · Packed Generational Handles ($O(1)$ lookups) · Intrusive Waiter Queues (OS Kernel / Futex Pattern with 100% Zero Allocations & ZII) · 3-Tier Engine Clock (`Sim_Scaled`, `Real_Time`, `Fixed_Tick`) · dynamic task join (`fiber_join`) · typed multicast events (`Event(T)`) · multi-channel select (`chan_select_recv`) · cancellation tokens (`Cancel_Token`) · category mass cancellation (`scheduler_cancel_by_tag`) · counting semaphores (`Fiber_Semaphore`) · countdown latches (`Fiber_Latch`) · cooperative mutexes & signals (`Fiber_Mutex`) · typed CSP channels (`Channel(T)`) · async job bridge (`await_async`) · pull generators (`Generator(T)`) · per-fiber temp allocators (`context.temp_allocator`) · 128B inline by-value payloads · multi-tiered stack safety with OS `PAGE_GUARD` / POSIX `PROT_NONE` · built-in tweening · headless CI simulation (`simulate_until`).
 
 Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sandbox, and an All-Features Showcase with a live F1 fiber-tree debugger and freeze-frame controls.
 
@@ -12,6 +12,9 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sand
 
 ## Highlights
 
+- **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary scratchpads, canaries, and tick frequencies) are centralized with `-define:KEY=VALUE` compile-time overrides.
+- **Packed Generational Handles ($O(1)$ Direct Slot Lookups)**: `Fiber_Handle` packs a 16-bit slot index and 16-bit generation counter (`u16 index | u16 gen`), enabling instant single-instruction array lookups with zero linear searching and complete ABA protection.
+- **Intrusive Waiter Queues (100% Zero-Allocation & True ZII)**: Primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Cancel_Token`, `Event`, `Channel`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization (ZII).
 - **Native AMD64 Inline Assembly Context Switching**: Fast register swap using call/ret trampoline patterns with full register preservation (Windows x64 GPRs + `xmm6`..`xmm15`; System V AMD64 GPRs), `#volatile` and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`), and strict 16-byte stack alignment.
 - **3-Tier Multi-Domain Engine Clock**:
   - **Simulation Clock (`sim_time`, `sim_delta`)**: Pausable, scalable gameplay clock for AI, combat, and animations.
@@ -83,7 +86,8 @@ coroutines_asm/
 │   │   ├── TECH_CLOCK.md       # 3-Tier Clock Math, Precision & Drivers
 │   │   ├── TECH_MEMORY.md      # Slabs, Canaries, Guard Pages & Temp Arenas
 │   │   ├── TECH_CONCURRENCY.md # Structured Concurrency & Coordinator Lifecycle
-│   │   └── TECH_PRIMITIVES.md  # Channels, Generators, Async Bridge, Mutexes & Events
+│   │   ├── TECH_PRIMITIVES.md  # Channels, Generators, Async Bridge, Mutexes & Events
+│   │   └── TECH_SDS_AND_HANDLES.md # SDS, ZII, Packed Generational Handles & Futex Queues
 │   │
 │   ├── tutorials/
 │   │   ├── 01_hello_coroutines.md      # Getting Started & Basic Yields

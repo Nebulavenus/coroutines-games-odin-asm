@@ -12,7 +12,7 @@ import "core:time"
 scheduler_init :: proc(
     sched: ^Scheduler,
     stack_size: uint = DEFAULT_STACK_SIZE,
-    stacks_per_slab: int = 32,
+    stacks_per_slab: int = STACKS_PER_SLAB,
     alloc_mode: Stack_Allocation_Mode = .Standard_Slab,
     allocator := context.allocator,
 ) {
@@ -26,13 +26,13 @@ scheduler_init :: proc(
 
     sched.clock = Scheduler_Clock{
         time_scale   = 1.0,
-        tick_rate_hz = 1000,
+        tick_rate_hz = DEFAULT_TICK_RATE_HZ,
     }
 
     sched.scheduler_sp = nil
     sched.current_fiber = nil
-    sched.watchdog_enabled = ODIN_DEBUG
-    sched.watchdog_max_slice_ms = 100.0
+    sched.watchdog_enabled = WATCHDOG_ENABLED
+    sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
 }
 
 scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
@@ -50,13 +50,13 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
 
     sched.clock = Scheduler_Clock{
         time_scale   = 1.0,
-        tick_rate_hz = 1000,
+        tick_rate_hz = DEFAULT_TICK_RATE_HZ,
     }
 
     sched.scheduler_sp = nil
     sched.current_fiber = nil
-    sched.watchdog_enabled = ODIN_DEBUG
-    sched.watchdog_max_slice_ms = 100.0
+    sched.watchdog_enabled = WATCHDOG_ENABLED
+    sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
 }
 
 scheduler_destroy :: proc(sched: ^Scheduler, allocator := context.allocator) {
@@ -671,11 +671,13 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
 }
 
 fiber_find_by_handle :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> ^Fiber {
-    if handle == 0 do return nil
-    for fiber in sched.fiber_pool.all_fibers {
-        if fiber.handle == handle && fiber.status != .Unused {
-            return fiber
-        }
+    if handle == 0 || sched == nil do return nil
+    idx := int(fiber_handle_index(handle))
+    if idx >= len(sched.fiber_pool.all_fibers) do return nil
+
+    fiber := sched.fiber_pool.all_fibers[idx]
+    if fiber.handle == handle && fiber.status != .Unused {
+        return fiber
     }
     return nil
 }

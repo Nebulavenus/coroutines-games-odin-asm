@@ -73,7 +73,8 @@ main :: proc() {
         rl.BeginDrawing()
         rl.ClearBackground(rl.DARKGRAY)
         rl.DrawText("Press [SPACE] to trigger a smooth Camera Shake Tween!", 20, 20, 20, rl.RAYWHITE)
-        rl.DrawText(rl.TextFormat("Active Fibers: %d", len(world.sched.pool.active_fibers)), 20, 50, 18, rl.GREEN)
+        stats := coroutine.scheduler_pool_stats(&world.sched)
+        rl.DrawText(rl.TextFormat("Active Fibers: %d | Memory: %d KB", stats.active_fibers, stats.total_memory_kb), 20, 50, 18, rl.GREEN)
         rl.EndDrawing()
     }
 }
@@ -126,3 +127,20 @@ engine_update :: proc(ctx: ^Engine_Context) {
 When switching levels or destroying an entity:
 1. **Per-Entity Lifecycle:** Call `coroutine.scope_cancel(&entity.scope)` to instantly abort all coroutines attached to that entity.
 2. **Whole-World Cleanup:** Call `coroutine.scheduler_destroy(&sched)` on scene unload to immediately reclaim all memory slabs and reset tracking allocators.
+
+---
+
+## 4. Centralized Build Profiles & Compile-Time `-define` Tuning
+
+All engine memory thresholds and sizing tunables can be configured at build time without modifying engine source files:
+
+```bash
+# 2D Indie / Mobile Preset (Saves 50% RAM):
+odin build src/ -define:CORO_STACK_SIZE=16384 -define:CORO_PAYLOAD_SIZE=64 -define:CORO_TEMP_ARENA_SIZE=2048
+
+# High-Density Simulation / Dedicated Server:
+odin build src/ -define:CORO_STACK_SIZE=32768 -define:CORO_STACKS_PER_SLAB=64 -define:CORO_PAYLOAD_SIZE=256
+
+# Debug Watchdog Customization:
+odin build src/ -define:CORO_WATCHDOG_ENABLED=true -define:CORO_WATCHDOG_MAX_SLICE_MS=50.0
+```

@@ -4,12 +4,11 @@ import "base:runtime"
 import "core:mem"
 
 // ============================================================================
-// Constants
+// Constants & Configuration Aliases
 // ============================================================================
 
-DEFAULT_STACK_SIZE :: 32 * 1024 // 32 KB per fiber stack
-CANARY_SIZE        :: 64        // 64-byte canary at the base of each stack
-CANARY_MAGIC       :: 0xDEAD_BEEF_CAFE_BABE
+DEFAULT_STACK_SIZE :: STACK_SIZE // Default stack size from config.odin
+// CANARY_SIZE and CANARY_MAGIC are defined in config.odin
 
 // ============================================================================
 // Enums & Handles
@@ -30,7 +29,20 @@ Fiber_Status :: enum u8 {
     Aborted,           // Cancelled by parent or sibling race winner
 }
 
+// 32-bit Packed Generational Handle (16-bit Pool Index | 16-bit Generation Counter)
 Fiber_Handle :: distinct u32
+
+fiber_handle_pack :: #force_inline proc "contextless" (index: u16, gen: u16) -> Fiber_Handle {
+    return Fiber_Handle(u32(index) | (u32(gen) << 16))
+}
+
+fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
+    return u16(u32(h) & 0xFFFF)
+}
+
+fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
+    return u16((u32(h) >> 16) & 0xFFFF)
+}
 
 Time_Clock :: enum u8 {
     Sim_Scaled,  // Scaled by time_scale and halted by is_paused (Default for gameplay)
@@ -89,7 +101,7 @@ Phase_Director :: struct {
     phase_name:    string,
 }
 
-FIBER_PAYLOAD_SIZE :: 128
+FIBER_PAYLOAD_SIZE :: PAYLOAD_SIZE
 
 Branch_Desc :: struct {
     entry_proc:      proc(f: ^Fiber, user_data: rawptr),
@@ -102,12 +114,23 @@ Branch_Desc :: struct {
 }
 
 // ============================================================================
+// Intrusive Wait Queue (Doubly-Linked OS Kernel / Futex Pattern)
+// ============================================================================
+
+Wait_Queue :: struct {
+    head: ^Fiber,
+    tail: ^Fiber,
+}
+
+// ============================================================================
 // Fiber Structure
 // ============================================================================
 
 Fiber :: struct {
     // --- Execution Context & Stack ---
     handle:           Fiber_Handle,
+    pool_index:       u16,             // Direct index in Fiber_Pool.all_fibers
+    generation:       u16,             // Incremented upon each recycle / reuse
     saved_sp:         rawptr,          // Saved stack pointer (%rsp)
     stack_base:       rawptr,          // Lowest memory address of stack
     stack_size:       uint,            // Allocated stack size (e.g. 32KB)
@@ -123,6 +146,10 @@ Fiber :: struct {
     next_sibling:     ^Fiber,
     prev_sibling:     ^Fiber,
     child_count:      int,
+
+    // --- Intrusive Wait Queue Links (Zero-Allocation Synchronization) ---
+    next_waiter:      ^Fiber,
+    prev_waiter:      ^Fiber,
 
     // --- Concurrency & Join Coordination ---
     join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race
@@ -150,7 +177,7 @@ Fiber :: struct {
 
     // --- Isolated Temporary Allocator ---
     temp_arena:        mem.Arena,
-    temp_arena_buffer: [4 * 1024]byte, // 4KB private scratchpad per fiber
+    temp_arena_buffer: [TEMP_ARENA_SIZE]byte, // Private scratchpad per fiber
 
     // --- Diagnostics & Profiling ---
     debug_name:       string,
@@ -159,22 +186,22 @@ Fiber :: struct {
 }
 
 // ============================================================================
-// Synchronization & Concurrency Primitives
+// Synchronization & Concurrency Primitives (Intrusive / 100% Zero-Allocation)
 // ============================================================================
 
 Signal :: struct {
-    waiters: [dynamic]^Fiber,
+    waiters: Wait_Queue,
 }
 
 Fiber_Mutex :: struct {
     locked:  bool,
-    waiters: [dynamic]^Fiber,
+    waiters: Wait_Queue,
 }
 
 // --- 1-to-Many Typed Multicast Event ---
 
 Event :: struct($T: typeid) {
-    waiters:   [dynamic]^Fiber,
+    waiters:   Wait_Queue,
     allocator: mem.Allocator,
 }
 
@@ -183,7 +210,7 @@ Event :: struct($T: typeid) {
 Fiber_Semaphore :: struct {
     permits:     int,
     max_permits: int,
-    waiters:     [dynamic]^Fiber,
+    waiters:     Wait_Queue,
     allocator:   mem.Allocator,
 }
 
@@ -191,7 +218,7 @@ Fiber_Semaphore :: struct {
 
 Fiber_Latch :: struct {
     count:     int,
-    waiters:   [dynamic]^Fiber,
+    waiters:   Wait_Queue,
     allocator: mem.Allocator,
 }
 
@@ -227,8 +254,8 @@ Channel :: struct($T: typeid) {
     tail:         int,              // Push/write index
     count:        int,              // Number of active items in ring buffer
     capacity:     int,              // Configured capacity (0 for unbuffered rendezvous)
-    send_waiters: [dynamic]^Fiber,  // Fibers blocked on chan_send
-    recv_waiters: [dynamic]^Fiber,  // Fibers blocked on chan_recv
+    send_waiters: Wait_Queue,       // Fibers blocked on chan_send
+    recv_waiters: Wait_Queue,       // Fibers blocked on chan_recv
     is_closed:    bool,             // Closed state flag
     allocator:    mem.Allocator,    // Backing memory allocator
 }
@@ -237,7 +264,7 @@ Channel :: struct($T: typeid) {
 
 Cancel_Token :: struct {
     is_cancelled: bool,
-    waiters:      [dynamic]^Fiber,
+    waiters:      Wait_Queue,
     allocator:    mem.Allocator,
 }
 
@@ -277,7 +304,7 @@ Fiber_Pool_Config :: struct {
     allocator:       mem.Allocator,
 }
 
-FIBER_HANDLE_HISTORY_CAPACITY :: 2048
+FIBER_HANDLE_HISTORY_CAPACITY :: HANDLE_HISTORY_CAPACITY
 
 Handle_Entry :: struct {
     handle: Fiber_Handle,

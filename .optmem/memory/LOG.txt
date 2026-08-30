@@ -39,3 +39,7 @@
 #38 2026-08-29 Optimized scheduler with zero-shift ready queue index cursor and in-place waiter queue linear partitioning (Suite 2 10k fibers 114ms->50ms, 138/138 tests passing).
 #39 2026-08-29 Documented CPU cache hierarchy (L1/L2/L3 vs DRAM memory wall math), zero-shift ready cursor, and in-place waiter partitioning in TECH_MEMORY.md, GUIDE_PERFORMANCE.md, TECH_CONCURRENCY.md, ARCHITECTURE.md.
 #40 2026-08-29 Normalized LaTeX math in TECH_CONCURRENCY.md to ensure '_' is used strictly for math subscripts, eliminating all KaTeX text-mode underscore rendering issues on GitHub.
+#41 2026-08-30 Implemented PLAN 5: Centralized config.odin with #config overrides, O(1) packed generational handles (u16 slot | u16 gen), and zero-allocation Waiter_List in sync primitives (143/143 tests passing, 0 leaks).
+#42 2026-08-30 Upgraded synchronization primitives to doubly-linked Intrusive Wait Queues (OS Kernel / Futex Pattern): 100% zero-alloc, unbounded capacity, true ZII, and O(1) in-place removals (143/143 tests passing).
+#43 2026-08-30 Authored TECH_SDS_AND_HANDLES.md detailing SDS, ZII, packed generational handles (O(1) lookups), and intrusive futex queues; updated ARCHITECTURE, TECH_MEMORY, TECH_PRIMITIVES, README.
+#44 2026-08-30 Updated tutorials (04, 05) and guides (PERFORMANCE, INTEGRATION, FOOTGUNS) with True ZII, Intrusive Futex Queues, condition timeouts, and packed handle safety.

@@ -272,7 +272,9 @@ scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
 
 fiber_is_alive :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
     if sched == nil || handle == 0 do return false
-    for f in sched.fiber_pool.all_fibers {
+    idx := int(fiber_handle_index(handle))
+    if idx < len(sched.fiber_pool.all_fibers) {
+        f := sched.fiber_pool.all_fibers[idx]
         if f.handle == handle && f.status != .Unused {
             return f.status != .Completed && f.status != .Aborted && f.status != .Failed
         }
@@ -282,8 +284,10 @@ fiber_is_alive :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
 
 fiber_status :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
     if sched == nil || handle == 0 do return .Completed, false
-    // 1. Check active fibers
-    for f in sched.fiber_pool.all_fibers {
+    // 1. O(1) Check active fiber slot
+    idx := int(fiber_handle_index(handle))
+    if idx < len(sched.fiber_pool.all_fibers) {
+        f := sched.fiber_pool.all_fibers[idx]
         if f.handle == handle && f.status != .Unused {
             return f.status, true
         }
@@ -1152,18 +1156,18 @@ wait_while_timeout :: proc{wait_while_timeout_ptr, wait_while_timeout_val, wait_
 // ============================================================================
 
 signal_init :: proc(sig: ^Signal, allocator := context.allocator) {
-    sig.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&sig.waiters)
 }
 
 signal_destroy :: proc(sig: ^Signal) {
     if sig == nil do return
-    delete(sig.waiters)
+    wait_queue_destroy(&sig.waiters)
 }
 
 signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
     if f == nil || sig == nil || f.sched == nil do return
 
-    append(&sig.waiters, f)
+    wait_queue_push_back(&sig.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1171,15 +1175,20 @@ signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
 }
 
 signal_emit :: proc(sched: ^Scheduler, sig: ^Signal) {
-    if sched == nil || sig == nil do return
+    if sched == nil || sig == nil || wait_queue_is_empty(&sig.waiters) do return
 
-    for f in sig.waiters {
-        if f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+    for {
+        f, ok := wait_queue_pop_front(&sig.waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
             f.status = .Ready
             append(&sched.ready_queue, f)
         }
     }
-    clear(&sig.waiters)
+}
+
+signal_waiter_count :: #force_inline proc "contextless" (sig: ^Signal) -> int {
+    return sig != nil ? wait_queue_count(&sig.waiters) : 0
 }
 
 // ============================================================================
@@ -1188,12 +1197,12 @@ signal_emit :: proc(sched: ^Scheduler, sig: ^Signal) {
 
 mutex_init :: proc(m: ^Fiber_Mutex, allocator := context.allocator) {
     m.locked = false
-    m.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&m.waiters)
 }
 
 mutex_destroy :: proc(m: ^Fiber_Mutex) {
     if m == nil do return
-    delete(m.waiters)
+    wait_queue_destroy(&m.waiters)
 }
 
 mutex_try_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) -> bool {
@@ -1214,7 +1223,7 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
     }
 
     // Already locked: suspend this fiber until unlock
-    append(&m.waiters, f)
+    wait_queue_push_back(&m.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1224,9 +1233,10 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
 mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     if sched == nil || m == nil do return
 
-    for len(m.waiters) > 0 {
-        next_fiber := pop_front(&m.waiters)
-        if next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
+    for {
+        next_fiber, ok := wait_queue_pop_front(&m.waiters)
+        if !ok do break
+        if next_fiber != nil && next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
             next_fiber.status = .Ready
             append(&sched.ready_queue, next_fiber)
             return
@@ -1234,6 +1244,10 @@ mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     }
 
     m.locked = false
+}
+
+mutex_waiter_count :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> int {
+    return m != nil ? wait_queue_count(&m.waiters) : 0
 }
 
 with_mutex_ptr :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber, data: ^$T), data: ^T) {
@@ -1271,20 +1285,20 @@ with_mutex :: proc{with_mutex_ptr, with_mutex_val, with_mutex_nil}
 
 event_init :: proc(ev: ^Event($T), allocator := context.allocator) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
-    ev.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&ev.waiters)
     ev.allocator = allocator
 }
 
 event_destroy :: proc(ev: ^Event($T)) {
     if ev == nil do return
-    delete(ev.waiters)
+    wait_queue_destroy(&ev.waiters)
 }
 
 event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || ev == nil || f.sched == nil do return {}, false
 
-    append(&ev.waiters, f)
+    wait_queue_push_back(&ev.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1299,10 +1313,12 @@ event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
 
 event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
-    if sched == nil || ev == nil do return
+    if sched == nil || ev == nil || wait_queue_is_empty(&ev.waiters) do return
 
-    for f in ev.waiters {
-        if f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+    for {
+        f, ok := wait_queue_pop_front(&ev.waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
             if size_of(T) <= FIBER_PAYLOAD_SIZE {
                 (cast(^T)&f.payload_storage[0])^ = payload
             }
@@ -1310,15 +1326,14 @@ event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
             append(&sched.ready_queue, f)
         }
     }
-    clear(&ev.waiters)
 }
 
 event_waiter_count :: #force_inline proc(ev: ^Event($T)) -> int {
-    return ev != nil ? len(ev.waiters) : 0
+    return ev != nil ? wait_queue_count(&ev.waiters) : 0
 }
 
 event_has_waiters :: #force_inline proc(ev: ^Event($T)) -> bool {
-    return ev != nil && len(ev.waiters) > 0
+    return ev != nil && !wait_queue_is_empty(&ev.waiters)
 }
 
 // ============================================================================
@@ -1328,13 +1343,13 @@ event_has_waiters :: #force_inline proc(ev: ^Event($T)) -> bool {
 semaphore_init :: proc(sem: ^Fiber_Semaphore, initial_permits: int, max_permits: int = -1, allocator := context.allocator) {
     sem.permits = initial_permits
     sem.max_permits = max_permits > 0 ? max_permits : initial_permits
-    sem.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&sem.waiters)
     sem.allocator = allocator
 }
 
 semaphore_destroy :: proc(sem: ^Fiber_Semaphore) {
     if sem == nil do return
-    delete(sem.waiters)
+    wait_queue_destroy(&sem.waiters)
 }
 
 semaphore_try_acquire :: proc(sem: ^Fiber_Semaphore) -> bool {
@@ -1354,7 +1369,7 @@ semaphore_acquire :: proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
         return
     }
 
-    append(&sem.waiters, f)
+    wait_queue_push_back(&sem.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1366,9 +1381,10 @@ semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int =
 
     sem.permits = min(sem.permits + count, sem.max_permits)
 
-    for sem.permits > 0 && len(sem.waiters) > 0 {
-        next_fiber := pop_front(&sem.waiters)
-        if next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
+    for sem.permits > 0 {
+        next_fiber, ok := wait_queue_pop_front(&sem.waiters)
+        if !ok do break
+        if next_fiber != nil && next_fiber.status == .Suspended_Join && fiber_is_alive(sched, next_fiber.handle) {
             sem.permits -= 1
             next_fiber.status = .Ready
             append(&sched.ready_queue, next_fiber)
@@ -1378,6 +1394,10 @@ semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int =
 
 semaphore_available_permits :: #force_inline proc(sem: ^Fiber_Semaphore) -> int {
     return sem != nil ? sem.permits : 0
+}
+
+semaphore_waiter_count :: #force_inline proc "contextless" (sem: ^Fiber_Semaphore) -> int {
+    return sem != nil ? wait_queue_count(&sem.waiters) : 0
 }
 
 with_semaphore_ptr :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fiber, data: ^$T), data: ^T) {
@@ -1415,13 +1435,13 @@ with_semaphore :: proc{with_semaphore_ptr, with_semaphore_val, with_semaphore_ni
 
 latch_init :: proc(latch: ^Fiber_Latch, initial_count: int, allocator := context.allocator) {
     latch.count = initial_count
-    latch.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&latch.waiters)
     latch.allocator = allocator
 }
 
 latch_destroy :: proc(latch: ^Fiber_Latch) {
     if latch == nil do return
-    delete(latch.waiters)
+    wait_queue_destroy(&latch.waiters)
 }
 
 latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
@@ -1429,13 +1449,14 @@ latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
 
     latch.count = max(0, latch.count - n)
     if latch.count == 0 {
-        for f in latch.waiters {
-            if f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+        for {
+            f, ok := wait_queue_pop_front(&latch.waiters)
+            if !ok do break
+            if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
                 f.status = .Ready
                 append(&sched.ready_queue, f)
             }
         }
-        clear(&latch.waiters)
     }
 }
 
@@ -1443,7 +1464,7 @@ latch_wait :: proc(f: ^Fiber, latch: ^Fiber_Latch) {
     if f == nil || latch == nil || f.sched == nil do return
     if latch.count <= 0 do return
 
-    append(&latch.waiters, f)
+    wait_queue_push_back(&latch.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1452,6 +1473,10 @@ latch_wait :: proc(f: ^Fiber, latch: ^Fiber_Latch) {
 
 latch_get_count :: #force_inline proc(latch: ^Fiber_Latch) -> int {
     return latch != nil ? latch.count : 0
+}
+
+latch_waiter_count :: #force_inline proc "contextless" (latch: ^Fiber_Latch) -> int {
+    return latch != nil ? wait_queue_count(&latch.waiters) : 0
 }
 
 latch_is_ready :: #force_inline proc(latch: ^Fiber_Latch) -> bool {
@@ -1465,38 +1490,45 @@ latch_is_ready :: #force_inline proc(latch: ^Fiber_Latch) -> bool {
 cancel_token_init :: proc(tok: ^Cancel_Token, allocator := context.allocator) {
     if tok == nil do return
     tok.is_cancelled = false
-    tok.waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&tok.waiters)
     tok.allocator = allocator
 }
 
 cancel_token_destroy :: proc(tok: ^Cancel_Token) {
     if tok == nil do return
-    delete(tok.waiters)
+    wait_queue_destroy(&tok.waiters)
 }
 
 cancel_token_is_cancelled :: #force_inline proc(tok: ^Cancel_Token) -> bool {
     return tok != nil && tok.is_cancelled
 }
 
+cancel_token_waiter_count :: #force_inline proc "contextless" (tok: ^Cancel_Token) -> int {
+    return tok != nil ? wait_queue_count(&tok.waiters) : 0
+}
+
 cancel_token_cancel :: proc(sched: ^Scheduler, tok: ^Cancel_Token) {
     if tok == nil || tok.is_cancelled do return
     tok.is_cancelled = true
     if sched != nil {
-        for f in tok.waiters {
-            if f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+        for {
+            f, ok := wait_queue_pop_front(&tok.waiters)
+            if !ok do break
+            if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
                 f.status = .Ready
                 append(&sched.ready_queue, f)
             }
         }
+    } else {
+        wait_queue_clear(&tok.waiters)
     }
-    clear(&tok.waiters)
 }
 
 cancel_token_wait :: proc(f: ^Fiber, tok: ^Cancel_Token) {
     if f == nil || tok == nil || f.sched == nil do return
     if tok.is_cancelled do return
 
-    append(&tok.waiters, f)
+    wait_queue_push_back(&tok.waiters, f)
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1564,8 +1596,8 @@ chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allo
     ch.head = 0
     ch.tail = 0
     ch.count = 0
-    ch.send_waiters = make([dynamic]^Fiber, allocator)
-    ch.recv_waiters = make([dynamic]^Fiber, allocator)
+    wait_queue_init(&ch.send_waiters)
+    wait_queue_init(&ch.recv_waiters)
     ch.is_closed = false
     ch.allocator = allocator
 }
@@ -1576,8 +1608,8 @@ chan_destroy :: proc(ch: ^Channel($T)) {
         chan_close(ch)
     }
     delete(ch.buffer, ch.allocator)
-    delete(ch.send_waiters)
-    delete(ch.recv_waiters)
+    wait_queue_destroy(&ch.send_waiters)
+    wait_queue_destroy(&ch.recv_waiters)
     ch.head = 0
     ch.tail = 0
     ch.count = 0
@@ -1600,34 +1632,45 @@ chan_is_full :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
     return ch != nil && ch.capacity > 0 && ch.count >= ch.capacity
 }
 
+chan_send_waiter_count :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
+    return ch != nil ? wait_queue_count(&ch.send_waiters) : 0
+}
+
+chan_recv_waiter_count :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
+    return ch != nil ? wait_queue_count(&ch.recv_waiters) : 0
+}
+
 chan_close :: proc(ch: ^Channel($T)) {
     if ch == nil || ch.is_closed do return
     ch.is_closed = true
 
-    for f in ch.recv_waiters {
-        if f.status == .Suspended_Join && fiber_is_alive(f.sched, f.handle) {
+    for {
+        f, ok := wait_queue_pop_front(&ch.recv_waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(f.sched, f.handle) {
             f.status = .Ready
             append(&f.sched.ready_queue, f)
         }
     }
-    clear(&ch.recv_waiters)
 
-    for f in ch.send_waiters {
-        if f.status == .Suspended_Join && fiber_is_alive(f.sched, f.handle) {
+    for {
+        f, ok := wait_queue_pop_front(&ch.send_waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(f.sched, f.handle) {
             f.status = .Ready
             append(&f.sched.ready_queue, f)
         }
     }
-    clear(&ch.send_waiters)
 }
 
 chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
     if ch == nil || ch.is_closed do return false
 
     if ch.capacity == 0 {
-        for len(ch.recv_waiters) > 0 {
-            receiver := pop_front(&ch.recv_waiters)
-            if receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
+        for {
+            receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
+            if !popped do break
+            if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
                 ch.buffer[0] = value
                 ch.count = 1
                 receiver.status = .Ready
@@ -1646,9 +1689,10 @@ chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
     ch.tail = (ch.tail + 1) % len(ch.buffer)
     ch.count += 1
 
-    for len(ch.recv_waiters) > 0 {
-        receiver := pop_front(&ch.recv_waiters)
-        if receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
+    for {
+        receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
+        if !popped do break
+        if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
             receiver.status = .Ready
             append(&receiver.sched.ready_queue, receiver)
             break
@@ -1664,9 +1708,10 @@ chan_try_recv :: proc(ch: ^Channel($T)) -> (value: T, ok: bool) {
     ch.head = (ch.head + 1) % len(ch.buffer)
     ch.count -= 1
 
-    for len(ch.send_waiters) > 0 {
-        sender := pop_front(&ch.send_waiters)
-        if sender.status == .Suspended_Join && fiber_is_alive(sender.sched, sender.handle) {
+    for {
+        sender, popped := wait_queue_pop_front(&ch.send_waiters)
+        if !popped do break
+        if sender != nil && sender.status == .Suspended_Join && fiber_is_alive(sender.sched, sender.handle) {
             sender.status = .Ready
             append(&sender.sched.ready_queue, sender)
             break
@@ -1683,9 +1728,10 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
         if ch.is_closed do return false
 
         if ch.capacity == 0 {
-            for len(ch.recv_waiters) > 0 {
-                receiver := pop_front(&ch.recv_waiters)
-                if receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
+            for {
+                receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
+                if !popped do break
+                if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
                     ch.buffer[0] = value
                     ch.count = 1
                     receiver.status = .Ready
@@ -1698,9 +1744,10 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
             ch.tail = (ch.tail + 1) % len(ch.buffer)
             ch.count += 1
 
-            for len(ch.recv_waiters) > 0 {
-                receiver := pop_front(&ch.recv_waiters)
-                if receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
+            for {
+                receiver, popped := wait_queue_pop_front(&ch.recv_waiters)
+                if !popped do break
+                if receiver != nil && receiver.status == .Suspended_Join && fiber_is_alive(receiver.sched, receiver.handle) {
                     receiver.status = .Ready
                     append(&receiver.sched.ready_queue, receiver)
                     break
@@ -1709,7 +1756,7 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
             return true
         }
 
-        append(&ch.send_waiters, f)
+        wait_queue_push_back(&ch.send_waiters, f)
         f.status = .Suspended_Join
         f.stored_context = context
         fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1726,9 +1773,10 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
             ch.head = (ch.head + 1) % len(ch.buffer)
             ch.count -= 1
 
-            for len(ch.send_waiters) > 0 {
-                sender := pop_front(&ch.send_waiters)
-                if sender.status == .Suspended_Join && fiber_is_alive(sender.sched, sender.handle) {
+            for {
+                sender, popped := wait_queue_pop_front(&ch.send_waiters)
+                if !popped do break
+                if sender != nil && sender.status == .Suspended_Join && fiber_is_alive(sender.sched, sender.handle) {
                     sender.status = .Ready
                     append(&sender.sched.ready_queue, sender)
                     break
@@ -1741,7 +1789,7 @@ chan_recv :: proc(f: ^Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
             return {}, false
         }
 
-        append(&ch.recv_waiters, f)
+        wait_queue_push_back(&ch.recv_waiters, f)
         f.status = .Suspended_Join
         f.stored_context = context
         fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
@@ -1753,7 +1801,7 @@ chan_recv_timeout :: proc(f: ^Fiber, ch: ^Channel($T), timeout_seconds: f32) -> 
     if f == nil || ch == nil do return {}, false, false
 
     // Fast-path: if items are already available in buffer
-    if ch.count > 0 || (ch.capacity == 0 && len(ch.send_waiters) > 0) {
+    if ch.count > 0 || (ch.capacity == 0 && !wait_queue_is_empty(&ch.send_waiters)) {
         val, ok_recv := chan_recv(f, ch)
         return val, ok_recv, false
     }
@@ -1837,7 +1885,7 @@ chan_select_recv :: proc(f: ^Fiber, channels: []^Channel($T)) -> (ready_index: i
         registered_count := 0
         for ch in channels {
             if ch != nil && !ch.is_closed {
-                append(&ch.recv_waiters, f)
+                wait_queue_push_back(&ch.recv_waiters, f)
                 registered_count += 1
             }
         }
@@ -1856,11 +1904,7 @@ chan_select_recv :: proc(f: ^Fiber, channels: []^Channel($T)) -> (ready_index: i
         // 4. Unregister from all channels' recv_waiters
         for ch in channels {
             if ch != nil {
-                for j := len(ch.recv_waiters) - 1; j >= 0; j -= 1 {
-                    if ch.recv_waiters[j] == f {
-                        unordered_remove(&ch.recv_waiters, j)
-                    }
-                }
+                wait_queue_remove(&ch.recv_waiters, f)
             }
         }
 

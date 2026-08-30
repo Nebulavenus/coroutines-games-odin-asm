@@ -4,9 +4,9 @@ Coroutines frequently need to communicate across independent systems, wait for b
 
 ---
 
-## 1. Zero-Polling Event Broadcasting with `Signal`
+## 1. Zero-Polling Event Broadcasting with `Signal` (True ZII)
 
-A `Signal` allows any number of fibers to suspend waiting for a broadcast event without CPU polling:
+A `Signal` allows any number of fibers to suspend waiting for a broadcast event without CPU polling. Built on **doubly-linked intrusive wait queues**, `Signal` requires **0 heap allocations** and supports **True Zero Is Initialization (ZII)**:
 
 ```odin
 package main
@@ -23,14 +23,13 @@ sentry_guard :: proc(f: ^coroutine.Fiber, id: int) {
     fmt.printf("[Sentry %d] Woken by alarm! Engaging intruder!\n", id)
 }
 
+// True ZII: Ready to use immediately — no signal_init required!
 alarm_signal: coroutine.Signal
 
 main :: proc() {
     sched: coroutine.Scheduler
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
-
-    coroutine.signal_init(&alarm_signal)
 
     // Spawn 4 sleeping sentries
     for i := 1; i <= 4; i += 1 {
@@ -42,7 +41,7 @@ main :: proc() {
     coroutine.scheduler_step(&sched, 0.1) // Sentries start sleeping
 
     fmt.println("\n>>> Player steps on alarm pressure plate! <<<")
-    coroutine.signal_emit(&alarm_signal) // WAKES ALL 4 SENTRIES SIMULTANEOUSLY!
+    coroutine.signal_emit(&sched, &alarm_signal) // WAKES ALL 4 SENTRIES SIMULTANEOUSLY!
 
     coroutine.scheduler_step(&sched, 0.1)
 }
@@ -50,9 +49,9 @@ main :: proc() {
 
 ---
 
-## 2. Shared Resource Arbitration with `Fiber_Mutex`
+## 2. Shared Resource Arbitration with `Fiber_Mutex` (True ZII)
 
-When multiple actors must access an exclusive gameplay station (e.g. an NPC dialogue booth, an ammo recharge station, or a crafting anvil), use `Fiber_Mutex`:
+When multiple actors must access an exclusive gameplay station (e.g. an NPC dialogue booth, an ammo recharge station, or a crafting anvil), use `Fiber_Mutex`. With True ZII, mutexes inside game structs are immediately valid:
 
 ```odin
 package main
@@ -61,7 +60,7 @@ import "core:fmt"
 import "coroutine"
 
 Charging_Station :: struct {
-    mutex: coroutine.Fiber_Mutex,
+    mutex: coroutine.Fiber_Mutex, // True ZII: 24 bytes, 0 allocations, immediately ready!
 }
 
 drone_worker :: proc(f: ^coroutine.Fiber, id: int) {
@@ -81,8 +80,6 @@ main :: proc() {
     sched: coroutine.Scheduler
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
-
-    coroutine.mutex_init(&station.mutex)
 
     // Spawn 3 drones competing for 1 charging pad
     for i := 1; i <= 3; i += 1 {
@@ -158,8 +155,8 @@ main :: proc() {
 ---
 
 ## 4. 1-to-Many Typed Multicast with `Event(T)`
-
-While `Signal` broadcasts empty notifications, `Event(T)` delivers a typed payload to all active listening fibers in a single broadcast:
+ 
+While `Signal` broadcasts empty notifications, `Event(T)` delivers a typed payload to all active listening fibers in a single broadcast without heap allocations:
 
 ```odin
 Player_Death :: struct {
@@ -167,9 +164,7 @@ Player_Death :: struct {
     killer_id: int,
 }
 
-death_event: coroutine.Event(Player_Death)
-coroutine.event_init(&death_event)
-defer coroutine.event_destroy(&death_event)
+death_event: coroutine.Event(Player_Death) // True ZII: waiters Wait_Queue zero-initialized!
 
 // UI Audio Fiber
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev: ^coroutine.Event(Player_Death)) {
@@ -196,7 +191,6 @@ When you want to allow up to $N$ fibers to concurrently access a shared pool (e.
 ```odin
 pathfinding_sem: coroutine.Fiber_Semaphore
 coroutine.semaphore_init(&pathfinding_sem, initial_permits = 3, max_permits = 3)
-defer coroutine.semaphore_destroy(&pathfinding_sem)
 
 ai_pathfind_task :: proc(f: ^coroutine.Fiber, target_node: int) {
     // Deadlock-proof scoped acquire & auto-release:
@@ -209,14 +203,13 @@ ai_pathfind_task :: proc(f: ^coroutine.Fiber, target_node: int) {
 
 ---
 
-## 6. Multi-Subsystem Rendezvous with `Fiber_Latch`
+## 6. Multi-Subsystem Rendezvous with `Fiber_Latch` (True ZII)
 
 A `Fiber_Latch` acts as a countdown barrier initialized with count $N$. Waiting fibers block until $N$ subsystems have called `latch_count_down`:
 
 ```odin
-loading_latch: coroutine.Fiber_Latch
-coroutine.latch_init(&loading_latch, initial_count = 3) // Wait for 3 systems
-defer coroutine.latch_destroy(&loading_latch)
+// True ZII: Directly initialize count on declaration!
+loading_latch := coroutine.Fiber_Latch{count = 3}
 
 // Game Manager Fiber:
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, latch: ^coroutine.Fiber_Latch) {
@@ -235,7 +228,7 @@ coroutine.latch_count_down(&sched, &loading_latch) // Loaded Audio -> Unblocks G
 
 ## 7. Dynamic Task Joining with `fiber_join`
 
-Wait for any independent fiber handle to finish, fail, or be cancelled:
+Wait for any independent fiber handle to finish, fail, or be cancelled in $O(1)$ time:
 
 ```odin
 boss_cutscene_handle := coroutine.spawn(&sched, cinematic_intro_proc)
@@ -253,7 +246,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cutscene: coroutine.Fiber_Hand
 
 ## 8. Multi-Channel Multiplexing with `chan_select_recv`
 
-When a consumer fiber needs to receive messages from whichever channel has data available first with **$O(1)$ zero-polling event-driven suspension**, use `chan_select_recv`:
+When a consumer fiber needs to receive messages from whichever channel has data available first with **$O(1)$ zero-polling event-driven suspension and instant in-place unlinking**, use `chan_select_recv`:
 
 ```odin
 package main
@@ -316,9 +309,9 @@ if ok {
 
 ---
 
-## 9. Decoupled Cancellation with `Cancel_Token`
+## 9. Decoupled Cancellation with `Cancel_Token` (True ZII)
 
-While `Fiber_Scope` provides structural, parent-child cancellations for entities, `Cancel_Token` provides a lightweight, explicit cancellation handle for cross-subsystem coordination:
+While `Fiber_Scope` provides structural, parent-child cancellations for entities, `Cancel_Token` provides a lightweight, explicit cancellation handle for cross-subsystem coordination with **True ZII**:
 
 ```odin
 package main
@@ -331,10 +324,8 @@ main :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // 1. Initialize cancellation token
+    // 1. True ZII: cancellation token is immediately valid on declaration!
     game_over_tok: coroutine.Cancel_Token
-    coroutine.cancel_token_init(&game_over_tok)
-    defer coroutine.cancel_token_destroy(&game_over_tok)
 
     // 2. Multiple unrelated fibers await cancellation:
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, tok: ^coroutine.Cancel_Token) {
