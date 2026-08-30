@@ -7748,5 +7748,308 @@ test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
     testing.expect_value(t, received_values[1], 99)
 }
 
+// ============================================================================
+// Test 175: Unbuffered CSP Channel Sender-First Rendezvous Handshake
+// ============================================================================
 
+@(test)
+test_unbuffered_chan_sender_first_rendezvous :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
 
+    ch: Channel(int)
+    chan_init(&ch, 0)
+    defer chan_destroy(&ch)
+
+    sender_completed := false
+    receiver_value := 0
+    receiver_ok := false
+
+    Unbuf_Ctx :: struct {
+        ch:               ^Channel(int),
+        sender_completed: ^bool,
+        recv_val:         ^int,
+        recv_ok:          ^bool,
+    }
+    ctx := Unbuf_Ctx{
+        ch               = &ch,
+        sender_completed = &sender_completed,
+        recv_val         = &receiver_value,
+        recv_ok          = &receiver_ok,
+    }
+
+    // Step 1: Sender runs FIRST before receiver even exists
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Unbuf_Ctx) {
+        ok := chan_send(f, c.ch, 777)
+        c.sender_completed^ = ok
+    }, &ctx, name = "Sender First")
+
+    scheduler_step(&sched, 0.016)
+
+    // Sender should be blocked waiting for receiver rendezvous
+    testing.expect_value(t, sender_completed, false)
+    testing.expect_value(t, chan_send_waiter_count(&ch), 1)
+
+    // Step 2: Receiver spawns and consumes the rendezvous value
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Unbuf_Ctx) {
+        val, ok := chan_recv(f, c.ch)
+        c.recv_val^ = val
+        c.recv_ok^ = ok
+    }, &ctx, name = "Receiver Second")
+
+    scheduler_step(&sched, 0.016)
+
+    // Both sender and receiver must have completed the symmetrical exchange
+    testing.expect_value(t, receiver_ok, true)
+    testing.expect_value(t, receiver_value, 777)
+    testing.expect_value(t, sender_completed, true)
+    testing.expect_value(t, chan_send_waiter_count(&ch), 0)
+}
+
+// ============================================================================
+// Test 176: Multiple Unbuffered CSP Senders FIFO Rendezvous Handshake
+// ============================================================================
+
+@(test)
+test_unbuffered_chan_multi_sender_fifo_rendezvous :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ch: Channel(int)
+    chan_init(&ch, 0)
+    defer chan_destroy(&ch)
+
+    received: [dynamic]int
+    defer delete(received)
+
+    Multi_Ctx :: struct {
+        ch:       ^Channel(int),
+        received: ^[dynamic]int,
+    }
+    ctx := Multi_Ctx{ch = &ch, received = &received}
+
+    Sender_Arg :: struct {
+        ch:  ^Channel(int),
+        val: int,
+    }
+
+    // Spawn 3 senders in order: 100, 200, 300
+    vals := [3]int{100, 200, 300}
+    for val in vals {
+        v := val
+        spawn_val(&sched, proc(f: ^Fiber, arg: Sender_Arg) {
+            chan_send(f, arg.ch, arg.val)
+        }, Sender_Arg{ch = &ch, val = v}, name = "FIFO Sender")
+        // Step to let each sender queue up in send_waiters
+        scheduler_step(&sched, 0.016)
+    }
+
+    // Now spawn receiver that consumes 3 items
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Multi_Ctx) {
+        for _ in 0 ..< 3 {
+            v, ok := chan_recv(f, c.ch)
+            if ok {
+                append(c.received, v)
+            }
+        }
+    }, &ctx, name = "FIFO Receiver")
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, len(received), 3)
+    if len(received) == 3 {
+        testing.expect_value(t, received[0], 100)
+        testing.expect_value(t, received[1], 200)
+        testing.expect_value(t, received[2], 300)
+    }
+}
+
+// ============================================================================
+// Test 177: Race Join Coordinator Independent Sibling Non-Interference
+// ============================================================================
+
+@(test)
+test_race_join_independent_sibling_non_interference :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    independent_child_completed := false
+    race_winner := -1
+
+    Sibling_Ctx :: struct {
+        indep_completed: ^bool,
+        winner:          ^int,
+    }
+    ctx := Sibling_Ctx{
+        indep_completed = &independent_child_completed,
+        winner          = &race_winner,
+    }
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sibling_Ctx) {
+        // 1. Spawn independent child fiber that should NOT be aborted by subsequent race
+        child := fiber_pool_acquire(&f.sched.fiber_pool)
+        child.sched = f.sched
+        child.debug_name = "Independent Child"
+        child.stored_context = context
+        child.user_data = rawptr(c.indep_completed)
+        child.entry_proc = proc(cf: ^Fiber, ud: rawptr) {
+            wait(cf, 0.1) // Sleeps longer than race
+            flag := (^bool)(ud)
+            flag^ = true
+        }
+        fiber_link_child(f, child)
+        append(&f.sched.ready_queue, child.handle)
+
+        // 2. Run race between two short branches
+        w := race(f,
+            branch(proc(bf: ^Fiber) {
+                wait(bf, 0.01) // Wins fast
+            }, name = "Fast Branch"),
+            branch(proc(bf: ^Fiber) {
+                wait(bf, 0.5) // Loses
+            }, name = "Slow Branch"),
+        )
+        c.winner^ = w
+
+        // 3. Wait for the independent child to finish
+        wait(f, 0.15)
+    }, &ctx, name = "Parent Runner")
+
+    // Run simulation
+    for _ in 0 ..< 20 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, race_winner, 0)
+    testing.expect_value(t, independent_child_completed, true)
+}
+
+// ============================================================================
+// Test 178: Rush Join Coordinator Independent Sibling Non-Interference
+// ============================================================================
+
+@(test)
+test_rush_join_independent_sibling_non_interference :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    independent_child_completed := false
+    rush_winner := -1
+
+    Sibling_Ctx :: struct {
+        indep_completed: ^bool,
+        winner:          ^int,
+    }
+    ctx := Sibling_Ctx{
+        indep_completed = &independent_child_completed,
+        winner          = &rush_winner,
+    }
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sibling_Ctx) {
+        // 1. Spawn independent child fiber attached to parent
+        child := fiber_pool_acquire(&f.sched.fiber_pool)
+        child.sched = f.sched
+        child.debug_name = "Independent Child"
+        child.stored_context = context
+        child.user_data = rawptr(c.indep_completed)
+        child.entry_proc = proc(cf: ^Fiber, ud: rawptr) {
+            wait(cf, 0.1)
+            flag := (^bool)(ud)
+            flag^ = true
+        }
+        fiber_link_child(f, child)
+        append(&f.sched.ready_queue, child.handle)
+
+        // 2. Run rush join where branch 0 fails and branch 1 succeeds
+        w := rush(f,
+            branch(proc(bf: ^Fiber) {
+                wait(bf, 0.01)
+                fiber_abort_tree(bf.sched, bf) // Fails
+            }, name = "Failing Branch"),
+            branch(proc(bf: ^Fiber) {
+                wait(bf, 0.02) // Succeeds
+            }, name = "Winning Branch"),
+        )
+        c.winner^ = w
+
+        wait(f, 0.15)
+    }, &ctx, name = "Parent Runner")
+
+    for _ in 0 ..< 20 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, rush_winner, 1)
+    testing.expect_value(t, independent_child_completed, true)
+}
+
+// ============================================================================
+// Test 179: Zero-Drift f64 Ticker Long-Horizon Simulation Stability
+// ============================================================================
+
+@(test)
+test_ticker_zero_drift_f64_precision :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ticker_ticks := 0
+
+    Ticker_Ctx :: struct {
+        ticks: ^int,
+    }
+    ctx := Ticker_Ctx{ticks = &ticker_ticks}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ticker_Ctx) {
+        t: Ticker
+        ticker_init(&t, 0.01) // 10ms interval
+        for _ in 0 ..< 50 {
+            ticker_wait(f, &t)
+            c.ticks^ += 1
+        }
+    }, &ctx, name = "Precision Ticker")
+
+    for _ in 0 ..< 100 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, ticker_ticks, 50)
+}
+
+// ============================================================================
+// Test 180: Stateful Generator Clean First-Step State & Early Destruction
+// ============================================================================
+
+@(test)
+test_generator_early_destruction_and_clean_state :: proc(t: ^testing.T) {
+    gen: Generator(int)
+    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
+        for i in 1 ..< 100 {
+            yield_value(f, g, i * 10)
+        }
+    })
+
+    // Consume first 3 values
+    v1, ok1 := generator_next(&gen)
+    testing.expect_value(t, ok1, true)
+    testing.expect_value(t, v1, 10)
+
+    v2, ok2 := generator_next(&gen)
+    testing.expect_value(t, ok2, true)
+    testing.expect_value(t, v2, 20)
+
+    v3, ok3 := generator_next(&gen)
+    testing.expect_value(t, ok3, true)
+    testing.expect_value(t, v3, 30)
+
+    // Early destroy without consuming all 100
+    generator_destroy(&gen)
+    testing.expect_value(t, gen.is_done, true)
+    testing.expect_value(t, gen.handle, 0)
+}

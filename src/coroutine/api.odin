@@ -366,13 +366,21 @@ ticker_wait :: proc(f: ^Fiber, t: ^Ticker) {
         }
     }
 
-    remaining := f32(t.next_wake - now)
-    if remaining > 0.0 {
+    if t.next_wake > now {
         if t.use_real {
-            wait_real(f, remaining)
+            f.wake_time = t.next_wake
+            f.wake_clock = .Real_Time
+            f.status = .Sleeping_Real_Time
+            real_timer_heap_push(f.sched, f)
         } else {
-            wait(f, remaining)
+            f.wake_time = t.next_wake
+            f.wake_clock = .Sim_Scaled
+            f.status = .Sleeping_Time
+            timer_heap_push(f.sched, f)
         }
+        f.stored_context = context
+        fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+        context = f.stored_context
     } else {
         if t.use_real {
             yield_real(f)
@@ -2029,7 +2037,7 @@ generator_next :: proc(gen: ^Generator($T)) -> (val: T, ok: bool) {
 
     // Resume generator fiber in O(1) by generational handle lookup
     if f := fiber_find_by_handle(&gen.sched, gen.handle); f != nil {
-        if f.status == .Suspended_Join || f.status == .Ready {
+        if f.status == .Suspended_Join {
             f.status = .Ready
             append(&gen.sched.ready_queue, f.handle)
         }

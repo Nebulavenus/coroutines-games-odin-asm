@@ -31,3 +31,4 @@ Audited docs to GFM; hardened unbuffered rendezvous deadlock symmetry, Windows P
 Cleaned Test 66 globals; restructured documentation into 4 engineering tracks, reconciled async_token_complete, 11 footguns, symmetrical rendezvous, PAGE_NOACCESS, spawn_real_val, and simulate_until pause overrides across all docs.
 Migrated Fiber_Scope to intrusive doubly-linked list (O(1) unlinks), converted demo entities to fixed SDS arrays, pruned legacy allocator parameters from True ZII inits, and streamlined scheduler/pool teardown to use persistent struct allocators.
 Hardened engine invariants: unbuffered CSP channels, paused real-time yields, ready queue generational handle ABA guard, paused condition polling, automatic scoped lock abort cleanup, and select message priority.
+Hardened unbuffered CSP sender-first rendezvous, race/rush sibling join scoping, in-place abort tree drain, f64 direct ticker, and generator deduplication across 180 tests and 12-target LLVM matrix.

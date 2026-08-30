@@ -61,6 +61,12 @@ Every code exploration task MUST follow a deterministic 2-turn cycle: **Discover
 ```
 
 ### Turn 1: Symbol Identification (Zero Code Bodies)
+> [!IMPORTANT]
+> **Mandatory AST Search Priority**:
+> - To find any function, method, struct, or type declaration, you **MUST** use:
+>   `toktoken(action="search_symbols", target="name", options={"kind": "function,class"})`
+> - **DO NOT** use `search_text` for symbol names. `search_text` is strictly restricted to searching string literals, comment phrases, and error logs.
+
 Locate exact symbol identifiers without pulling source code implementations into context:
 1. **Find symbol by identifier/name**:
    `toktoken(action="search_symbols", target="target_name", options={"kind": "function,class", "limit": 5, "compact": true})`
@@ -70,6 +76,10 @@ Locate exact symbol identifiers without pulling source code implementations into
    `toktoken(action="search_text", target="ERROR_BUFFER_FULL", options={"filter": "src", "group_by": "file", "limit": 5})`
 
 ### Turn 2: Exact Context Retrieval (Single Turn)
+> [!TIP]
+> **Context Bundle Preference for Modifying Code**:
+> - When preparing to edit a function or struct, use `inspect_bundle` instead of `inspect_symbol`. `inspect_bundle` returns the signature, imports, and outbound caller context in a single turn, eliminating the need for follow-up search queries.
+
 Once the canonical symbol ID (`path/file.ext::symbol_name#kind`) is identified, retrieve the exact definition:
 1. **Primary Symbol Inspection (Bundle)**:
    `toktoken(action="inspect_bundle", target="src/engine.odin::init_engine#function", options={"compact": true})`
@@ -79,14 +89,28 @@ Once the canonical symbol ID (`path/file.ext::symbol_name#kind`) is identified, 
 
 ---
 
-## 4. Mandatory Batching & Single-Turn Multi-Symbol Rules
+## 4. Mandatory Batching & Operational Turn Consolidation
 
-Never emit sequential symbol requests across consecutive conversational turns.
-* **Forbidden**: Turn 1 (`inspect_symbol(A)`) $\rightarrow$ Turn 2 (`inspect_symbol(B)`) $\rightarrow$ Turn 3 (`inspect_symbol(C)`).
-* **Mandatory**: Pass comma-separated symbol IDs in a single turn:
+Every standalone tool invocation adds a conversational turn ($n$), multiplying the cumulative context re-transmission cost[cite: 1]. Consolidate all operations into minimal turns:
+
+### 4.1 Multi-Symbol Batching (Single-Turn AST Retrieval)
+Never emit sequential symbol requests across consecutive conversational turns[cite: 1].
+* ❌ **Forbidden**: Turn 1 (`inspect_symbol(A)`) $\rightarrow$ Turn 2 (`inspect_symbol(B)`) $\rightarrow$ Turn 3 (`inspect_symbol(C)`).
+* ✅ **Mandatory**: Pass comma-separated symbol IDs in a single turn:
   `toktoken(action="inspect_symbol", target="src/net.odin::listen#function,src/net.odin::accept#function,src/net.odin::Socket#class", options={"compact": true})`
 
----
+### 4.2 Task Tracking & Workflow State Consolidation (`manage_task`, `schedule`, `todo`)
+Task and state managers must NEVER be called per micro-operation.
+* ❌ **Forbidden (Micro-State Thrashing)**: Calling `manage_task`, `todo`, or workflow tracker tools after every single file edit, test run, or symbol lookup.
+* ✅ **Mandatory (Milestone Sync)**: Update task trackers ONLY at major logical boundaries:
+  1. **Session Start / Phase Planning**: Initial task decomposition.
+  2. **Milestone Completion**: When a complete sub-feature or bug fix is fully written and verified.
+  3. **Blocking Issue**: When execution is stuck and user input is required.
+  4. **Session Handoff / Reset**: Final status update before triggering a context reset.
+
+### 4.3 Documentation & Non-Code Manifest Inspection Batching
+* ❌ **Forbidden**: Probing configuration files, plans, or documentation across multiple sequential window reads (`inspect_file(lines="1-20")`, then `inspect_file(lines="21-40")`).
+* ✅ **Mandatory**: If reading documentation (`*.md`), task lists (`PLAN.md`), or manifests (`*.toml`, `*.json`), inspect the exact target section or bounded region (up to 35 lines) in a single turn. Use `search_text` to locate target sections within large documents before reading.---
 
 ## 5. Terminal & Shell Command Execution Hygiene (`run_command`)
 
@@ -132,14 +156,14 @@ Failed tool calls remain in conversational history and are re-transmitted on eve
 
 ## 8. Atomic Modification & Synchronization Cycle
 
-Every source code modification MUST follow the strict 4-step cycle:
+Every source code modification MUST follow the strict 5-step cycle:
 1. **Inspect AST**: `toktoken(action="inspect_bundle", target="path/file.ext::symbol#kind", options={"compact": true})`
 2. **Check Blast Radius**: `toktoken(action="inspect_blast_radius", target="path/file.ext::symbol#kind")` *(Mandatory for public/exported APIs)*
 3. **Atomic Edit**: `replace_file_content(TargetFile="...", TargetContent="...", ReplacementContent="...")`
 4. **Sync Index**: `toktoken(action="index_file", target="path/to/modified_file.ext")` *(Mandatory immediately after write)*
 5. **Verify**: `run_command(CommandLine="toktoken exec -- <build/test command>")`
 
----
+> **Note**: Do NOT invoke `manage_task` or state tracking tools inside this loop. Sync task trackers only after the entire feature passes verification.---
 
 ## 9. Complete TokToken Command Catalog (All 27 Capabilities)
 
@@ -148,8 +172,7 @@ All sub-actions are executed via `ToolName="toktoken"`. Target parameters automa
 ### 9.1 Code Search & Discovery
 | Action / Subtool | Target Format | Key Options | Description & Usage |
 | :--- | :--- | :--- | :--- |
-| `"search"` / `"search_symbols"` | `"query"` | `{"kind": "function,tats
-lass", "compact": true, "limit": 10}` | Search symbols across languages with rank weighting. |
+| `"search"` / `"search_symbols"` | `"query"` | `{"kind": "function,class", "compact": true, "limit": 10}` | Search symbols across languages with rank weighting. |
 | `"search_text"` / `"grep"` | `"pattern"` | `{"filter": "src", "group_by": "file", "limit": 10}` | Literal string or regex code search (always filter directory). |
 | `"search_similar"` | `"path::symbol#kind"` | `{"limit": 5}` | Discover related symbols or alternative implementations. |
 | `"search_cooccurrence"` | `"SymbolA,SymbolB"` | `{"limit": 5}` | Find files sharing architectural patterns or co-occurring symbols. |

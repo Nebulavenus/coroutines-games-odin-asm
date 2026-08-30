@@ -571,7 +571,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     child := parent.first_child
                     for child != nil {
                         next := child.next_sibling
-                        if child != fiber {
+                        if child != fiber && child.join_coord == coord {
                             fiber_abort_tree(fiber.sched, child)
                         }
                         child = next
@@ -606,7 +606,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     child := parent.first_child
                     for child != nil {
                         next := child.next_sibling
-                        if child != fiber {
+                        if child != fiber && child.join_coord == coord {
                             fiber_abort_tree(fiber.sched, child)
                         }
                         child = next
@@ -642,6 +642,10 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
         }
     }
 }
+
+// ============================================================================
+// Fiber Recycling & Memory Lifecycle
+// ============================================================================
 
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     // 1. Run cleanup procedure if registered
@@ -682,12 +686,9 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     prev_status := root.status
     root.status = .Aborted
 
-    // 1. Recursively abort all children bottom-up
-    child := root.first_child
-    for child != nil {
-        next := child.next_sibling
-        fiber_abort_tree(sched, child)
-        child = next
+    // 1. Recursively abort all children bottom-up (clean in-place drain)
+    for root.first_child != nil {
+        fiber_abort_tree(sched, root.first_child)
     }
 
     // 2. Remove root from scheduler queues

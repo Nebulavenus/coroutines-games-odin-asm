@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Symmetrical CSP Rendezvous, Join Sibling Isolation & Precision Timing] - 2026-08-30
+
+### Fixed
+- **Unbuffered CSP Symmetrical Rendezvous Deadlock (Sender-First Ordering) (`src/coroutine/api.odin`)**:
+  - Eliminated deadlock when a sender calls `chan_send` on an unbuffered channel before any receiver is waiting.
+  - Senders now cleanly place their value in the rendezvous slot, set `ch.count = 1`, and wait in `send_waiters`. When a receiver calls `chan_recv`, it immediately consumes the value, resets `ch.count = 0`, wakes the sender, and completes the rendezvous handshake.
+- **Race & Rush Sibling Branch Coordinator Scoping Isolation (`src/coroutine/scheduler.odin`)**:
+  - Upgraded `fiber_on_finish` in `.Race` and `.Rush` join coordinators to check `child != fiber && child.join_coord == coord` before triggering cancellations.
+  - Guarantees that only sibling branches created specifically for the winning join coordinator are aborted, preserving independent child fibers attached to the parent.
+- **In-Place Safe Teardown in `fiber_abort_tree` (`src/coroutine/scheduler.odin`)**:
+  - Refactored recursive child abortion to drain `root.first_child` in-place (`for root.first_child != nil { fiber_abort_tree(sched, root.first_child) }`).
+  - Eliminates iterator invalidation risks during recursive unlinking and deallocation.
+- **Exact `f64` Zero-Drift Scheduling in `ticker_wait` (`src/coroutine/api.odin`)**:
+  - Scheduled `f.wake_time = t.next_wake` directly onto the timer heap without `f32` round-trip truncation, guaranteeing zero floating-point drift over millions of ticks.
+- **Generator Initial Step Queue Deduplication (`src/coroutine/api.odin`)**:
+  - `generator_next` now verifies `if f.status == .Suspended_Join` before enqueuing to `ready_queue`, preventing duplicate handles on turn 1.
+
+### Added
+- **Unit Tests 175–180 (`src/coroutine/coroutine_test.odin`)**:
+  - Test 175: Unbuffered CSP Channel Sender-First Rendezvous Handshake (symmetrical delivery, zero deadlock).
+  - Test 176: Multiple Unbuffered CSP Senders FIFO Rendezvous Handshake (strict FIFO ordering).
+  - Test 177: Race Join Coordinator Independent Sibling Non-Interference (undisturbed long-lived child fibers).
+  - Test 178: Rush Join Coordinator Independent Sibling Non-Interference (undisturbed long-lived child fibers).
+  - Test 179: Zero-Drift `f64` Ticker Long-Horizon Simulation Stability (50 exact ticks).
+  - Test 180: Stateful Generator Clean First-Step State & Early Destruction (clean teardown and zero leaks).
+  - Test suite expanded to **180 / 180 unit tests passing** (100% with 0 memory leaks across all 12 build matrix targets).
+
 ## [Generational Ready-Queue ABA Guard, Scoped Lock Abort Safety & Concurrency Hardening] - 2026-08-30
 
 ### Fixed

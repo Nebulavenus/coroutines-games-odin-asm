@@ -65,3 +65,4 @@
 #64 2026-08-30 Hardened unbuffered CSP channels (FIFO multi-send, abort cleanup), real-time paused yield/ticker, pool state sanitization, cleanup data isolation, and scope destruction detachment (169/169 tests passing across 12-target LLVM matrix).
 #65 2026-08-30 Hardened ready_queue with generational Fiber_Handle lookup against recycled fiber ABA aliasing, added paused condition polling, automatic with_mutex/with_semaphore abort cleanup, and CSP select priority (174/174 tests passing).
 #66 2026-08-30 Architectural compliance audit verified 100% adherence to Structured Concurrency, SDS Zero Allocations, True ZII, Packed Handles, and Multi-Domain Clocks across 174 tests & 12-target LLVM matrix.
+#67 2026-08-30 Hardened unbuf CSP sender-first rendezvous, race/rush sibling join scoping, in-place abort tree drain, f64 direct ticker, and generator turn-1 deduplication (180/180 tests passing across 12-target LLVM matrix).
