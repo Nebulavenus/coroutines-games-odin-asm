@@ -4,7 +4,7 @@ summary: Overview of the inline `asm` templates in Odin
 weight: 10
 ---
 
-> **Note:** Currently amd64 targets only (e.g. `windows_amd64`, `linux_amd64`, `darwin_amd64`).
+> **Note:** Supported targets: `amd64`, `arm64`, and `riscv64`.
 
 ## Overview
 
@@ -558,3 +558,26 @@ main :: proc() {
 	mfence()
 }
 ```
+
+---
+
+## Low-Level Stack Switching & Context Switch Trampolines (`#byte`)
+
+When implementing stackful coroutines or fiber context switches in Odin's inline assembly, two critical architectural rules apply:
+
+### 1. The SSA Undefined Register Rule & `#byte`
+In standard `asm(...)` templates, the compiler's SSA dataflow pass (`check_asm_cfg_report_undef_reg`) requires every read register to be defined within the template. Because a stack context switch intentionally reads and saves the caller's live registers without prior definition inside the block, the switch routine must be implemented using `#byte` machine code.
+
+### 2. The Link Register (`LR` / `ra`) Trampoline for RISC ISAs
+Inlined assembly templates are expanded directly into the calling procedure. On RISC architectures (ARM64 and RISC-V 64), entering an inlined template has `LR`/`ra` holding the return address of the **outer caller**, not the instruction following the context switch.
+
+To establish clean return semantics, the switch routine uses a **Branch-and-Link Return Trampoline**:
+* **ARM64**: `bl .switch_body` (+8B) sets `x30` to point to `b .switch_done` (+108B), and `.switch_body` finishes with `ret`.
+* **RISC-V 64**: `jal ra, +8` (+8B) sets `ra` to point to `j .switch_done` (+224B), and `.switch_body` finishes with `jalr zero, ra, 0`.
+
+### 3. Exhaustive Caller-Saved Register Clobbers
+To ensure local variables survive across context switches, all caller-saved registers must be explicitly declared with individual `#clobber %reg` directives in the binding block:
+* **ARM64**: `#clobber %x2`..`#clobber %x17`, `#clobber %v0`..`%v7`, `#clobber %v16`..`%v31`, `#clobber memory`.
+* **RISC-V 64**: `#clobber %t0`..`#clobber %t6`, `#clobber %a2`..`#clobber %a7`, `#clobber memory`.
+* **AMD64**: `#clobber %rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#clobber flags`, `#clobber memory`.
+

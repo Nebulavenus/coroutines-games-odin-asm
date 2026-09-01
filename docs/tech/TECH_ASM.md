@@ -1,38 +1,161 @@
 # Low-Level Hardware & Inline Assembly Architecture (`TECH_ASM.md`)
 
-This technical document details the low-level AMD64 hardware mechanics, inline assembly primitives, register preservation contracts, synthetic stack frame initialization, and compiler safety invariants powering the **Odin Stackful Coroutine Engine**.
+This technical document details the low-level hardware mechanics, inline assembly primitives, register preservation contracts, synthetic stack frame initialization, and compiler safety invariants across **AMD64 (x86-64)**, **ARM64 (AArch64)**, and **RISC-V 64 (RV64GC)** powering the **Odin Stackful Coroutine Engine**.
+
+> [!NOTE]
+> For an in-depth breakdown of Odin's compiler internals, SSA liveness verification, and the future roadmap for high-level assembly context switching, see [`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`](file:///E:/OdinLang/Projects/coroutines_asm/docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md).
 
 ---
 
-## 1. AMD64 Context Switching Mechanics
+## 1. Universal Multi-ISA Hardware Matrix
 
-The coroutine engine implements cooperative user-space context switching (green threads / fibers) directly in Odin using native inline assembly (`#asm` / `asm`). 
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────┐
+│                           UNIVERSAL MULTI-ISA HARDWARE MATRIX                           │
+├───────────────────┬──────────────────────────┬──────────────────────────────────────────┤
+│ Architecture      │ Target Devices           │ Frame Footprint & Preservation           │
+├───────────────────┼──────────────────────────┼──────────────────────────────────────────┤
+│ 1. AMD64 (x86-64) │ Intel / AMD Desktops,    │ Win64: 240B (8 GPRs + RET + XMM6..15)    │
+│                   │ Servers, Steam Deck      │ SysV:   64B (6 GPRs + RET + Pad)         │
+│                   │                          │ Self-ID: %r12                            │
+├───────────────────┼──────────────────────────┼──────────────────────────────────────────┤
+│ 2. ARM64 (AArch64)│ Apple Silicon (M1–M4),   │ 160B Frame (16-byte aligned):            │
+│                   │ Linux ARM, Android, iOS, │ • 10 GPRs (x19–x28) + FP (x29) + LR (x30)│
+│                   │ Switch, Win on ARM       │ • 8 SIMD/Float (d8–d15)                  │
+│                   │                          │ Self-ID: %x19                            │
+├───────────────────┼──────────────────────────┼──────────────────────────────────────────┤
+│ 3. RISC-V 64      │ Linux RISC-V, SBCs,      │ 208B Frame (16-byte aligned):            │
+│    (RV64GC)       │ VisionFive, Emulators    │ • 13 GPRs (ra, s0–s11)                   │
+│                   │                          │ • 12 FPRs (fs0–fs11)                     │
+│                   │                          │ Self-ID: %s2 (x18)                       │
+└───────────────────┴──────────────────────────┴──────────────────────────────────────────┘
+```
 
-A context switch consists of suspending the execution state of the currently executing fiber (or scheduler) and resuming a target fiber by swapping CPU register state and the hardware stack pointer (`%rsp`).
+---
+
+## 2. Multi-ISA Context Switching Mechanics
+
+The coroutine engine implements cooperative user-space context switching (green threads / fibers) directly in Odin using native inline assembly (`asm`).
+
+A context switch consists of suspending the execution state of the currently executing fiber (or scheduler) and resuming a target fiber by swapping CPU register state and the hardware stack pointer.
 
 ```
                     ┌──────────────────────────────────────────────┐
                     │              CPU Context Switch              │
                     └──────────────────────┬───────────────────────┘
                                            │
-         Scheduler Stack                   ▼                   Target Fiber Stack
-    ┌─────────────────────────┐   movq %rsp, (%rdi)      ┌─────────────────────────┐
+         Active Fiber Stack                ▼                   Target Fiber Stack
+    ┌─────────────────────────┐   mov [from], sp         ┌─────────────────────────┐
     │ ...                     │ ───────────────────────► │ ...                     │
-    │ [Saved Non-Volatile GPR]│   movq (%rsi), %rsp      │ [Saved Non-Volatile GPR]│
-    │ [Saved SIMD Registers]  │ ◄─────────────────────── │ [Saved SIMD Registers]  │
-    │ Return Address (Caller) │      ret (Resume)        │ Target Instruction Ptr  │
+    │ [Saved Non-Volatile GPR]│   mov sp, to             │ [Saved Non-Volatile GPR]│
+    │ [Saved SIMD / Float]    │ ◄─────────────────────── │ [Saved SIMD / Float]    │
+    │ Return Address / LR     │      ret (Resume)        │ Target Instruction Ptr  │
     └─────────────────────────┘                          └─────────────────────────┘
 ```
 
 When switching between fibers:
-1. The caller executes a call to the context switch routine. The CPU hardware automatically pushes the 8-byte instruction pointer (`%rip`) of the instruction following the call onto the current stack.
-2. The context switch routine saves all callee-saved General Purpose Registers (GPRs) and callee-saved SIMD floating-point registers (`%xmm6` through `%xmm15` on Windows x64) onto the current stack.
-3. The current stack pointer `%rsp` is saved into the active fiber's `from_rsp^` storage pointer.
-4. The target fiber's saved stack pointer is loaded from `to_rsp` directly into the CPU's `%rsp` register.
-5. Callee-saved SIMD and GPR registers are restored (popped) in reverse order from the target fiber's stack.
-6. The CPU executes `ret`, which pops the target fiber's saved instruction pointer from the new stack into `%rip`, resuming execution seamlessly.
+1. The caller executes `fiber_context_switch(&from_rsp, to_rsp)`.
+2. The non-volatile registers (GPRs and callee-saved SIMD/floating-point registers) are saved onto the current stack.
+3. The active stack pointer is written to `from_rsp^`.
+4. The target stack pointer is loaded from `to_rsp` into the CPU's stack pointer register.
+5. Callee-saved SIMD/float and GPR registers are restored from the target stack in reverse order.
+6. The CPU executes `ret` (or jumps to the Link Register), resuming execution on the target fiber.
 
 ---
+
+## 3. ABI Register Preservation Specifications
+
+### A. AMD64 (Windows x64 vs. System V AMD64)
+
+| Register Class | Windows x64 ABI (Win64) | System V AMD64 ABI (Linux / macOS / BSD) | Engine Preservation Strategy |
+| :--- | :--- | :--- | :--- |
+| **Stack Pointer** | `%rsp` | `%rsp` | Swapped via memory operand |
+| **Callee-Saved GPRs** | `%rbp`, `%rbx`, `%rsi`, `%rdi`, `%r12`, `%r13`, `%r14`, `%r15` | `%rbp`, `%rbx`, `%r12`, `%r13`, `%r14`, `%r15` | Pushed / popped sequentially on fiber stack |
+| **Callee-Saved SIMD** | `%xmm6` through `%xmm15` (10 registers) | None (all XMM registers are volatile) | Stored / loaded via `movdqu` (160 bytes on stack) |
+| **Caller-Saved GPRs** | `%rax`, `%rcx`, `%rdx`, `%r8`..`%r11` | `%rax`, `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8`..`%r11` | Declared in `#clobber` |
+| **Self-Identity Register** | `%r12` | `%r12` | Bound to `^Fiber` across fiber lifecycle |
+
+---
+
+### B. ARM64 (AAPCS64 Standard ABI)
+
+| Register Class | Registers Preserved | Size | Engine Preservation Strategy |
+| :--- | :--- | :--- | :--- |
+| **Stack Pointer** | `%sp` (16-byte aligned) | 8B | Hardware enforced 16-byte aligned accesses |
+| **Frame / Link Regs** | `%x29` (FP) + `%x30` (LR / Return Address) | 16B | Stored / loaded via `stp`/`ldp x29, x30, [sp, #0]` |
+| **Callee-Saved GPRs** | `%x19` through `%x28` (10 registers) | 80B | Stored / loaded in pairs via `stp`/`ldp` |
+| **Callee-Saved SIMD** | `%d8` through `%d15` (8 registers) | 64B | Stored / loaded in pairs via `stp`/`ldp` |
+| **Total Frame Size** | **160 Bytes** | 160B | `sub sp, sp, #160` / `add sp, sp, #160` |
+| **Self-Identity Register** | `%x19` | 8B | Extracted via high-level inline `get_x19_reg()` |
+
+---
+
+### C. RISC-V 64 (RV64GC / LP64D ABI)
+
+| Register Class | Registers Preserved | Size | Engine Preservation Strategy |
+| :--- | :--- | :--- | :--- |
+| **Stack Pointer** | `%sp` (`x2`, 16-byte aligned) | 8B | 16-byte aligned frame offset |
+| **Return Address** | `%ra` (`x1`) | 8B | Stored / loaded via `sd`/`ld ra, 0(sp)` |
+| **Callee-Saved GPRs** | `%s0` (`x8`/fp), `%s1` (`x9`), `%s2`–`%s11` (`x18`–`x27`) | 96B | Stored / loaded via `sd`/`ld` |
+| **Callee-Saved FPRs** | `%fs0`–`%fs1` (`f8`–`f9`), `%fs2`–`%fs11` (`f18`–`f27`) | 96B | Stored / loaded via `fsd`/`fld` |
+| **Alignment Pad** | 1 slot (8 bytes) | 8B | Padded to 208B for strict 16-byte alignment |
+| **Total Frame Size** | **208 Bytes** | 208B | `addi sp, sp, -208` / `addi sp, sp, 208` |
+| **Self-Identity Register** | `%s2` (`x18`) | 8B | Extracted via high-level inline `get_s2_reg()` |
+
+---
+
+### D. Link Register Return Trampolines on RISC Architectures
+Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_frames`, `scheduler_step`), the CPU's Link Register (`x30` on ARM64, `ra` on RISC-V 64) points to the outer caller upon entering the template. To ensure clean return flow, both RISC architectures use a **Branch-and-Link Return Trampoline**:
+* **ARM64**: `bl .switch_body` (+8B) sets `x30` pointing to `b .switch_done` (+108B), so `ret` at the end of `.switch_body` jumps directly to `.switch_done` on the restored fiber's stack.
+* **RISC-V 64**: `jal ra, +8` (+8B) sets `ra` pointing to `j .switch_done` (+224B), so `jalr zero, ra, 0` returns directly to `.switch_done` on the restored fiber's stack.
+
+### E. Exhaustive Caller-Saved Register Clobber Directives
+Because context switches suspend active execution, all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64) are declared with individual `#clobber` directives. This instructs Odin's register allocator to spill all active local variables to stack memory across yields.
+
+---
+
+## 4. Synthetic Stack Frame Initialization
+
+When a fiber is acquired from the pool, `fiber_synthesize_initial_stack` sets up a bootstrap stack frame so that the first context switch enters `fiber_trampoline_entry` cleanly:
+
+### AMD64 Windows Frame (240B)
+* `top - 8`: Dummy alignment pad (`RSP % 16 == 8` on entry).
+* `top - 16`: `rawptr(fiber_trampoline_entry)` (RET).
+* `top - 56`: `rawptr(fiber)` (`%r12`).
+* `top - 240`: Zeroed XMM storage.
+
+### ARM64 Frame (160B)
+* `sp + 0`: `x29 = nil`, `x30 = rawptr(fiber_trampoline_entry)` (LR).
+* `sp + 16`: `x19 = rawptr(fiber)`, `x20 = nil`.
+* `sp + 32..144`: Zeroed GPRs and SIMD registers.
+
+### RISC-V 64 Frame (208B)
+* `sp + 0`: `ra = rawptr(fiber_trampoline_entry)`.
+* `sp + 8`: `s0 = nil`, `sp + 16`: `s1 = nil`.
+* `sp + 24`: `s2 = rawptr(fiber)`.
+* `sp + 32..192`: Zeroed GPRs and FPRs.
+
+---
+
+## 5. Verification & Cross-Architecture CI Matrix
+
+The engine is verified across all targets via automated test runners:
+```powershell
+# Native Windows Host (All 187 unit tests)
+.\build.ps1 test
+
+# Cross-Target Static Compilation Validation (All 6 targets)
+.\build.ps1 check-all
+
+# WSL2 QEMU Full Unit Test Suite (All 187 tests on ARM64 & RISC-V 64)
+.\run_wsl_qemu.ps1 test
+
+# WSL2 QEMU 10,000 Concurrent Fiber Benchmarks
+.\run_wsl_qemu.ps1 bench
+```
+```
+* **GitHub Actions CI Matrix**: Tests native AMD64 (Windows/Ubuntu), native Apple Silicon ARM64 (`macos-14`), and QEMU-emulated Linux ARM64 and RISC-V 64 on every commit.
+
 
 ## 2. ABI Register Preservation Specifications
 

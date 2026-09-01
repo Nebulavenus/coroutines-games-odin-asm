@@ -47,23 +47,34 @@ SkookumScript’s gameplay scripting model relies on five core pillars:
 
 # 3. Technical Core: How Inline ASM Enables This
 
-### A. The Context Switch (`asm` primitive)
-To switch between the **Scheduler Stack** and a **Coroutine Fiber Stack**, we only need to preserve the **non-volatile (callee-saved) registers** as dictated by the target ABI.
+### A. The Multi-ISA Context Switch (`asm` primitive)
+To switch between the **Scheduler Stack** and a **Coroutine Fiber Stack**, we only need to preserve the **non-volatile (callee-saved) registers** as dictated by the target ABI standard:
 
-* **Windows x64 ABI Callee-Saved Registers:**
-  `rsp`, `rbp`, `rbx`, `rsi`, `rdi`, `r12`, `r13`, `r14`, `r15`, and SIMD `xmm6` through `xmm15`.
-* **System V ABI (Linux / macOS amd64) Callee-Saved Registers:**
-  `rsp`, `rbp`, `rbx`, `r12`, `r13`, `r14`, `r15`.
+* **AMD64 / x86-64 (Windows x64 & System V ABI):**
+  - Callee-saved: `rbp`, `rbx`, `rsi`, `rdi`, `r12`, `r13`, `r14`, `r15`, and SIMD `xmm6`..`xmm15` on Windows.
+  - Self-Identity Register: `%r12`.
+  - Trampoline: `call .switch_body` / `jmp .switch_done` / `ret`.
+* **ARM64 / AArch64 (AAPCS64 Standard):**
+  - Callee-saved: `x29` (FP), `x30` (LR), `x19`–`x28`, `d8`–`d15`.
+  - Self-Identity Register: `%x19`.
+  - Trampoline: `bl .switch_body` (+8B) / `b .switch_done` (+108B) / `ret` (sets `x30` on inlined templates).
+  - Stack frame: Strictly 16-byte aligned, 160 bytes.
+* **RISC-V 64 (LP64D Standard):**
+  - Callee-saved: `ra` (x1), `s0` (x8 / fp), `s1` (x9), `s2`–`s11` (x18–x27), `fs0`–`fs11` (f8–f9, f18–f27).
+  - Self-Identity Register: `%s2` (`x18`).
+  - Trampoline: `jal ra, +8` (+8B) / `j .switch_done` (+224B) / `jalr zero, ra, 0`.
+  - Stack frame: Strictly 16-byte aligned, 208 bytes.
 
-Using Odin's inline `asm`, a context switch is a single inlined template that:
-1. Pushes/stores caller-saved state or adjusts the stack.
-2. Swaps `%rsp` with the target fiber's saved `%rsp`.
-3. Pops/restores the state and executes `ret` into the new fiber.
+### B. Inlined Template Expansion & Link Register Trampoline
+In Odin, `asm(...)` templates are inlined directly into callers (`wait_frames`, `scheduler_step`). On RISC architectures (ARM64 & RISC-V 64), entering an inlined template has `LR`/`ra` pointing to the outer caller. The engine uses a branch-and-link trampoline (`bl` / `jal`) to dynamically set `LR`/`ra` to the instruction immediately following the inline template, ensuring clean return flow.
 
-### B. Preserving Odin's `runtime.Context`
-Odin passes an implicit `context` structure to procedures. When switching stacks, the library must save and restore the fiber's `context` (which includes custom allocators, temporary allocators, logger, and user data) so that Odin's runtime invariants are never broken.
+### C. Caller-Saved Register Clobber Directives
+Because context switching transfers execution between fibers, all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64) are explicitly declared with individual `#clobber` specifications, forcing the Odin register allocator to safely spill local variables to memory across yields.
 
-### C. Stack Memory Strategy (Zero OS Thread Overhead)
+### D. Preserving Odin's `runtime.Context`
+Odin passes an implicit `context` structure to procedures. When switching stacks, the library saves and restores the fiber's `context` (which includes custom allocators, temporary allocators, logger, and user data) so that Odin's runtime invariants are never broken.
+
+### E. Stack Memory Strategy (Zero OS Thread Overhead)
 - **Preallocated Stack Pools:** Instead of allocating memory dynamically for every coroutine, the scheduler maintains an array/pool of fixed-size stack arenas (e.g., **16 KB to 64 KB** each).
 - **Recycling:** When a fiber finishes or is aborted, its stack is returned to the free list immediately.
 - **Cache Locality:** 1,000 active fibers at 32 KB each consume ~32 MB of virtual memory—completely negligible on modern hardware.

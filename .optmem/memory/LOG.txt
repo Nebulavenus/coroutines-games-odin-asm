@@ -67,3 +67,11 @@
 #66 2026-08-30 Architectural compliance audit verified 100% adherence to Structured Concurrency, SDS Zero Allocations, True ZII, Packed Handles, and Multi-Domain Clocks across 174 tests & 12-target LLVM matrix.
 #67 2026-08-30 Hardened unbuf CSP sender-first rendezvous, race/rush sibling join scoping, in-place abort tree drain, f64 direct ticker, and generator turn-1 deduplication (180/180 tests passing across 12-target LLVM matrix).
 #68 2026-08-30 Hardened engine: Fiber_Semaphore True ZII unbounded release, Mutex owner tracking, chan_send_timeout, with_timeout_real, simulate_until_val, self-join guard, and branch domain inheritance (186/186 tests passing across 12-target LLVM matrix).
+#69 2026-09-02 Implemented universal Multi-ISA support across AMD64 (Win/SysV), ARM64 (AAPCS64 160B), and RISC-V 64 (LP64D 208B) with pure high-level register extractors and verified across 6 platforms
+#70 2026-09-02 Updated CI matrix in .github/workflows/ci.yml with cross-platform build.ps1 testing native AMD64/ARM64 and QEMU-emulated Linux ARM64/RISC-V 64
+#71 2026-09-02 Validated all #byte opcode arrays across AMD64, ARM64, and RISC-V 64 with Odin's built-in core:rexcode disassembler, adding Test 187 with 187/187 passing tests
+#72 2026-09-02 Resolved ARM64 and RISC-V 64 multi-frame context switching with BL/JAL return trampolines and full caller-saved register clobbers, achieving 100% test pass in WSL2 QEMU
+#73 2026-09-02 Full 187-test suite from coroutine_test.odin verified with 100% pass (0 failures) under QEMU on both Linux ARM64 and Linux RISC-V 64 via unified test dispatcher
+#74 2026-09-02 Authored PLAN6.md containing comprehensive documentation of multi-ISA coroutine architecture, SSA findings, link register trampolines, ABI tables, and QEMU verification
+#75 2026-09-02 Synchronized and updated all project documentation (README.md, CHANGELOG.md, ARCHITECTURE.md, ASM.md, TECH_ASM.md, Tutorial 09, and PLAN6.md) across all supported architectures
+#76 2026-09-02 Configured and verified native Linux AMD64 test execution inside WSL2 alongside ARM64 and RISC-V 64 QEMU runners with 187/187 tests passing on all targets

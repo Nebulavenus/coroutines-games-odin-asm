@@ -8,8 +8,8 @@ This document records the comprehensive verification matrix, architectural analy
 
 | Feature / Subsystem | Verification Method | Status |
 | :--- | :--- | :--- |
-| **Low-Level ASM Context Switch** | `src/coroutine/asm_amd64.odin` — Call/ret pattern with callee-saved GPRs + XMM6..15 register preservation and 16-byte stack alignment | **PASS** |
-| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#volatile`) to prevent LLVM SSA optimization/caching across context switches | **PASS** |
+| **Universal Multi-ISA ASM Context Switch** | `src/coroutine/asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin` — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with high-level register extractors | **PASS** |
+| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#volatile`, `#clobber memory`) preventing LLVM SSA optimization/caching across context switches | **PASS** |
 | **Per-Fiber Isolated Temporary Allocator** | `src/coroutine/types.odin` & `src/coroutine/pool.odin` — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation | **PASS** |
 | **Multi-Tiered Stack Safety & Guard Pages** | `src/coroutine/pool.odin` — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_NOACCESS` (Windows) / `PROT_NONE` (POSIX) virtual memory | **PASS** |
 | **Stack Overflow Protection** | `src/coroutine/pool.odin` — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation and automatic 100% stack consumption reporting on breach | **PASS** |

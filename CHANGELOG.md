@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Multi-ISA Return Trampoline Architecture & QEMU Validation (`arm64`, `riscv64`, `amd64`)] - 2026-09-02
+
+### Added
+- **Link Register Return Trampolines (`src/coroutine/asm_arm64.odin`, `asm_riscv64.odin`)**:
+  - **ARM64**: Integrated `bl .switch_body` (+8B) and `b .switch_done` (+108B) trampoline to dynamically set Link Register (`x30`) to the post-switch instruction on inlined assembly templates.
+  - **RISC-V 64**: Integrated `jal ra, +8` (+8B) and `j .switch_done` (+224B) trampoline to dynamically set Link Register (`ra`) to the post-switch instruction on inlined assembly templates.
+- **Exhaustive Caller-Saved Register Clobber Directives (`src/coroutine/asm_arm64.odin`, `asm_riscv64.odin`)**:
+  - Added individual `#clobber` specifications for all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64), ensuring the compiler register allocator spills all active variables across yield points.
+- **Standalone Multi-ISA Test Harness & QEMU Automation (`examples/test_runner/main.odin`, `run_wsl_qemu.ps1`)**:
+  - Added `run_all_coroutine_tests` dispatcher running all 187 unit tests across native host and QEMU emulation.
+  - Added `.\run_wsl_qemu.ps1` supporting `test`, `bench`, and `all` targets under `qemu-aarch64` and `qemu-riscv64` in WSL2.
+- **Machine Code Disassembler Validation with `core:rexcode` (`src/coroutine/coroutine_test.odin`)**:
+  - Added **Test 187** validating that all `#byte` machine code opcodes decode byte-for-byte across x86-64, ARM64, and RISC-V 64 without errors.
+- **Comprehensive Documentation (`PLAN6.md`, `TECH_ODIN_INLINE_ASM_ANALYSIS.md`)**:
+  - Authored `PLAN6.md` detailing multi-ISA architecture, SSA pass diagnostics, trampoline sequences, and opcode mappings.
+
+### Fixed
+- **Multi-Frame Coroutine Yielding under RISC Architectures**:
+  - Resolved stack pointer and link register preservation across multi-step yield loops (`yield_frame`, `wait`, `wait_ticks`), achieving **187 / 187 tests passing** under QEMU emulation.
+- **RISC-V 64 Stack Pointer Move Encoding (`src/coroutine/asm_riscv64.odin`)**:
+  - Corrected `addi sp, a1, 0` encoding to `0x13, 0x81, 0x05, 0x00`.
+
+## [Universal Multi-ISA Native Inline ASM Architecture (`amd64`, `arm64`, `riscv64`)] - 2026-09-02
+
+### Added
+- **Universal Multi-ISA Architecture Support (`src/coroutine/asm_arm64.odin`, `asm_riscv64.odin`)**:
+  - **ARM64 (AAPCS64 ABI)**: Implemented 160-byte stack frame preserving `x19`–`x28`, `x29` (FP), `x30` (LR), and `d8`–`d15` for macOS Apple Silicon (M1–M4), Linux ARM, iOS, Android, and Nintendo Switch.
+  - **RISC-V 64 (LP64D ABI)**: Implemented 208-byte stack frame preserving `ra`, `s0`–`s11`, and `fs0`–`fs11` for open-source RISC-V hardware, SBCs, and embedded systems.
+  - **High-Level Inline ASM Register Extractors**: Implemented `get_r12_reg` (`amd64`), `get_x19_reg` (`arm64`), and `get_s2_reg` (`riscv64`) using 100% pure high-level Odin inline assembly mnemonics.
+- **Universal Multi-ISA Stack Synthesis (`src/coroutine/pool.odin`)**:
+  - Added conditional architecture stack initializers in `fiber_synthesize_initial_stack` for `arm64` and `riscv64`.
+  - Added multi-architecture fiber self-identity resolution in `fiber_trampoline_entry`.
+- **Multi-ISA Build & CI Matrix (`build.ps1`, `build.sh`, `.github/workflows/ci.yml`)**:
+  - Added `.\build.ps1 check-arm64`, `.\build.ps1 check-riscv64`, and `.\build.ps1 check-all` to cross-validate all 6 target platforms.
+  - Added `build.sh` supporting native and QEMU user-space emulated execution (`qemu-aarch64`, `qemu-riscv64`).
+  - Added comprehensive GitHub Actions workflow testing native Windows x64, native Ubuntu x64, native macOS Apple Silicon (`macos-14`), and QEMU-emulated Linux ARM64 and RISC-V 64 on every push.
+
+### Fixed
+- **POSIX Memory Protection Signatures (`src/coroutine/pool.odin`)**:
+  - Corrected `posix.mmap` flags to Odin `bit_set` syntax `{.READ, .WRITE}` and `{.PRIVATE, .ANONYMOUS}`.
+  - Corrected `posix.mprotect` flags to `{}` for `PROT_NONE` guard pages.
+
 ## [True ZII Semaphore Unbounded Permits, Mutex Owner Validation, CSP Send Timeouts & Domain Symmetries] - 2026-08-30
 
 ### Fixed

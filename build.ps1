@@ -1,6 +1,6 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench", "check-arm64", "check-riscv64", "check-all", "test-arm64", "test-riscv64")]
     [string]$Action
 )
 
@@ -19,7 +19,9 @@ function Invoke-OdinBuild
     param($Source, $Output, $ExtraArgs = @())
 
     Write-Host "Building $Output..." -ForegroundColor Cyan
-    $buildArgs = @("build", $Source, "-out:$Output", "-linker:radlink", "-show-timings") + $ExtraArgs
+    $isWin = $IsWindows -or ($env:OS -eq "Windows_NT")
+    $linkerArgs = if ($isWin) { @("-linker:radlink") } else { @() }
+    $buildArgs = @("build", $Source, "-out:$Output") + $linkerArgs + @("-show-timings") + $ExtraArgs
     odin @buildArgs
     return $LASTEXITCODE
 }
@@ -196,6 +198,60 @@ switch ($Action)
     "matrix"
     {
         Invoke-Matrix
+    }
+    "check-arm64"
+    {
+        Write-Host "Cross-checking ARM64 targets (darwin_arm64, linux_arm64)..." -ForegroundColor Cyan
+        odin check src/ -target:darwin_arm64
+        odin check src/ -target:linux_arm64
+    }
+    "check-riscv64"
+    {
+        Write-Host "Cross-checking RISC-V 64 target (linux_riscv64)..." -ForegroundColor Cyan
+        odin check src/ -target:linux_riscv64
+    }
+    "check-all"
+    {
+        Write-Host "Cross-checking all 6 target architectures..." -ForegroundColor Yellow
+        $targets = @("windows_amd64", "linux_amd64", "darwin_amd64", "darwin_arm64", "linux_arm64", "linux_riscv64")
+        $failed = 0
+        foreach ($tgt in $targets)
+        {
+            Write-Host "  Checking target: $tgt..." -NoNewline
+            $output = odin check src/ "-target:$tgt" 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host " [PASS]" -ForegroundColor Green
+            } else {
+                Write-Host " [FAIL]" -ForegroundColor Red
+                Write-Host $output
+                $failed++
+            }
+        }
+        if ($failed -eq 0) {
+            Write-Host "All 6 multi-ISA targets successfully verified!" -ForegroundColor Green
+        } else {
+            Write-Host "$failed targets failed cross-check!" -ForegroundColor Red
+        }
+    }
+    "test-arm64"
+    {
+        Write-Host "Cross-compiling unit tests for linux_arm64..." -ForegroundColor Cyan
+        New-Item -ItemType Directory -Force -Path "build" | Out-Null
+        odin test src/coroutine -target:linux_arm64 -out:build/test_arm64.bin
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Running under qemu-aarch64..." -ForegroundColor Green
+            qemu-aarch64 ./build/test_arm64.bin
+        }
+    }
+    "test-riscv64"
+    {
+        Write-Host "Cross-compiling unit tests for linux_riscv64..." -ForegroundColor Cyan
+        New-Item -ItemType Directory -Force -Path "build" | Out-Null
+        odin test src/coroutine -target:linux_riscv64 -out:build/test_riscv64.bin
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Running under qemu-riscv64..." -ForegroundColor Green
+            qemu-riscv64 ./build/test_riscv64.bin
+        }
     }
     default
     {

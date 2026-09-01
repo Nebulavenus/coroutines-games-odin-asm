@@ -90,16 +90,22 @@ When running automated headless test pipelines:
 
 ---
 
-## 4. Running Headless Tests in CI/CD
+## 4. Running Headless Tests in CI/CD and QEMU Emulation
 
-To run these tests in GitHub Actions, GitLab CI, or local command line:
+To run these tests locally, in CI pipelines, or under cross-architecture QEMU emulation:
 
 ```powershell
-# Run all unit tests
+# Run all 187 unit tests on native host
 .\build.ps1 test
+
+# Cross-check all 6 multi-ISA targets
+.\build.ps1 check-all
+
+# Execute all 187 unit tests under Linux ARM64 and RISC-V 64 via QEMU in WSL2
+.\run_wsl_qemu.ps1 test
 ```
 
-Because simulation does not require window creation or GPU contexts, hundreds of gameplay tests execute in under 300 milliseconds.
+Because simulation does not require window creation or GPU contexts, all 187 unit tests execute in under 400 milliseconds on native host.
 
 ---
 

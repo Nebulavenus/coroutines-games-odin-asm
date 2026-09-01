@@ -32,3 +32,7 @@ Cleaned Test 66 globals; restructured documentation into 4 engineering tracks, r
 Migrated Fiber_Scope to intrusive doubly-linked list (O(1) unlinks), converted demo entities to fixed SDS arrays, pruned legacy allocator parameters from True ZII inits, and streamlined scheduler/pool teardown to use persistent struct allocators.
 Hardened engine invariants: unbuffered CSP channels, paused real-time yields, ready queue generational handle ABA guard, paused condition polling, automatic scoped lock abort cleanup, and select message priority.
 Hardened unbuffered CSP sender-first rendezvous, race/rush sibling join scoping, in-place abort tree drain, f64 direct ticker, and generator deduplication across 180 tests and 12-target LLVM matrix.
+Hardened engine synchronization primitives and established universal Multi-ISA support across AMD64 (Win/SysV), ARM64 (AAPCS64 160B), and RISC-V 64 (LP64D 208B) with high-level register extractors and cross-platform CI.
+Configured multi-ISA CI in .github/workflows/ci.yml and validated all #byte machine code opcodes across AMD64, ARM64, and RISC-V 64 via Odin core:rexcode disassembler unit tests.
+Multi-ISA coroutines support ARM64 and RISC-V 64 via BL/JAL return trampolines and full caller-saved clobbers; full 187-test suite passes in QEMU via unified test dispatcher
+Authored PLAN6.md and synchronized all documentation (README, CHANGELOG, ARCHITECTURE, ASM, TECH_ASM, tutorials) with multi-ISA trampolines and full test matrix

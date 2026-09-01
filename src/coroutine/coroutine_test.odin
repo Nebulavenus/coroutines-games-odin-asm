@@ -5,6 +5,9 @@ import "core:fmt"
 import "core:math/rand"
 import "core:math"
 import "core:mem"
+import x86 "core:rexcode/isa/x86"
+import arm64 "core:rexcode/isa/arm64"
+import riscv "core:rexcode/isa/riscv"
 
 // ============================================================================
 // Test 1: Basic Fiber Execution
@@ -8284,3 +8287,399 @@ test_simulate_until_val_by_value_dispatch :: proc(t: ^testing.T) {
     testing.expect_value(t, elapsed, 0.0)
 }
 
+// ============================================================================
+// Test 187: Multi-ISA Machine Code Disassembly Validation via core:rexcode
+// ============================================================================
+
+@(test)
+test_multi_isa_byte_opcodes_disassembly_validation :: proc(t: ^testing.T) {
+    // 1. AMD64 Windows Context Switch Machine Code
+    amd64_win_bytes := []u8{
+        0x55,                                           // push rbp
+        0x53,                                           // push rbx
+        0x56,                                           // push rsi
+        0x57,                                           // push rdi
+        0x41, 0x54,                                     // push r12
+        0x41, 0x55,                                     // push r13
+        0x41, 0x56,                                     // push r14
+        0x41, 0x57,                                     // push r15
+        0x48, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00,       // sub rsp, 160
+        0x44, 0x0F, 0x7F, 0x7C, 0x24, 0x00,             // movdqu [rsp + 0x00], xmm15
+        0x44, 0x0F, 0x7F, 0x74, 0x24, 0x10,             // movdqu [rsp + 0x10], xmm14
+        0x44, 0x0F, 0x7F, 0x6C, 0x24, 0x20,             // movdqu [rsp + 0x20], xmm13
+        0x44, 0x0F, 0x7F, 0x64, 0x24, 0x30,             // movdqu [rsp + 0x30], xmm12
+        0x44, 0x0F, 0x7F, 0x5C, 0x24, 0x40,             // movdqu [rsp + 0x40], xmm11
+        0x44, 0x0F, 0x7F, 0x54, 0x24, 0x50,             // movdqu [rsp + 0x50], xmm10
+        0x44, 0x0F, 0x7F, 0x4C, 0x24, 0x60,             // movdqu [rsp + 0x60], xmm9
+        0x44, 0x0F, 0x7F, 0x44, 0x24, 0x70,             // movdqu [rsp + 0x70], xmm8
+        0x0F, 0x7F, 0xBC, 0x24, 0x80, 0x00, 0x00, 0x00, // movdqu [rsp + 0x80], xmm7
+        0x0F, 0x7F, 0xB4, 0x24, 0x90, 0x00, 0x00, 0x00, // movdqu [rsp + 0x90], xmm6
+        0x48, 0x89, 0x21,                               // mov [rcx], rsp
+        0x48, 0x89, 0xD4,                               // mov rsp, rdx
+        0x0F, 0x6F, 0xB4, 0x24, 0x90, 0x00, 0x00, 0x00, // movdqu xmm6,  [rsp + 0x90]
+        0x0F, 0x6F, 0xBC, 0x24, 0x80, 0x00, 0x00, 0x00, // movdqu xmm7,  [rsp + 0x80]
+        0x44, 0x0F, 0x6F, 0x44, 0x24, 0x70,             // movdqu xmm8,  [rsp + 0x70]
+        0x44, 0x0F, 0x6F, 0x4C, 0x24, 0x60,             // movdqu xmm9,  [rsp + 0x60]
+        0x44, 0x0F, 0x6F, 0x54, 0x24, 0x50,             // movdqu xmm10, [rsp + 0x50]
+        0x44, 0x0F, 0x6F, 0x5C, 0x24, 0x40,             // movdqu xmm11, [rsp + 0x40]
+        0x44, 0x0F, 0x6F, 0x64, 0x24, 0x30,             // movdqu xmm12, [rsp + 0x30]
+        0x44, 0x0F, 0x6F, 0x6C, 0x24, 0x20,             // movdqu xmm13, [rsp + 0x20]
+        0x44, 0x0F, 0x6F, 0x74, 0x24, 0x10,             // movdqu xmm14, [rsp + 0x10]
+        0x44, 0x0F, 0x6F, 0x7C, 0x24, 0x00,             // movdqu xmm15, [rsp + 0x00]
+        0x48, 0x81, 0xC4, 0xA0, 0x00, 0x00, 0x00,       // add rsp, 160
+        0x41, 0x5F,                                     // pop r15
+        0x41, 0x5E,                                     // pop r14
+        0x41, 0x5D,                                     // pop r13
+        0x41, 0x5C,                                     // pop r12
+        0x5F,                                           // pop rdi
+        0x5E,                                           // pop rsi
+        0x5B,                                           // pop rbx
+        0x5D,                                           // pop rbp
+        0xC3,                                           // ret
+    }
+
+    x86_insts:  [dynamic]x86.Instruction
+    x86_info:   [dynamic]x86.Instruction_Info
+    x86_labels: [dynamic]x86.Label_Definition
+    x86_errors: [dynamic]x86.Error
+    defer {
+        delete(x86_insts)
+        delete(x86_info)
+        delete(x86_labels)
+        delete(x86_errors)
+    }
+    x86.decode(amd64_win_bytes, nil, &x86_insts, &x86_info, &x86_labels, &x86_errors)
+    testing.expect_value(t, len(x86_errors), 0)
+    testing.expect_value(t, len(x86_insts), 41)
+
+    // 2. ARM64 (AArch64) Context Switch Machine Code
+    arm64_bytes := []u8{
+        0xFF, 0x83, 0x02, 0xD1, // sub sp, sp, #160
+        0xFD, 0x7B, 0x00, 0xA9, // stp x29, x30, [sp, #0]
+        0xF3, 0x53, 0x01, 0xA9, // stp x19, x20, [sp, #16]
+        0xF5, 0x5B, 0x02, 0xA9, // stp x21, x22, [sp, #32]
+        0xF7, 0x63, 0x03, 0xA9, // stp x23, x24, [sp, #48]
+        0xF9, 0x6B, 0x04, 0xA9, // stp x25, x26, [sp, #64]
+        0xFB, 0x73, 0x05, 0xA9, // stp x27, x28, [sp, #80]
+        0xE8, 0x27, 0x06, 0x6D, // stp d8,  d9,  [sp, #96]
+        0xEA, 0x2F, 0x07, 0x6D, // stp d10, d11, [sp, #112]
+        0xEC, 0x37, 0x08, 0x6D, // stp d12, d13, [sp, #128]
+        0xEE, 0x3F, 0x09, 0x6D, // stp d14, d15, [sp, #144]
+        0xE2, 0x03, 0x00, 0x91, // mov x2, sp
+        0x02, 0x00, 0x00, 0xF9, // str x2, [x0]
+        0x3F, 0x00, 0x00, 0x91, // mov sp, x1
+        0xEE, 0x3F, 0x49, 0x6D, // ldp d14, d15, [sp, #144]
+        0xEC, 0x37, 0x48, 0x6D, // ldp d12, d13, [sp, #128]
+        0xEA, 0x2F, 0x47, 0x6D, // ldp d10, d11, [sp, #112]
+        0xE8, 0x27, 0x46, 0x6D, // ldp d8,  d9,  [sp, #96]
+        0xFB, 0x73, 0x45, 0xA9, // ldp x27, x28, [sp, #80]
+        0xF9, 0x6B, 0x44, 0xA9, // ldp x25, x26, [sp, #64]
+        0xF7, 0x63, 0x43, 0xA9, // ldp x23, x24, [sp, #48]
+        0xF5, 0x5B, 0x42, 0xA9, // ldp x21, x22, [sp, #32]
+        0xF3, 0x53, 0x41, 0xA9, // ldp x19, x20, [sp, #16]
+        0xFD, 0x7B, 0x40, 0xA9, // ldp x29, x30, [sp, #0]
+        0xFF, 0x83, 0x02, 0x91, // add sp, sp, #160
+        0xC0, 0x03, 0x5F, 0xD6, // ret
+    }
+
+    arm64_insts:  [dynamic]arm64.Instruction
+    arm64_info:   [dynamic]arm64.Instruction_Info
+    arm64_labels: [dynamic]arm64.Label_Definition
+    arm64_errors: [dynamic]arm64.Error
+    defer {
+        delete(arm64_insts)
+        delete(arm64_info)
+        delete(arm64_labels)
+        delete(arm64_errors)
+    }
+    arm64.decode(arm64_bytes, nil, &arm64_insts, &arm64_info, &arm64_labels, &arm64_errors)
+    testing.expect_value(t, len(arm64_errors), 0)
+    testing.expect_value(t, len(arm64_insts), 26)
+
+    // 3. RISC-V 64 Context Switch Machine Code
+    riscv_bytes := []u8{
+        0x13, 0x01, 0x01, 0xF3, // addi sp, sp, -208
+        0x23, 0x30, 0x11, 0x00, // sd ra, 0(sp)
+        0x23, 0x34, 0x81, 0x00, // sd s0, 8(sp)
+        0x23, 0x38, 0x91, 0x00, // sd s1, 16(sp)
+        0x23, 0x3C, 0x21, 0x01, // sd s2, 24(sp)
+        0x23, 0x30, 0x31, 0x03, // sd s3, 32(sp)
+        0x23, 0x34, 0x41, 0x03, // sd s4, 40(sp)
+        0x23, 0x38, 0x51, 0x03, // sd s5, 48(sp)
+        0x23, 0x3C, 0x61, 0x03, // sd s6, 56(sp)
+        0x23, 0x30, 0x71, 0x05, // sd s7, 64(sp)
+        0x23, 0x34, 0x81, 0x05, // sd s8, 72(sp)
+        0x23, 0x38, 0x91, 0x05, // sd s9, 80(sp)
+        0x23, 0x3C, 0xA1, 0x05, // sd s10, 88(sp)
+        0x23, 0x30, 0xB1, 0x07, // sd s11, 96(sp)
+        0x27, 0x34, 0x81, 0x06, // fsd fs0, 104(sp)
+        0x27, 0x38, 0x91, 0x06, // fsd fs1, 112(sp)
+        0x27, 0x3C, 0x21, 0x07, // fsd fs2, 120(sp)
+        0x27, 0x30, 0x31, 0x09, // fsd fs3, 128(sp)
+        0x27, 0x34, 0x41, 0x09, // fsd fs4, 136(sp)
+        0x27, 0x38, 0x51, 0x09, // fsd fs5, 144(sp)
+        0x27, 0x3C, 0x61, 0x09, // fsd fs6, 152(sp)
+        0x27, 0x30, 0x71, 0x0B, // fsd fs7, 160(sp)
+        0x27, 0x34, 0x81, 0x0B, // fsd fs8, 168(sp)
+        0x27, 0x38, 0x91, 0x0B, // fsd fs9, 176(sp)
+        0x27, 0x3C, 0xA1, 0x0B, // fsd fs10, 184(sp)
+        0x27, 0x30, 0xB1, 0x0D, // fsd fs11, 192(sp)
+        0x23, 0x30, 0x25, 0x00, // sd sp, 0(a0)
+        0x13, 0x81, 0x05, 0x00, // mv sp, a1 (addi sp, a1, 0)
+        0x07, 0x3E, 0x01, 0x0C, // fld fs11, 192(sp)
+        0x87, 0x3E, 0x81, 0x0B, // fld fs10, 184(sp)
+        0x07, 0x3E, 0x01, 0x0B, // fld fs9, 176(sp)
+        0x87, 0x3E, 0x81, 0x0A, // fld fs8, 168(sp)
+        0x07, 0x3E, 0x01, 0x0A, // fld fs7, 160(sp)
+        0x87, 0x3E, 0x81, 0x09, // fld fs6, 152(sp)
+        0x07, 0x3E, 0x01, 0x09, // fld fs5, 144(sp)
+        0x87, 0x3E, 0x81, 0x08, // fld fs4, 136(sp)
+        0x07, 0x3E, 0x01, 0x08, // fld fs3, 128(sp)
+        0x87, 0x3E, 0x81, 0x07, // fld fs2, 120(sp)
+        0x07, 0x3E, 0x01, 0x07, // fld fs1, 112(sp)
+        0x87, 0x34, 0x81, 0x06, // fld fs0, 104(sp)
+        0x83, 0x3D, 0x01, 0x06, // ld s11, 96(sp)
+        0x03, 0x3D, 0x81, 0x05, // ld s10, 88(sp)
+        0x83, 0x3C, 0x01, 0x05, // ld s9, 80(sp)
+        0x03, 0x3C, 0x81, 0x04, // ld s8, 72(sp)
+        0x83, 0x3B, 0x01, 0x04, // ld s7, 64(sp)
+        0x03, 0x3B, 0x81, 0x03, // ld s6, 56(sp)
+        0x83, 0x3A, 0x01, 0x03, // ld s5, 48(sp)
+        0x03, 0x3A, 0x81, 0x02, // ld s4, 40(sp)
+        0x83, 0x39, 0x01, 0x02, // ld s3, 32(sp)
+        0x03, 0x39, 0x81, 0x01, // ld s2, 24(sp)
+        0x83, 0x34, 0x01, 0x01, // ld s1, 16(sp)
+        0x03, 0x34, 0x81, 0x00, // ld s0, 8(sp)
+        0x83, 0x30, 0x01, 0x00, // ld ra, 0(sp)
+        0x13, 0x01, 0x01, 0x0D, // addi sp, sp, 208
+        0x67, 0x80, 0x00, 0x00, // ret
+    }
+
+    riscv_insts:  [dynamic]riscv.Instruction
+    riscv_info:   [dynamic]riscv.Instruction_Info
+    riscv_labels: [dynamic]riscv.Label_Definition
+    riscv_errors: [dynamic]riscv.Error
+    defer {
+        delete(riscv_insts)
+        delete(riscv_info)
+        delete(riscv_labels)
+        delete(riscv_errors)
+    }
+    riscv.decode(riscv_bytes, nil, &riscv_insts, &riscv_info, &riscv_labels, &riscv_errors)
+    testing.expect_value(t, len(riscv_errors), 0)
+    testing.expect_value(t, len(riscv_insts), 55)
+}
+
+
+
+// ============================================================================
+// Full Test Suite Dispatcher (for QEMU / Cross-Platform Standalone Runners)  
+// ============================================================================
+
+run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) {
+    tests := []struct{ name: string, fn: proc(t: ^testing.T) } {
+        { "test_basic_spawn_and_run", test_basic_spawn_and_run },
+        { "test_stack_local_variables_across_yields", test_stack_local_variables_across_yields },
+        { "test_wait_seconds_timer_heap", test_wait_seconds_timer_heap },
+        { "test_wait_frames", test_wait_frames },
+        { "test_wait_until_condition", test_wait_until_condition },
+        { "test_structured_sync", test_structured_sync },
+        { "test_structured_race", test_structured_race },
+        { "test_scope_cancellation", test_scope_cancellation },
+        { "test_cleanup_proc_and_defer", test_cleanup_proc_and_defer },
+        { "test_tween_interpolation", test_tween_interpolation },
+        { "test_stack_canary_guard", test_stack_canary_guard },
+        { "test_nested_race_with_sync_branch", test_nested_race_with_sync_branch },
+        { "test_time_scaling_and_pause", test_time_scaling_and_pause },
+        { "test_many_concurrent_fibers", test_many_concurrent_fibers },
+        { "test_deep_nested_hierarchy_sync_race_sync", test_deep_nested_hierarchy_sync_race_sync },
+        { "test_sync_failure_propagation", test_sync_failure_propagation },
+        { "test_race_all_simultaneous_finish", test_race_all_simultaneous_finish },
+        { "test_race_loser_with_children_aborts_all_descendants", test_race_loser_with_children_aborts_all_descendants },
+        { "test_timer_heap_1000_random_sort", test_timer_heap_1000_random_sort },
+        { "test_timer_heap_random_cancellations", test_timer_heap_random_cancellations },
+        { "test_condition_immediate_satisfaction", test_condition_immediate_satisfaction },
+        { "test_pool_multi_slab_expansion_and_reclaim", test_pool_multi_slab_expansion_and_reclaim },
+        { "test_fiber_lifecycle_generation_reuse", test_fiber_lifecycle_generation_reuse },
+        { "test_local_variable_isolation_many_fibers", test_local_variable_isolation_many_fibers },
+        { "test_heterogeneous_scope_cancellation", test_heterogeneous_scope_cancellation },
+        { "test_10k_yield_loop", test_10k_yield_loop },
+        { "test_zero_and_negative_waits", test_zero_and_negative_waits },
+        { "test_fiber_temp_allocator_isolation", test_fiber_temp_allocator_isolation },
+        { "test_with_timeout_completion", test_with_timeout_completion },
+        { "test_with_timeout_expired", test_with_timeout_expired },
+        { "test_signal_broadcast", test_signal_broadcast },
+        { "test_fiber_mutex_contention", test_fiber_mutex_contention },
+        { "test_stack_watermark_usage_calculation", test_stack_watermark_usage_calculation },
+        { "test_async_token_bridge", test_async_token_bridge },
+        { "test_channel_synchronous_rendezvous", test_channel_synchronous_rendezvous },
+        { "test_channel_buffered_fifo", test_channel_buffered_fifo },
+        { "test_channel_close_and_drain", test_channel_close_and_drain },
+        { "test_generator_lazy_sequence", test_generator_lazy_sequence },
+        { "test_virtual_memory_guard_pages", test_virtual_memory_guard_pages },
+        { "test_spawn_by_value_primitives", test_spawn_by_value_primitives },
+        { "test_spawn_by_value_struct", test_spawn_by_value_struct },
+        { "test_spawn_by_value_concurrency_no_crosstalk", test_spawn_by_value_concurrency_no_crosstalk },
+        { "test_branch_by_value_sync", test_branch_by_value_sync },
+        { "test_branch_by_value_race", test_branch_by_value_race },
+        { "test_spawn_by_value_ephemeral_stack_safety", test_spawn_by_value_ephemeral_stack_safety },
+        { "test_tween_vectors", test_tween_vectors },
+        { "test_with_timeout_proc_overloads", test_with_timeout_proc_overloads },
+        { "test_wait_while", test_wait_while },
+        { "test_wait_until_val", test_wait_until_val },
+        { "test_scope_query_helpers", test_scope_query_helpers },
+        { "test_fiber_time_accessors", test_fiber_time_accessors },
+        { "test_scope_wait", test_scope_wait },
+        { "test_expanded_easing_functions", test_expanded_easing_functions },
+        { "test_channel_ring_buffer_wraparound", test_channel_ring_buffer_wraparound },
+        { "test_generator_lightweight_memory", test_generator_lightweight_memory },
+        { "test_fallback_control_flow", test_fallback_control_flow },
+        { "test_rush_success_preemption", test_rush_success_preemption },
+        { "test_phase_director_fsm", test_phase_director_fsm },
+        { "test_simulate_until_headless", test_simulate_until_headless },
+        { "test_fail_primitive", test_fail_primitive },
+        { "test_fallback_all_failing_and_by_value", test_fallback_all_failing_and_by_value },
+        { "test_rush_5_branches_and_all_failing", test_rush_5_branches_and_all_failing },
+        { "test_phase_director_rapid_transitions", test_phase_director_rapid_transitions },
+        { "test_simulate_until_channel_pipeline", test_simulate_until_channel_pipeline },
+        { "test_nested_concurrency_combinators", test_nested_concurrency_combinators },
+        { "test_scheduler_step_while_paused", test_scheduler_step_while_paused },
+        { "test_real_time_clock_while_paused", test_real_time_clock_while_paused },
+        { "test_fixed_integer_tick_clock", test_fixed_integer_tick_clock },
+        { "test_dual_clock_time_scaling", test_dual_clock_time_scaling },
+        { "test_multi_clock_heap_integrity", test_multi_clock_heap_integrity },
+        { "test_fiber_join_normal_completion", test_fiber_join_normal_completion },
+        { "test_fiber_join_cancelled_target", test_fiber_join_cancelled_target },
+        { "test_fiber_join_already_finished", test_fiber_join_already_finished },
+        { "test_event_typed_multicast", test_event_typed_multicast },
+        { "test_event_empty_emit", test_event_empty_emit },
+        { "test_fiber_semaphore_concurrency_limit", test_fiber_semaphore_concurrency_limit },
+        { "test_fiber_semaphore_try_acquire", test_fiber_semaphore_try_acquire },
+        { "test_fiber_latch_barrier", test_fiber_latch_barrier },
+        { "test_scheduler_prewarm", test_scheduler_prewarm },
+        { "test_handle_introspection_and_status", test_handle_introspection_and_status },
+        { "test_scheduler_pool_stats", test_scheduler_pool_stats },
+        { "test_chan_try_select_recv", test_chan_try_select_recv },
+        { "test_chan_select_recv_blocking", test_chan_select_recv_blocking },
+        { "test_chan_select_closed_channel", test_chan_select_closed_channel },
+        { "test_scope_hierarchy_multi_fiber_active_count", test_scope_hierarchy_multi_fiber_active_count },
+        { "test_signal_multicast_wait_and_broadcast", test_signal_multicast_wait_and_broadcast },
+        { "test_scope_cancellation_preserves_independent_scopes", test_scope_cancellation_preserves_independent_scopes },
+        { "test_race_stun_interruption_and_recovery", test_race_stun_interruption_and_recovery },
+        { "test_scope_cancel_immediate_abort", test_scope_cancel_immediate_abort },
+        { "test_subscope_isolated_behavior_cancellation", test_subscope_isolated_behavior_cancellation },
+        { "test_cancel_fiber_waiting_on_semaphore", test_cancel_fiber_waiting_on_semaphore },
+        { "test_cancel_fiber_holding_semaphore_with_cleanup", test_cancel_fiber_holding_semaphore_with_cleanup },
+        { "test_cancel_fiber_waiting_on_mutex", test_cancel_fiber_waiting_on_mutex },
+        { "test_cancel_fiber_waiting_on_latch", test_cancel_fiber_waiting_on_latch },
+        { "test_cancel_fiber_waiting_on_signal", test_cancel_fiber_waiting_on_signal },
+        { "test_cancel_fiber_waiting_on_event", test_cancel_fiber_waiting_on_event },
+        { "test_scope_cancel_inside_nested_sync", test_scope_cancel_inside_nested_sync },
+        { "test_scope_cancel_inside_nested_race", test_scope_cancel_inside_nested_race },
+        { "test_fallback_resilience_after_scope_cancellation", test_fallback_resilience_after_scope_cancellation },
+        { "test_branch_name_and_debug_tree_preservation", test_branch_name_and_debug_tree_preservation },
+        { "test_multi_channel_select_stress_with_producer_cancellation", test_multi_channel_select_stress_with_producer_cancellation },
+        { "test_signal_multicast_cascade_with_dynamic_waiters", test_signal_multicast_cascade_with_dynamic_waiters },
+        { "test_fiber_set_cleanup_deep_hierarchy_abort", test_fiber_set_cleanup_deep_hierarchy_abort },
+        { "test_semaphore_high_contention_random_cancellations", test_semaphore_high_contention_random_cancellations },
+        { "test_mutex_lock_unlock_cancellation_churn", test_mutex_lock_unlock_cancellation_churn },
+        { "test_event_multicast_dynamic_subscribe_during_emit", test_event_multicast_dynamic_subscribe_during_emit },
+        { "test_latch_partial_countdown_with_waiter_cancellations", test_latch_partial_countdown_with_waiter_cancellations },
+        { "test_scope_mass_cancel_mixed_states", test_scope_mass_cancel_mixed_states },
+        { "test_scheduler_prewarm_slab_expansion_under_load", test_scheduler_prewarm_slab_expansion_under_load },
+        { "test_rush_and_fallback_with_signal_interruption", test_rush_and_fallback_with_signal_interruption },
+        { "test_chan_destroy_auto_wakes_blocked_receivers", test_chan_destroy_auto_wakes_blocked_receivers },
+        { "test_chan_destroy_auto_wakes_blocked_senders", test_chan_destroy_auto_wakes_blocked_senders },
+        { "test_chan_recv_timeout_success", test_chan_recv_timeout_success },
+        { "test_chan_recv_timeout_expires", test_chan_recv_timeout_expires },
+        { "test_chan_recv_timeout_closed_channel", test_chan_recv_timeout_closed_channel },
+        { "test_watchdog_configuration_and_disable", test_watchdog_configuration_and_disable },
+        { "test_channel_close_multicast_with_interleaved_receivers", test_channel_close_multicast_with_interleaved_receivers },
+        { "test_chan_recv_timeout_concurrent_producers", test_chan_recv_timeout_concurrent_producers },
+        { "test_scope_destroy_prevents_stale_pointer_access", test_scope_destroy_prevents_stale_pointer_access },
+        { "test_temp_allocator_isolation_invariants", test_temp_allocator_isolation_invariants },
+        { "test_mutex_stale_waiter_abort_immunity", test_mutex_stale_waiter_abort_immunity },
+        { "test_scoped_mutex_and_semaphore", test_scoped_mutex_and_semaphore },
+        { "test_multi_channel_select", test_multi_channel_select },
+        { "test_event_multicast_broadcast_and_clear", test_event_multicast_broadcast_and_clear },
+        { "test_generational_handle_history_capacity", test_generational_handle_history_capacity },
+        { "test_channel_stale_waiter_abort_immunity", test_channel_stale_waiter_abort_immunity },
+        { "test_with_mutex_val", test_with_mutex_val },
+        { "test_with_semaphore_val", test_with_semaphore_val },
+        { "test_chan_select_recv_multiplexing", test_chan_select_recv_multiplexing },
+        { "test_scheduler_walk_tree_traversal", test_scheduler_walk_tree_traversal },
+        { "test_precision_drift_compensated_ticker", test_precision_drift_compensated_ticker },
+        { "test_structured_task_preemption_via_race_and_signal", test_structured_task_preemption_via_race_and_signal },
+        { "test_primitives_custom_arena_allocation_fidelity", test_primitives_custom_arena_allocation_fidelity },
+        { "test_simulate_until_with_active_watchdog", test_simulate_until_with_active_watchdog },
+        { "test_wait_until_timeout_mechanics", test_wait_until_timeout_mechanics },
+        { "test_wait_while_timeout_mechanics", test_wait_while_timeout_mechanics },
+        { "test_fiber_dynamic_renaming", test_fiber_dynamic_renaming },
+        { "test_chan_cap_inspection", test_chan_cap_inspection },
+        { "test_plan5_packed_generational_handles_bitwise", test_plan5_packed_generational_handles_bitwise },
+        { "test_plan5_handle_slot_reuse_and_aba_safety", test_plan5_handle_slot_reuse_and_aba_safety },
+        { "test_plan5_intrusive_wait_queue_operations", test_plan5_intrusive_wait_queue_operations },
+        { "test_plan5_o1_handle_lookups_under_high_fiber_load", test_plan5_o1_handle_lookups_under_high_fiber_load },
+        { "test_plan5_config_constants_integration", test_plan5_config_constants_integration },
+        { "test_wait_queue_auto_unlinking_on_abort", test_wait_queue_auto_unlinking_on_abort },
+        { "test_scope_multi_cycle_emp_stun_and_recovery", test_scope_multi_cycle_emp_stun_and_recovery },
+        { "test_interruption_race_attack_recovery_loop", test_interruption_race_attack_recovery_loop },
+        { "test_headless_boss_ai_fuzzing_simulation", test_headless_boss_ai_fuzzing_simulation },
+        { "test_phase_transition_emp_coincidence_fuzzing", test_phase_transition_emp_coincidence_fuzzing },
+        { "test_sim_ticks_continuous_zero_drift", test_sim_ticks_continuous_zero_drift },
+        { "test_wait_queue_defensive_and_paused_dispatch", test_wait_queue_defensive_and_paused_dispatch },
+        { "test_time_scale_defensive_clamping", test_time_scale_defensive_clamping },
+        { "test_generator_o1_and_recycle_wait_queue_defense", test_generator_o1_and_recycle_wait_queue_defense },
+        { "test_chan_recv_timeout_unbuffered_safety", test_chan_recv_timeout_unbuffered_safety },
+        { "test_scheduler_destroy_wait_queue_unlinking", test_scheduler_destroy_wait_queue_unlinking },
+        { "test_with_timeout_by_value_branching", test_with_timeout_by_value_branching },
+        { "test_fiber_calc_stack_usage_canary_breach_detection", test_fiber_calc_stack_usage_canary_breach_detection },
+        { "test_chan_unbuffered_sender_before_receiver", test_chan_unbuffered_sender_before_receiver },
+        { "test_chan_select_unbuffered_with_sender", test_chan_select_unbuffered_with_sender },
+        { "test_spawn_real_val_while_paused", test_spawn_real_val_while_paused },
+        { "test_defensive_semaphore_and_latch_non_positive", test_defensive_semaphore_and_latch_non_positive },
+        { "test_simulate_until_while_paused", test_simulate_until_while_paused },
+        { "test_intrusive_fiber_scope_lifecycle", test_intrusive_fiber_scope_lifecycle },
+        { "test_chan_unbuffered_multi_sender_rendezvous", test_chan_unbuffered_multi_sender_rendezvous },
+        { "test_chan_unbuffered_sender_abort_cleanup", test_chan_unbuffered_sender_abort_cleanup },
+        { "test_real_time_fiber_paused_yield", test_real_time_fiber_paused_yield },
+        { "test_real_time_ticker_paused_zero_freeze", test_real_time_ticker_paused_zero_freeze },
+        { "test_fiber_cleanup_preserves_user_data", test_fiber_cleanup_preserves_user_data },
+        { "test_fiber_pool_recycle_wake_clock_sanitization", test_fiber_pool_recycle_wake_clock_sanitization },
+        { "test_scheduler_destroy_scope_detachment", test_scheduler_destroy_scope_detachment },
+        { "test_ready_queue_generational_aba_guard", test_ready_queue_generational_aba_guard },
+        { "test_paused_condition_waiters_polling", test_paused_condition_waiters_polling },
+        { "test_with_mutex_automatic_abort_cleanup", test_with_mutex_automatic_abort_cleanup },
+        { "test_with_semaphore_automatic_abort_cleanup", test_with_semaphore_automatic_abort_cleanup },
+        { "test_chan_select_recv_buffered_priority_over_closed", test_chan_select_recv_buffered_priority_over_closed },
+        { "test_unbuffered_chan_sender_first_rendezvous", test_unbuffered_chan_sender_first_rendezvous },
+        { "test_unbuffered_chan_multi_sender_fifo_rendezvous", test_unbuffered_chan_multi_sender_fifo_rendezvous },
+        { "test_race_join_independent_sibling_non_interference", test_race_join_independent_sibling_non_interference },
+        { "test_rush_join_independent_sibling_non_interference", test_rush_join_independent_sibling_non_interference },
+        { "test_ticker_zero_drift_f64_precision", test_ticker_zero_drift_f64_precision },
+        { "test_generator_early_destruction_and_clean_state", test_generator_early_destruction_and_clean_state },
+        { "test_semaphore_true_zii_unbounded_permits", test_semaphore_true_zii_unbounded_permits },
+        { "test_mutex_owner_tracking_and_unlock_safety", test_mutex_owner_tracking_and_unlock_safety },
+        { "test_fiber_self_join_deadlock_guard", test_fiber_self_join_deadlock_guard },
+        { "test_chan_send_timeout_success_and_expiry", test_chan_send_timeout_success_and_expiry },
+        { "test_with_timeout_real_domain_execution", test_with_timeout_real_domain_execution },
+        { "test_simulate_until_val_by_value_dispatch", test_simulate_until_val_by_value_dispatch },
+        { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
+    }
+
+    total := len(tests)
+    for test, i in tests {
+        t: testing.T
+        test.fn(&t)
+        if t.error_count == 0 {
+            passed += 1
+            if verbose {
+                fmt.printf("  [PASS] [%3d/%3d] %s\n", i + 1, total, test.name)
+            }
+        } else {
+            failed += 1
+            fmt.printf("  [FAIL] [%3d/%3d] %s (errors: %d)\n", i + 1, total, test.name, t.error_count)
+        }
+    }
+    return passed, failed
+}

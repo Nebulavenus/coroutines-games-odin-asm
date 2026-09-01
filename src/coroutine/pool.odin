@@ -143,7 +143,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
             }
             return
         } else when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .FreeBSD {
-            slab_addr := posix.mmap(nil, uint(slab_size), posix.PROT_READ | posix.PROT_WRITE, posix.MAP_PRIVATE | posix.MAP_ANONYMOUS, -1, 0)
+            slab_addr := posix.mmap(nil, uint(slab_size), {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS}, -1, 0)
             if slab_addr == posix.MAP_FAILED {
                 panic("Failed to allocate mmap virtual memory slab for fiber pool")
             }
@@ -153,7 +153,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
             for i in 0 ..< pool.stacks_per_slab {
                 raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
                 // Protect lowest 4KB page as PROT_NONE (Guard Page)
-                posix.mprotect(raw_base, 4096, posix.PROT_NONE)
+                posix.mprotect(raw_base, 4096, {})
 
                 fiber := new(Fiber, alloc)
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
@@ -425,6 +425,48 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
 
             fiber.saved_sp = rawptr(sp)
         }
+    } else when ODIN_ARCH == .arm64 {
+        // ARM64 (AAPCS64 Standard ABI):
+        // 160-byte frame layout:
+        // sp + 0:   x29 (FP = nil), x30 (LR = fiber_trampoline_entry)
+        // sp + 16:  x19 (fiber pointer), x20 (nil)
+        // sp + 32:  x21 (nil), x22 (nil)
+        // sp + 48:  x23 (nil), x24 (nil)
+        // sp + 64:  x25 (nil), x26 (nil)
+        // sp + 80:  x27 (nil), x28 (nil)
+        // sp + 96:  d8 (0), d9 (0)
+        // sp + 112: d10 (0), d11 (0)
+        // sp + 128: d12 (0), d13 (0)
+        // sp + 144: d14 (0), d15 (0)
+        sp := top - 160
+        mem.zero(rawptr(sp), 160)
+
+        sp_words := ([^]rawptr)(rawptr(sp))
+        sp_words[0] = nil                            // x29 (FP)
+        sp_words[1] = rawptr(fiber_trampoline_entry) // x30 (LR / return address)
+        sp_words[2] = rawptr(fiber)                  // x19 (Self-Identity)
+
+        fiber.saved_sp = rawptr(sp)
+    } else when ODIN_ARCH == .riscv64 {
+        // RISC-V 64 (LP64D ABI):
+        // 208-byte frame layout:
+        // sp + 0:   ra (fiber_trampoline_entry)
+        // sp + 8:   s0 / fp (nil)
+        // sp + 16:  s1 (nil)
+        // sp + 24:  s2 (fiber pointer)
+        // sp + 32..96: s3..s11 (nil)
+        // sp + 104..192: fs0..fs11 (nil)
+        // sp + 200: Pad
+        sp := top - 208
+        mem.zero(rawptr(sp), 208)
+
+        sp_words := ([^]rawptr)(rawptr(sp))
+        sp_words[0] = rawptr(fiber_trampoline_entry) // ra (return address)
+        sp_words[1] = nil                            // s0 (fp)
+        sp_words[2] = nil                            // s1
+        sp_words[3] = rawptr(fiber)                  // s2 (Self-Identity)
+
+        fiber.saved_sp = rawptr(sp)
     }
 }
 
@@ -437,6 +479,14 @@ fiber_trampoline_entry :: proc "c" () {
     when ODIN_ARCH == .amd64 {
         #no_bounds_check {
             fiber = (^Fiber)(get_r12_reg())
+        }
+    } else when ODIN_ARCH == .arm64 {
+        #no_bounds_check {
+            fiber = (^Fiber)(get_x19_reg())
+        }
+    } else when ODIN_ARCH == .riscv64 {
+        #no_bounds_check {
+            fiber = (^Fiber)(get_s2_reg())
         }
     }
 

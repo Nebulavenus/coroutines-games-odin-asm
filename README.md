@@ -1,5 +1,7 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
+> **Compiler Requirement**: Built and verified with Odin `dev-2026-09` (`master` branch commit [`2c81576cf`](https://github.com/odin-lang/Odin/commit/2c81576cf)).
+
 A high-performance, deterministic **stackful coroutine engine** for [Odin](https://odin-lang.org/), context switching with native inline assembly [`asm`](https://odin-lang.org/docs/inline-asm/).
 
 Write gameplay scripts as straight-line code — `wait`, `sync`, `race`, `rush`, `fallback`, `tween` — while the scheduler handles suspension, cancellation, and hierarchy behind the scenes. No callback spaghetti, no state machines, no OOP boilerplate.
@@ -16,7 +18,10 @@ Ships with interactive **Raylib** demos: a 2D Boss Encounter, an AI & Quest Sand
 - **Packed Generational Handles ($O(1)$ Direct Slot Lookups)**: `Fiber_Handle` packs a 16-bit slot index and 16-bit generation counter (`u16 index | u16 gen`), enabling instant single-instruction array lookups with zero linear searching and complete ABA protection.
 - **Intrusive Waiter Queues (100% Zero-Allocation & True ZII)**: Primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event`, `Channel`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization (ZII).
 - **Persistent Allocator Reference Storage**: `Fiber_Pool` and `Scheduler` maintain persistent allocator references, ensuring complete memory lifecycle fidelity across worker threads and temporary allocator scopes.
-- **Native AMD64 Inline Assembly Context Switching**: Fast register swap using call/ret trampoline patterns with full register preservation (Windows x64 GPRs + `xmm6`..`xmm15`; System V AMD64 GPRs), `#volatile` and caller-saved register clobbers (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`), and strict 16-byte stack alignment.
+- **Universal Multi-ISA Native Inline Assembly Context Switching**:
+  - **AMD64 (x86-64)**: Fast register swap with Windows x64 (240B frame with `xmm6`..`xmm15`) and System V AMD64 (64B frame) calling conventions. Self-ID: `%r12`.
+  - **ARM64 (AArch64)**: Native 160B AAPCS64 frame preserving `x19`..`x28`, `x29` (FP), `x30` (LR), and `d8`..`d15` on Apple Silicon (M1–M4), Linux ARM, iOS, Android, and Nintendo Switch. Self-ID: `%x19`.
+  - **RISC-V 64 (RV64GC)**: Native 208B LP64D frame preserving `ra`, `s0`..`s11`, and `fs0`..`fs11` for open-source RISC-V hardware and embedded silicon. Self-ID: `%s2`.
 - **3-Tier Multi-Domain Engine Clock**:
   - **Simulation Clock (`sim_time`, `sim_delta`)**: Pausable, scalable gameplay clock for AI, combat, and animations.
   - **Real / Wall Clock (`real_time`, `real_delta`)**: Unpaused clock for UI menus, HUD overlays, and network pings (`wait_real`, `spawn_real`).
@@ -263,12 +268,48 @@ A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows
 # Run the 6-Suite Performance Benchmark Runner
 .\build.ps1 run-bench
 
-# Run All 161 Unit Tests
+# Run All 187 Unit Tests (Native Host)
 .\build.ps1 test
+
+# Cross-Check All 6 Multi-ISA Targets (Static Verification)
+.\build.ps1 check-all
+
+# Execute All 187 Unit Tests in WSL2 via QEMU Emulation (ARM64 & RISC-V 64)
+.\run_wsl_qemu.ps1 test
+
+# Run the 10,000 Concurrent Fiber Benchmark in QEMU
+.\run_wsl_qemu.ps1 bench
+
+# Run Full QEMU Suite across all architectures
+.\run_wsl_qemu.ps1 all
 
 # Run Full LLVM Optimization & Architecture Matrix (12 builds)
 .\build.ps1 matrix
 ```
+
+---
+
+## Target Architecture Support Matrix
+
+| Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **187 / 187 Tests PASS (Native Host Windows)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **187 / 187 Tests PASS (WSL2 QEMU)** |
+| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (AAPCS64 ABI Verified)** |
+| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (SysV AMD64 ABI Verified)** |
+
+---
+
+## Documentation & Technical Deep Dives
+
+* **[Multi-ISA Stackful Coroutines & Cross-Platform ASM Manual (`PLAN6.md`)](PLAN6.md)**: Production implementation guide, SSA findings, Link Register return trampolines, and opcode tables.
+* **[Inline Assembly Guide & Principles (`ASM.md`)](ASM.md)**: Low-level inline assembly conventions and `#byte` machine code standards.
+* **[Low-Level Hardware & Inline Assembly Architecture (`TECH_ASM.md`)](docs/tech/TECH_ASM.md)**: Hardware matrices, register preservation contracts, and stack frame layouts for AMD64, ARM64, and RISC-V 64.
+* **[Odin Inline Assembly Compiler Analysis & Roadmap (`TECH_ODIN_INLINE_ASM_ANALYSIS.md`)](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md)**: Compiler frontend internals, SSA register liveness diagnostics, and language roadmap for high-level assembly context switching.
+* **[Memory Architecture & Stack Safety (`TECH_MEMORY.md`)](docs/tech/TECH_MEMORY.md)**: Virtual memory guard pages, stack watermarking, and canaries.
+* **[Multi-Domain Engine Clocks (`TECH_CLOCK.md`)](docs/tech/TECH_CLOCK.md)**: Continuous zero-drift fixed ticks and time dilation.
 
 ---
 
