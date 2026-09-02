@@ -75,3 +75,5 @@
 #74 2026-09-02 Authored PLAN6.md containing comprehensive documentation of multi-ISA coroutine architecture, SSA findings, link register trampolines, ABI tables, and QEMU verification
 #75 2026-09-02 Synchronized and updated all project documentation (README.md, CHANGELOG.md, ARCHITECTURE.md, ASM.md, TECH_ASM.md, Tutorial 09, and PLAN6.md) across all supported architectures
 #76 2026-09-02 Configured and verified native Linux AMD64 test execution inside WSL2 alongside ARM64 and RISC-V 64 QEMU runners with 187/187 tests passing on all targets
+#77 2026-09-02 Odin inline asm SSA verifier (check_asm_cfg.cpp in_w[0]=0) enforces register liveness rejecting unproduced physical registers in high-level context switches; get_rsp uses lea [%rsp], register extractors use high-level asm, and context switch uses #byte with rexcode verification.
+#78 2026-09-02 Synchronized all 38 Markdown documentation files to GFM standards (0 broken links, 0 unclosed fences), updated metrics to 188/188 passing tests across 6 targets, and documented get_rsp/get_sp high-level inline asm helpers.

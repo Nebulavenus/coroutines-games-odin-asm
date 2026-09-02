@@ -95,17 +95,17 @@ When running automated headless test pipelines:
 To run these tests locally, in CI pipelines, or under cross-architecture QEMU emulation:
 
 ```powershell
-# Run all 187 unit tests on native host
+# Run all 188 unit tests on native host
 .\build.ps1 test
 
 # Cross-check all 6 multi-ISA targets
 .\build.ps1 check-all
 
-# Execute all 187 unit tests under Linux ARM64 and RISC-V 64 via QEMU in WSL2
+# Execute all 188 unit tests under Linux ARM64 and RISC-V 64 via QEMU in WSL2
 .\run_wsl_qemu.ps1 test
 ```
 
-Because simulation does not require window creation or GPU contexts, all 187 unit tests execute in under 400 milliseconds on native host.
+Because simulation does not require window creation or GPU contexts, all 188 unit tests execute in under 400 milliseconds on native host.
 
 ---
 

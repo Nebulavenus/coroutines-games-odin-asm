@@ -15,7 +15,7 @@ main :: proc() {
 	}
 
 	fmt.println("================================================================================")
-	fmt.println("   MULTI-ISA COMPLETE 187-TEST SUITE EXECUTION IN STANDALONE / QEMU HARNESS     ")
+	fmt.println("   MULTI-ISA COMPLETE TEST SUITE EXECUTION IN STANDALONE / QEMU HARNESS         ")
 	fmt.println("================================================================================")
 	fmt.println()
 
@@ -26,7 +26,7 @@ main :: proc() {
 
 	fmt.println()
 	fmt.println("================================================================================")
-	fmt.printf("FULL TEST SUITE COMPLETE: %d / 187 PASSED (%d FAILED) in %.2f ms\n", passed, failed, elapsed_ms)
+	fmt.printf("FULL TEST SUITE COMPLETE: %d / %d PASSED (%d FAILED) in %.2f ms\n", passed, passed + failed, failed, elapsed_ms)
 	fmt.println("================================================================================")
 
 	if failed > 0 {

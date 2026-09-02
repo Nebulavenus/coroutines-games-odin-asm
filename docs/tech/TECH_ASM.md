@@ -3,7 +3,7 @@
 This technical document details the low-level hardware mechanics, inline assembly primitives, register preservation contracts, synthetic stack frame initialization, and compiler safety invariants across **AMD64 (x86-64)**, **ARM64 (AArch64)**, and **RISC-V 64 (RV64GC)** powering the **Odin Stackful Coroutine Engine**.
 
 > [!NOTE]
-> For an in-depth breakdown of Odin's compiler internals, SSA liveness verification, and the future roadmap for high-level assembly context switching, see [`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`](file:///E:/OdinLang/Projects/coroutines_asm/docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md).
+> For an in-depth breakdown of Odin's compiler internals, SSA liveness verification, and the future roadmap for high-level assembly context switching, see [`TECH_ODIN_INLINE_ASM_ANALYSIS.md`](./TECH_ODIN_INLINE_ASM_ANALYSIS.md).
 
 ---
 
@@ -109,8 +109,26 @@ Because Odin inlines `asm(...)` templates directly into calling procedures (`wai
 * **ARM64**: `bl .switch_body` (+8B) sets `x30` pointing to `b .switch_done` (+108B), so `ret` at the end of `.switch_body` jumps directly to `.switch_done` on the restored fiber's stack.
 * **RISC-V 64**: `jal ra, +8` (+8B) sets `ra` pointing to `j .switch_done` (+224B), so `jalr zero, ra, 0` returns directly to `.switch_done` on the restored fiber's stack.
 
-### E. Exhaustive Caller-Saved Register Clobber Directives
-Because context switches suspend active execution, all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64) are declared with individual `#clobber` directives. This instructs Odin's register allocator to spill all active local variables to stack memory across yields.
+### F. High-Level Inline Assembly Register & Stack Extractors
+For operations with well-defined dataflow, the engine uses **100% pure high-level Odin inline assembly templates**:
+* **Fiber Self-Identity Registers**:
+  ```odin
+  // AMD64
+  get_r12_reg :: asm() -> (res: rawptr) [ res = %r12 ] { mov res, %r12 }
+  // ARM64
+  get_x19_reg :: asm() -> (res: rawptr) [ res = %x19 ] { mov res, %x19 }
+  // RISC-V 64
+  get_s2_reg  :: asm() -> (res: rawptr) [ res = %s2 ]  { addi res, %s2, 0 }
+  ```
+* **Active Stack Pointer Extraction**:
+  ```odin
+  // AMD64 (uses effective address arithmetic to avoid unproduced register liveness checks)
+  get_rsp :: asm() -> (sp: rawptr) [ #volatile ] { lea sp, [%rsp] }
+  // ARM64
+  get_sp  :: asm() -> (sp: rawptr) [ sp = %x0, #volatile ] { #byte 0xe0, 0x03, 0x00, 0x91 }
+  // RISC-V 64
+  get_sp  :: asm() -> (sp: rawptr) [ sp = %a0, #volatile ] { #byte 0x13, 0x05, 0x01, 0x00 }
+  ```
 
 ---
 
@@ -141,18 +159,17 @@ When a fiber is acquired from the pool, `fiber_synthesize_initial_stack` sets up
 
 The engine is verified across all targets via automated test runners:
 ```powershell
-# Native Windows Host (All 187 unit tests)
+# Native Windows Host (All 188 unit tests)
 .\build.ps1 test
 
 # Cross-Target Static Compilation Validation (All 6 targets)
 .\build.ps1 check-all
 
-# WSL2 QEMU Full Unit Test Suite (All 187 tests on ARM64 & RISC-V 64)
+# WSL2 QEMU Full Unit Test Suite (All 188 tests on ARM64 & RISC-V 64)
 .\run_wsl_qemu.ps1 test
 
 # WSL2 QEMU 10,000 Concurrent Fiber Benchmarks
 .\run_wsl_qemu.ps1 bench
-```
 ```
 * **GitHub Actions CI Matrix**: Tests native AMD64 (Windows/Ubuntu), native Apple Silicon ARM64 (`macos-14`), and QEMU-emulated Linux ARM64 and RISC-V 64 on every commit.
 

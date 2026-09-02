@@ -106,4 +106,12 @@ when ODIN_ARCH == .arm64 {
     get_x19_reg :: asm() -> (res: rawptr) [ res = %x19 ] {
         mov res, %x19
     }
+
+    // Read active CPU stack pointer
+    get_sp :: asm() -> (sp: rawptr) [
+        sp = %x0,
+        #volatile,
+    ] {
+        #byte 0xe0, 0x03, 0x00, 0x91 // add x0, sp, #0
+    }
 }

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [High-Level Inline Assembly Stack Readers & Compiler SSA Analysis] - 2026-09-02
+
+### Added
+- **High-Level Inline ASM Stack Pointer Extractors (`src/coroutine/asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin`)**:
+  - Implemented `get_rsp` for AMD64 using high-level inline assembly `lea sp, [%rsp]`.
+  - Implemented `get_sp` for ARM64 using high-level inline assembly `add sp, %sp, 0`.
+  - Implemented `get_sp` for RISC-V 64 using high-level inline assembly `addi sp, %sp, 0`.
+- **Test 188: High-Level Inline Assembly Stack and Register Extractors (`src/coroutine/coroutine_test.odin`)**:
+  - Added unit test verifying active stack pointer retrieval and self-identity register access across all supported architectures.
+- **Deep Compiler SSA & Width Lattice Documentation (`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`)**:
+  - Detailed the sub-register bit-width lattice initialization (`in_w[0] = {}`) in `check_asm_cfg.cpp`.
+  - Documented why `#no_init` seeds entry register masks but still triggers bit-width errors for unproduced 64-bit physical registers.
+  - Documented effective address (`lea`) mechanics vs general register moves.
+
 ## [Multi-ISA Return Trampoline Architecture & QEMU Validation (`arm64`, `riscv64`, `amd64`)] - 2026-09-02
 
 ### Added

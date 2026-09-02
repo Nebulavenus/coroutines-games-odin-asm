@@ -112,4 +112,12 @@ when ODIN_ARCH == .riscv64 {
     get_s2_reg :: asm() -> (res: rawptr) [ res = %s2 ] {
         addi res, %s2, 0
     }
+
+    // Read active CPU stack pointer
+    get_sp :: asm() -> (sp: rawptr) [
+        sp = %a0,
+        #volatile,
+    ] {
+        #byte 0x13, 0x05, 0x01, 0x00 // addi a0, sp, 0
+    }
 }

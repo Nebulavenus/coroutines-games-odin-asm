@@ -36,3 +36,4 @@ Hardened engine synchronization primitives and established universal Multi-ISA s
 Configured multi-ISA CI in .github/workflows/ci.yml and validated all #byte machine code opcodes across AMD64, ARM64, and RISC-V 64 via Odin core:rexcode disassembler unit tests.
 Multi-ISA coroutines support ARM64 and RISC-V 64 via BL/JAL return trampolines and full caller-saved clobbers; full 187-test suite passes in QEMU via unified test dispatcher
 Authored PLAN6.md and synchronized all documentation (README, CHANGELOG, ARCHITECTURE, ASM, TECH_ASM, tutorials) with multi-ISA trampolines and full test matrix
+Multi-ISA engine verified on AMD64, ARM64, RISC-V 64 in WSL2/QEMU; compiler SSA verifier in_w[0]=0 requires #byte context switches with rexcode checks while get_rsp uses lea [%rsp] and register extractors use pure high-level inline asm.

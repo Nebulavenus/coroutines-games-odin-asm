@@ -8470,7 +8470,29 @@ test_multi_isa_byte_opcodes_disassembly_validation :: proc(t: ^testing.T) {
     testing.expect_value(t, len(riscv_insts), 55)
 }
 
+// Test 188: High-Level Inline Assembly Stack and Register Extractors
+@(test)
+test_high_level_inline_asm_stack_and_register_extractors :: proc(t: ^testing.T) {
+    when ODIN_ARCH == .amd64 {
+        sp := get_rsp()
+        testing.expect(t, sp != nil, "get_rsp() must return a non-nil active stack pointer")
 
+        r12 := get_r12_reg()
+        _ = r12
+    } else when ODIN_ARCH == .arm64 {
+        sp := get_sp()
+        testing.expect(t, sp != nil, "get_sp() must return a non-nil active stack pointer")
+
+        x19 := get_x19_reg()
+        _ = x19
+    } else when ODIN_ARCH == .riscv64 {
+        sp := get_sp()
+        testing.expect(t, sp != nil, "get_sp() must return a non-nil active stack pointer")
+
+        s2 := get_s2_reg()
+        _ = s2
+    }
+}
 
 // ============================================================================
 // Full Test Suite Dispatcher (for QEMU / Cross-Platform Standalone Runners)  
@@ -8665,6 +8687,7 @@ run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) 
         { "test_with_timeout_real_domain_execution", test_with_timeout_real_domain_execution },
         { "test_simulate_until_val_by_value_dispatch", test_simulate_until_val_by_value_dispatch },
         { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
+        { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
     }
 
     total := len(tests)

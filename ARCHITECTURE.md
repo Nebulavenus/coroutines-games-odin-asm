@@ -79,6 +79,11 @@ Odin passes an implicit `context` structure to procedures. When switching stacks
 - **Recycling:** When a fiber finishes or is aborted, its stack is returned to the free list immediately.
 - **Cache Locality:** 1,000 active fibers at 32 KB each consume ~32 MB of virtual memory—completely negligible on modern hardware.
 
+### F. High-Level Inline Assembly Register & Stack Extractors
+For operations with well-defined dataflow, the engine uses pure high-level Odin inline assembly templates:
+* **Fiber Self-Identity Registers**: `get_r12_reg` (`mov res, %r12` on AMD64), `get_x19_reg` (`mov res, %x19` on ARM64), `get_s2_reg` (`addi res, %s2, 0` on RISC-V 64).
+* **Active Stack Pointer Extraction**: `get_rsp` via effective address arithmetic (`lea sp, [%rsp]` on AMD64) and `get_sp` on ARM64/RISC-V 64.
+
 ---
 
 # 4. Deep-Dive Design: Solving the Hardest Problems

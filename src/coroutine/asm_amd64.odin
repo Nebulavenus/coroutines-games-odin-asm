@@ -143,4 +143,9 @@ when ODIN_ARCH == .amd64 {
     get_r12_reg :: asm() -> (res: rawptr) [ res = %r12 ] {
         mov res, %r12
     }
+
+    // Read the active CPU stack pointer using high-level inline assembly effective address arithmetic
+    get_rsp :: asm() -> (sp: rawptr) [ #volatile ] {
+        lea sp, [%rsp]
+    }
 }

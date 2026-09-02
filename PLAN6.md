@@ -2,8 +2,8 @@
 
 > **Status**: Production Complete & Hardware Verified  
 > **Supported Targets**: Windows AMD64, Linux AMD64, macOS AMD64, macOS Apple Silicon (ARM64), Linux ARM64 (AArch64), Linux RISC-V 64 (RV64GC)  
-> **Host Test Coverage**: **187 / 187 Tests Passing** (~376 ms)  
-> **QEMU Emulation**: **187 / 187 Tests Passing** under `qemu-aarch64` & `qemu-riscv64`  
+> **Host Test Coverage**: **188 / 188 Tests Passing** (~320 ms)  
+> **QEMU Emulation**: **188 / 188 Tests Passing** under `qemu-aarch64` & `qemu-riscv64`  
 > **ISA Machine Code Decoding**: Verified byte-exact with zero errors via Odin's native `core:rexcode` disassembler
 
 ---
@@ -314,11 +314,11 @@ When `fiber_trampoline_entry` is entered, the fiber obtains its own `^Fiber` poi
 
 | Layer | Environment | Mechanism | Verification Result |
 | :--- | :--- | :--- | :--- |
-| **Unit Test Suite** | Native Windows x64 | `odin test src/coroutine` | **187 / 187 PASSED** (0 failed, ~376ms) |
-| **Standalone Suite** | Native Windows x64 | `test_runner_win.exe` | **187 / 187 PASSED** (0 failed, ~1.02s) |
-| **Native Linux Suite** | Native WSL2 Linux x64| `test_runner_linux_amd64.elf` | **187 / 187 PASSED** (0 failed, ~1.08s) |
-| **ARM64 Emulation** | WSL2 / `qemu-aarch64` | `test_runner_arm64.elf` | **187 / 187 PASSED** (0 failed, ~6.60s) |
-| **RISC-V 64 Emulation**| WSL2 / `qemu-riscv64` | `test_runner_riscv64.elf`| **187 / 187 PASSED** (0 failed, ~4.51s) |
+| **Unit Test Suite** | Native Windows x64 | `odin test src/coroutine` | **188 / 188 PASSED** (0 failed, ~320ms) |
+| **Standalone Suite** | Native Windows x64 | `test_runner_win.exe` | **188 / 188 PASSED** (0 failed, ~960ms) |
+| **Native Linux Suite** | Native WSL2 Linux x64| `test_runner_linux_amd64.elf` | **188 / 188 PASSED** (0 failed, ~1.08s) |
+| **ARM64 Emulation** | WSL2 / `qemu-aarch64` | `test_runner_arm64.elf` | **188 / 188 PASSED** (0 failed, ~6.60s) |
+| **RISC-V 64 Emulation**| WSL2 / `qemu-riscv64` | `test_runner_riscv64.elf`| **188 / 188 PASSED** (0 failed, ~4.51s) |
 | **10k Concurrency** | WSL2 / QEMU | `bench_arm64.elf` & `riscv64` | **100,000 Switches / 10 Frames [PASS]** |
 | **ISA Opcode Decoding**| Windows host | `core:rexcode` (Test 187) | **100% Byte-Exact Decode (0 errors)** |
 | **Static Build Check** | 6 Cross-Targets | `pwsh .\build.ps1 check-all` | **6 / 6 Targets Clean Build [PASS]** |
