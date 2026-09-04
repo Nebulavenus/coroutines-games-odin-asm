@@ -37,3 +37,5 @@ Configured multi-ISA CI in .github/workflows/ci.yml and validated all #byte mach
 Multi-ISA coroutines support ARM64 and RISC-V 64 via BL/JAL return trampolines and full caller-saved clobbers; full 187-test suite passes in QEMU via unified test dispatcher
 Authored PLAN6.md and synchronized all documentation (README, CHANGELOG, ARCHITECTURE, ASM, TECH_ASM, tutorials) with multi-ISA trampolines and full test matrix
 Multi-ISA engine verified on AMD64, ARM64, RISC-V 64 in WSL2/QEMU; compiler SSA verifier in_w[0]=0 requires #byte context switches with rexcode checks while get_rsp uses lea [%rsp] and register extractors use pure high-level inline asm.
+Synchronized project markdown files to GFM standards and documented Odin inline asm compiler internals, SSA rules, #no_init scratch pattern, and LLVM label colon bug in inline_asm_analysis.md and ASM_2.md.
+Documented LLVM XMM early-clobber output trap and compiler CFG evolution in inline_asm_analysis.md and ASM_2.md; coroutine context switches standardize on #byte machine code across all 6 architectures with 188 passing tests and 16.89ns latency.

@@ -17,3 +17,4 @@ Restructured docs into 4 engineering tracks; migrated Fiber_Scope to intrusive d
 Hardened unbuffered CSP channels (symmetrical FIFO rendezvous, abort cleanup), ready_queue generational ABA lookup, scoped lock abort cleanup, race/rush sibling isolation, in-place abort tree drain, and direct f64 ticker across 180 tests & 12-target LLVM matrix.
 Engine hardened with True ZII synchronization, universal Multi-ISA native ASM (AMD64, ARM64, RISC-V 64) verified via core:rexcode and cross-platform GitHub Actions CI matrix.
 Multi-ISA stackful coroutines (AMD64, ARM64, RISC-V 64) verified with BL/JAL return trampolines, 187/187 tests passing on host and WSL2 QEMU, fully documented in PLAN6.md and project docs
+Configured multi-target WSL2/QEMU runner, analyzed Odin inline asm SSA/CFG internals (#no_init, in_w[0]=0, LLVM label colon bug), and authored inline_asm_analysis.md and ASM_2.md with high-level context switch specifications.

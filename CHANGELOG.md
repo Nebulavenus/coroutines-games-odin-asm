@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Inline ASM Deep-Dive & #byte Production Standard Baseline] - 2026-09-04
+
+### Added
+- **Odin Inline Assembly Specification & Compiler Internals ([`ASM_2.md`](ASM_2.md), [`inline_asm_analysis.md`](inline_asm_analysis.md))**:
+  - Documented complete inline assembly AST rules, undocumented directives (`#no_init`, `#skip`, `#align`), and two-step scratch parameter bindings.
+  - Documented LLVM backend lowering constraints: missing label colon in AMD64/RISC-V (`llvm_backend_asm.cpp:390`), base pointer/frame pointer interference on `%rsp`/`%rbp`, and vector register early-clobber (`=&`) corruption on scratch XMM stores.
+  - Completed git archaeology across project commit history and Odin compiler PRs (PR #7444 `bill/asm-cfg`, sub-register width lattice `in_w`, and backward liveness checks).
+  - Confirmed `#byte` machine code arrays as the canonical production standard for the coroutine runtime across all 6 target architectures (`windows_amd64`, `linux_amd64`, `darwin_amd64`, `darwin_arm64`, `linux_arm64`, `linux_riscv64`), maintaining 100% test pass (188/188 tests) and 16.89ns context switch latency.
+- **Full Odin Inline Assembly Specification ([`ASM_2.md`](ASM_2.md))**:
+  - Authored authoritative manual covering all undocumented compiler directives (`#no_init`, `#skip`, `#align`, `#byte`), scratch parameter bindings, width-views, template directives (`#volatile`, `#align_stack`, `#pure`), and clobber constraints.
+  - Documented SSA dataflow analysis (`seed_regs`, `seed_pm`, `in_w` lattice), CFG block construction, terminal instructions, and template exit requirements (`check_asm_cfg_block_leaves`).
+- **Comprehensive Compiler Internals & Option A Specification ([`inline_asm_analysis.md`](inline_asm_analysis.md))**:
+  - Identified 6 root-cause blockers across frontend SSA (`check_asm_cfg_report_undef_reg`, `in_w[0]`), frontend CFG (terminal calls, dead writes), backend codegen (missing label colon in `llvm_backend_asm.cpp:390`), and LLVM machine function register allocation (frame pointer interference on `%rbp`).
+  - Documented Option A pure high-level inline assembly context switch pattern with named labels and direct mnemonics, along with the upstream Odin compiler patch.
+  - Documented why `#byte` remains the optimal production standard for stock Odin compiler compatibility.
+
 ## [High-Level Inline Assembly Stack Readers & Compiler SSA Analysis] - 2026-09-02
 
 ### Added

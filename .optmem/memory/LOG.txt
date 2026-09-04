@@ -77,3 +77,6 @@
 #76 2026-09-02 Configured and verified native Linux AMD64 test execution inside WSL2 alongside ARM64 and RISC-V 64 QEMU runners with 187/187 tests passing on all targets
 #77 2026-09-02 Odin inline asm SSA verifier (check_asm_cfg.cpp in_w[0]=0) enforces register liveness rejecting unproduced physical registers in high-level context switches; get_rsp uses lea [%rsp], register extractors use high-level asm, and context switch uses #byte with rexcode verification.
 #78 2026-09-02 Synchronized all 38 Markdown documentation files to GFM standards (0 broken links, 0 unclosed fences), updated metrics to 188/188 passing tests across 6 targets, and documented get_rsp/get_sp high-level inline asm helpers.
+#79 2026-09-04 Documented Odin inline asm compiler internals, SSA rules, #no_init scratch pattern, and LLVM label colon bug in inline_asm_analysis.md and ASM_2.md for Option A high-level context switching.
+#80 2026-09-04 Migrated Win64 & SysV AMD64 callee-saved GPRs to high-level inline asm (push/pop) using two-step #no_init scratch bindings; verified 188/188 tests passing and 16.89ns switch latency across 6-target matrix.
+#81 2026-09-04 Reverted coroutines context switch to pure #byte production solution (188/188 tests passing); documented LLVM XMM early-clobber output trap and compiler CFG archaeology in inline_asm_analysis.md and ASM_2.md.
