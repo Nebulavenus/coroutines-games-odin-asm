@@ -18,3 +18,4 @@ Hardened unbuffered CSP channels (symmetrical FIFO rendezvous, abort cleanup), r
 Engine hardened with True ZII synchronization, universal Multi-ISA native ASM (AMD64, ARM64, RISC-V 64) verified via core:rexcode and cross-platform GitHub Actions CI matrix.
 Multi-ISA stackful coroutines (AMD64, ARM64, RISC-V 64) verified with BL/JAL return trampolines, 187/187 tests passing on host and WSL2 QEMU, fully documented in PLAN6.md and project docs
 Configured multi-target WSL2/QEMU runner, analyzed Odin inline asm SSA/CFG internals (#no_init, in_w[0]=0, LLVM label colon bug), and authored inline_asm_analysis.md and ASM_2.md with high-level context switch specifications.
+Adopted #byte context switch production standard across 6 targets. Migrated to root package layout with tools/amalgamate.py. Documented Footgun 12 and Odin AMD64 clobber limits (xmm0 only); yield procs must keep procedural call boundaries to spill SIMD regs under -o:speed.

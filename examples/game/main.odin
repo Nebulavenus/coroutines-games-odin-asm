@@ -8,7 +8,7 @@ import "core:math/rand"
 import "core:mem"
 import rl "vendor:raylib"
 
-import "coroutine"
+import coroutine "../.."
 
 // ============================================================================
 // Game State & Entity Structures

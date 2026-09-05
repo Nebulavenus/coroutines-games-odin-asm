@@ -105,7 +105,7 @@ fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
 
 ## 3. Odin Compiler Inline ASM Pipeline Architecture
 
-When the Odin compiler processes an `asm(...)` declaration, it passes through four discrete compilation phases within `E:\OdinLang\Odin\src\`:
+When the Odin compiler processes an `asm(...)` declaration, it passes through four discrete compilation phases within `Odin\src\`:
 
 ```
                [ Odin Source Code: asm(...) ]
@@ -261,12 +261,12 @@ fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
 }
 ```
 **Compiler Implementation**:
-In `check_asm_cfg_analyse` (`E:\OdinLang\Odin\src\check_asm_cfg.cpp`), when `tmpl_entity->AsmTemplate.is_untracked_registers` is set, skip `check_asm_cfg_report_undef_reg` for unpinned physical registers.
+In `check_asm_cfg_analyse` (`Odin\src\check_asm_cfg.cpp`), when `tmpl_entity->AsmTemplate.is_untracked_registers` is set, skip `check_asm_cfg_report_undef_reg` for unpinned physical registers.
 
 ---
 
 ### Proposal B: Fix RISC-V Float Register Table Classes
-In `E:\OdinLang\Odin\src\asm_tables_riscv.cpp`, update the registration of registers `fs0`–`fs11`:
+In `Odin\src\asm_tables_riscv.cpp`, update the registration of registers `fs0`–`fs11`:
 ```cpp
 // Change from:
 REGISTER("fs0", AsmReg_fs0, AsmRegClass_GPR, 64)
@@ -302,7 +302,32 @@ fiber_context_switch :: proc "naked" (from_rsp: ^rawptr, to_rsp: rawptr) {
 
 ---
 
-## 8. Summary & Quick Reference
+---
+
+## 9. LLVM Register Allocation & Clobber List Limitations Under `-o:speed`
+
+### 9.1 Odin Compiler Register Clobber Table Internals
+When passing register clobber directives to Odin's `asm` blocks:
+```odin
+asm [ #clobber %xmm0, #clobber %xmm1, ... ]
+```
+In the Odin compiler frontend (`src/asm_tables_amd64.cpp`):
+* The parser converts register names into internal clobber bitmasks via `clobber_bit_for_reg_name`.
+* **Important Frontend Constraint**: On AMD64, only `ClobberReg_XMM0` is explicitly mapped in the clobber bitmask table. Higher XMM registers (`%xmm1` through `%xmm15`) are currently ignored or not tracked as distinct clobber bits by the Odin LLVM IR emitter.
+* As a result, adding `#clobber %xmm1` through `%xmm15` to an inline `asm` block does **not** cause LLVM to spill `%xmm1..%xmm15` around an inlined assembly block.
+
+### 9.2 The Fiber Boundary Invariant
+Because the context switch assembly template (`fiber_context_switch`) preserves all **callee-saved** registers (`%xmm6`..`%xmm15` on Win64, and non-volatile GPRs across all platforms), but cannot restore **caller-saved** scratch registers (`%xmm0`..`%xmm5` on AMD64):
+1. **Never `#force_inline` procedures that suspend a fiber**:
+   If a procedure like `yield_frame`, `wait_frames`, or `wait` were force-inlined into a caller loop containing floating-point arithmetic (like `tween` or physics integration), LLVM's register allocator might keep loop variables (e.g. `duration`, `elapsed`) in volatile `%xmm0..%xmm5` registers across the context switch.
+   When the scheduler runs, it reuses those volatile SIMD registers, causing loop variables to be corrupted (zeroed) upon resumption.
+2. **Standard Call Boundary Guarantee**:
+   By keeping `wait_frames`, `wait`, and `yield_frame` as standard procedure calls, the platform ABI *guarantees* that the calling function must spill any live caller-saved registers to its stack frame *before* invoking the yield function.
+   When the fiber is switched out and back in, the caller function restores its variables from its private stack frame with 100% fidelity.
+
+---
+
+## 10. Summary & Quick Reference
 
 | Use Case | Recommended Odin Syntax | Current Status |
 | :--- | :--- | :--- |
@@ -310,3 +335,4 @@ fiber_context_switch :: proc "naked" (from_rsp: ^rawptr, to_rsp: rawptr) {
 | **Vector & Math Intrinsics** | Pure High-Level Inline `asm` (`asm(a, b) -> (r)`) | **Production Ready (In Use)** |
 | **Stack Swapping (`fiber_context_switch`)** | Inline `asm` with `#byte` directives | **Production Ready (In Use)** |
 | **High-Level Context Switching** | High-Level `asm` + `#untracked_registers` | **Proposed Roadmap for Odin** |
+| **Optimization Resilience** | Standard ABI Call Boundaries (No `#force_inline` on yields) | **Standard Invariant** |

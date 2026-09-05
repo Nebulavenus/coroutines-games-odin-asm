@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:time"
 import "core:os"
 
-import coroutine "../../src/coroutine"
+import coroutine "../.."
 
 main :: proc() {
 	verbose := false

@@ -1,6 +1,6 @@
 # Odin Inline Assembly Analysis: Compiler Internals, Blocking Mechanisms & High-Level ASM (`inline_asm_analysis.md`)
 
-This document details the deep-dive research into the Odin programming language compiler source code (`E:\OdinLang\Odin\src\check_asm.cpp`, `check_asm_cfg.cpp`, `llvm_backend_asm.cpp`, and `parser.cpp`), explaining the exact compiler frontend, backend, and LLVM machine-instruction mechanisms that blocked high-level assembly in the coroutine library, documenting hidden features uncovered in the compiler, and presenting **Option A** (pure high-level assembly with compiler patch) and its runtime mechanics.
+This document details the deep-dive research into the Odin programming language compiler source code (`Odin\src\check_asm.cpp`, `check_asm_cfg.cpp`, `llvm_backend_asm.cpp`, and `parser.cpp`), explaining the exact compiler frontend, backend, and LLVM machine-instruction mechanisms that blocked high-level assembly in the coroutine library, documenting hidden features uncovered in the compiler, and presenting **Option A** (pure high-level assembly with compiler patch) and its runtime mechanics.
 
 ---
 
@@ -18,6 +18,7 @@ Through compiler source analysis and LLVM code generation verification, **six di
 | **Frontend CFG** | **4. CFG Non-Fallthrough on `call`** | `check_asm_cfg.cpp:284` (`is_terminal`) | `The asm instruction is unreachable` on instructions following `call` | `call` is conservatively marked `is_terminal = true` | Use indirect jump (`jmp rax`), direct branch, or minimal trampoline |
 | **Backend Codegen** | **5. LLVM Missing Label Colon Bug** | `llvm_backend_asm.cpp:390` (`write_label_def`) | `LLVM Error: unknown directive .L_...` & `assembler label ... can not be undefined` | Emits `.L_<tmpl>_<label>${:uid}` without trailing colon `:` on AMD64 & RISC-V | **Option A**: Patch `llvm_backend_asm.cpp` to emit `:` on label definitions |
 | **LLVM Machine RA** | **6. Frame Pointer Interference** | LLVM Machine Function Register Allocator | `LLVM Error: Interference usage of base pointer/frame pointer.` | LLVM reserves `%rbp` as frame pointer; inline asm cannot bind/clobber `%rbp` | Low-level `#byte` machine code (which bypasses LLVM register allocator constraints) |
+| **Frontend Clobber Table** | **7. Vector Clobber Truncation (`xmm0` only)** | `src/asm_tables_amd64.cpp:308-328` (`clobber_bit_for_reg_name`) | Inlined loops clobber `%xmm1..%xmm15` registers under `-o:speed` | `clobber_bit_for_reg_name` table maps only `xmm0` and omits `xmm1..xmm15`; `#clobber` normalizations silently drop higher vector registers | Enforce standard non-inlined procedure call boundaries on all yield procedures (`wait_frames`, `wait`, `yield_frame`) so platform ABI forces spilling all caller-saved SIMD registers |
 
 ---
 
@@ -25,7 +26,7 @@ Through compiler source analysis and LLVM code generation verification, **six di
 
 ### 2.1 The Undocumented `#no_init` Directive
 
-In `E:\OdinLang\Odin\src\check_asm.cpp` (lines 821–835):
+In `Odin\src\check_asm.cpp` (lines 821–835):
 ```cpp
 for (Ast *dir_ : spec->directives) {
     ast_node(dir, BasicDirective, dir_);
@@ -113,7 +114,7 @@ When an inline assembly template binds `%rbp` (e.g. `rbp_reg: u64, rbp_reg = %rb
 
 ### 3.1 Code Inspection of `llvm_backend_asm.cpp`
 
-In `E:\OdinLang\Odin\src\llvm_backend_asm.cpp` (lines 388–398):
+In `Odin\src\llvm_backend_asm.cpp` (lines 388–398):
 ```cpp
 virtual void write_label_def(AstIdent *label_ident) {
     String name = label_ident->token.string;
@@ -155,7 +156,7 @@ case_end;
 
 Option A implements 100% pure high-level assembly with named labels and direct instruction mnemonics.
 
-### 4.1 The Required Compiler Patch (`E:\OdinLang\Odin\src\llvm_backend_asm.cpp`)
+### 4.1 The Required Compiler Patch (`Odin\src\llvm_backend_asm.cpp`)
 
 To resolve the label defect upstream in Odin:
 ```diff
@@ -167,7 +168,7 @@ To resolve the label defect upstream in Odin:
 +				this->write_cstr(":\n");
  			case_end;
 ```
-*(Per user instruction, this patch is documented here only and NOT applied to `E:\OdinLang\Odin` directly).*
+*(Per user instruction, this patch is documented here only and NOT applied to `Odin` directly).*
 
 ### 4.2 High-Level AMD64 Context Switch Specification (Option A)
 
@@ -252,12 +253,14 @@ when ODIN_ARCH == .amd64 && ODIN_OS == .Windows {
    Works out of the box with any official Odin release without requiring custom patches or local compiler builds.
 5. **Guaranteed Zero-Overhead**:
    Identical instruction sequences to pure assembly, validated down to the exact mnemonic via `core:rexcode` disassembler verification in Test 187.
+6. **Immunity to Compiler Vector Clobber Truncation (`xmm0`-only limitation)**:
+   In Odin's AMD64 inline assembly table (`src/asm_tables_amd64.cpp:308-328`), the compiler's `clobber_bit_for_reg_name` table maps only `xmm0` and omits `xmm1` through `xmm15`. Consequently, high-level `#clobber %xmm1..%xmm15` directives are silently dropped by the compiler frontend. By encapsulating `#byte` switches behind distinct procedure call boundaries, the platform ABI forces the caller to spill all caller-saved vector registers (`%xmm0..%xmm5`), protecting optimized code from register corruption under `-o:speed`.
 
 ---
 
 ## 6. Git Archaeology & Evolution: Why High-Level ASM Worked in Old Commits
 
-A historical audit across both this codebase and the upstream Odin compiler (`E:\OdinLang\Odin`) explains the transition:
+A historical audit across both this codebase and the upstream Odin compiler (`Odin`) explains the transition:
 
 ### 6.1 The Historical Working Code (`commit 5e87a71`)
 In early August 2026, context switches were written in raw high-level assembly:

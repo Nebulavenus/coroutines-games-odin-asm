@@ -39,3 +39,5 @@ Authored PLAN6.md and synchronized all documentation (README, CHANGELOG, ARCHITE
 Multi-ISA engine verified on AMD64, ARM64, RISC-V 64 in WSL2/QEMU; compiler SSA verifier in_w[0]=0 requires #byte context switches with rexcode checks while get_rsp uses lea [%rsp] and register extractors use pure high-level inline asm.
 Synchronized project markdown files to GFM standards and documented Odin inline asm compiler internals, SSA rules, #no_init scratch pattern, and LLVM label colon bug in inline_asm_analysis.md and ASM_2.md.
 Documented LLVM XMM early-clobber output trap and compiler CFG evolution in inline_asm_analysis.md and ASM_2.md; coroutine context switches standardize on #byte machine code across all 6 architectures with 188 passing tests and 16.89ns latency.
+Migrated to root package layout and added tools/amalgamate.py for dist/coroutine.odin. Documented Footgun 12 and compiler clobber internals: AMD64 inline asm only clobbers xmm0; yield procs must keep call boundaries to spill SIMD registers under LLVM -o:speed.
+Organized markdown documentation into docs/, maintaining AGENTS.md, README.md, and CHANGELOG.md in the project root.

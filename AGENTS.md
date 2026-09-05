@@ -277,7 +277,7 @@ When spawning a subagent, explicitly instruct: `You are a subagent. Don't run me
 
 # Odin Programming Specific Guideline
 The project folder contains .\build.ps1 script to run Odin commands like build, check, test. Adjust it as needed and use instead of calling manually Odin commands. Sometimes it may be used if .\build.ps1 don't contains them and they are too specific.
-Read ARCHITECTURE.md to understand what project goal is and its design decision.
+Read docs/ARCHITECTURE.md to understand what project goal is and its design decision.
 For this project we need TDD approach, to cover it with unit tests and progress with an implementation.
 Document changes in CHANGELOG.md if it exists.
-Use new odin feature its in ASM.md.
+Use new odin feature its in docs/ASM.md.

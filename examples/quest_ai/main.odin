@@ -8,7 +8,7 @@ import "core:mem"
 import "core:time"
 import rl "vendor:raylib"
 
-import "../../src/coroutine"
+import coroutine "../.."
 
 // ============================================================================
 // Constants & Configuration

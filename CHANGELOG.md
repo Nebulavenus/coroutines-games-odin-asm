@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Root Package Layout & Amalgamated Single-File Distribution] - 2026-09-05
+
+### Added
+- **Root Package Architecture for Direct Odin Vendoring**:
+  - Relocated library source files from `src/coroutine/` directly into the repository root (`package coroutine`), enabling direct cloning into `<odin>/shared/coroutine` for instant `import "shared:coroutine"` support across projects.
+  - Relocated game showcase demo to [`examples/game/main.odin`](examples/game/main.odin) to keep root cleanly dedicated to `package coroutine`.
+  - Updated all example targets ([`examples/bench`](examples/bench/main.odin), [`examples/quest_ai`](examples/quest_ai/main.odin), [`examples/showcase`](examples/showcase/main.odin), [`examples/test_runner`](examples/test_runner/main.odin), [`examples/game`](examples/game/main.odin)) to import `"../.."`.
+- **Standalone Single-File Amalgamation Generator ([`tools/amalgamate.py`](tools/amalgamate.py))**:
+  - Automated tool combining the 8 core library files (`config.odin`, `types.odin`, `asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin`, `pool.odin`, `scheduler.odin`, `api.odin`) into a single zero-dependency drop-in at [`dist/coroutine.odin`](dist/coroutine.odin) (4,686 lines).
+  - Automatically deduplicates and unifies top-level imports (`base:runtime`, `base:intrinsics`, `core:fmt`, `core:time`, `core:math`, `core:mem`, `core:sys/windows`, `core:sys/posix`) and injects release metadata headers.
+  - Built-in multi-ISA verification (`--all-targets`) verifying `odin check -no-entry-point` across all 5 target systems (`windows_amd64`, `linux_amd64`, `darwin_arm64`, `linux_arm64`, `linux_riscv64`).
+- **Distribution Smoke Test Harness ([`examples/dist_test/main.odin`](examples/dist_test/main.odin))**:
+  - Added standalone verification application importing `dist/coroutine.odin` and exercising fiber lifecycle, CSP channels, and scheduler steps.
+- **Build Script Integration ([`build.ps1`](build.ps1))**:
+  - Added `amalgamate`, `dist`, and `test-dist` actions to [`build.ps1`](build.ps1).
+- **LLVM Optimization & Context Switch Analysis Documentation**:
+  - Documented Footgun 12 in [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md): Inlining across fiber context switches under `-o:speed -use-single-module`, explaining why small yield procedures must retain distinct non-inlined ABI boundaries to force spilling caller-saved SIMD registers (`%xmm0..%xmm5`).
+  - Added Section 9 to [`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md) detailing Odin compiler register clobber table internals (`src/asm_tables_amd64.cpp:308-328`), where AMD64 clobber bitmasks track only `xmm0` and ignore higher vector registers, necessitating standard procedural call boundaries.
+
 ## [Inline ASM Deep-Dive & #byte Production Standard Baseline] - 2026-09-04
 
 ### Added

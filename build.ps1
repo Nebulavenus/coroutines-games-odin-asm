@@ -1,6 +1,6 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench", "check-arm64", "check-riscv64", "check-all", "test-arm64", "test-riscv64")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench", "check-arm64", "check-riscv64", "check-all", "test-arm64", "test-riscv64", "amalgamate", "dist", "test-dist")]
     [string]$Action
 )
 
@@ -8,7 +8,7 @@ $OutExe = "build/game.exe"
 $ShowcaseExe = "build/showcase.exe"
 $QuestExe = "build/quest_ai.exe"
 $BenchExe = "build/bench.exe"
-$Source = "src"
+$Source = "examples/game"
 $ShowcaseSource = "examples/showcase"
 $QuestSource = "examples/quest_ai"
 $BenchSource = "examples/bench"
@@ -31,7 +31,7 @@ function Invoke-OdinTest
     param($ExtraArgs = @())
 
     Write-Host "Testing coroutine package ($($ExtraArgs -join ' '))..." -ForegroundColor Cyan
-    $testArgs = @("test", "src/coroutine") + $ExtraArgs
+    $testArgs = @("test", ".") + $ExtraArgs
     odin @testArgs
     return $LASTEXITCODE
 }
@@ -52,7 +52,7 @@ function Invoke-Matrix
         @{ Name = "Arch x86-64-v2 (Baseline)"; Args = @("-o:speed", "-microarch:x86-64-v2", "-use-single-module") },
         @{ Name = "Arch x86-64-v3 (AVX2/FMA)"; Args = @("-o:speed", "-microarch:x86-64-v3", "-use-single-module") },
         @{ Name = "Arch Native (Host Max)"; Args = @("-o:speed", "-microarch:native", "-use-single-module") },
-        @{ Name = "Release Game Binary"; BuildOnly = $true; Source = "src"; Out = "build/game_release.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
+        @{ Name = "Release Game Binary"; BuildOnly = $true; Source = "examples/game"; Out = "build/game_release.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
         @{ Name = "Showcase Binary"; BuildOnly = $true; Source = "examples/showcase"; Out = "build/showcase.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") },
         @{ Name = "Bench Binary"; BuildOnly = $true; Source = "examples/bench"; Out = "build/bench.exe"; Args = @("-o:speed", "-microarch:native", "-no-bounds-check", "-disable-assert") }
     )
@@ -202,13 +202,13 @@ switch ($Action)
     "check-arm64"
     {
         Write-Host "Cross-checking ARM64 targets (darwin_arm64, linux_arm64)..." -ForegroundColor Cyan
-        odin check src/ -target:darwin_arm64
-        odin check src/ -target:linux_arm64
+        odin check . -no-entry-point -target:darwin_arm64
+        odin check . -no-entry-point -target:linux_arm64
     }
     "check-riscv64"
     {
         Write-Host "Cross-checking RISC-V 64 target (linux_riscv64)..." -ForegroundColor Cyan
-        odin check src/ -target:linux_riscv64
+        odin check . -no-entry-point -target:linux_riscv64
     }
     "check-all"
     {
@@ -218,7 +218,7 @@ switch ($Action)
         foreach ($tgt in $targets)
         {
             Write-Host "  Checking target: $tgt..." -NoNewline
-            $output = odin check src/ "-target:$tgt" 2>&1
+            $output = odin check . -no-entry-point "-target:$tgt" 2>&1
             if ($LASTEXITCODE -eq 0) {
                 Write-Host " [PASS]" -ForegroundColor Green
             } else {
@@ -235,22 +235,28 @@ switch ($Action)
     }
     "test-arm64"
     {
-        Write-Host "Cross-compiling unit tests for linux_arm64..." -ForegroundColor Cyan
-        New-Item -ItemType Directory -Force -Path "build" | Out-Null
-        odin test src/coroutine -target:linux_arm64 -out:build/test_arm64.bin
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Running under qemu-aarch64..." -ForegroundColor Green
-            qemu-aarch64 ./build/test_arm64.bin
-        }
+        & "$PSScriptRoot/run_wsl_qemu.ps1" arm64
     }
     "test-riscv64"
     {
-        Write-Host "Cross-compiling unit tests for linux_riscv64..." -ForegroundColor Cyan
-        New-Item -ItemType Directory -Force -Path "build" | Out-Null
-        odin test src/coroutine -target:linux_riscv64 -out:build/test_riscv64.bin
+        & "$PSScriptRoot/run_wsl_qemu.ps1" riscv64
+    }
+    "amalgamate"
+    {
+        Write-Host "Generating amalgamated single-file library in dist/coroutine.odin..." -ForegroundColor Cyan
+        python tools/amalgamate.py --all-targets
+    }
+    "dist"
+    {
+        Write-Host "Generating amalgamated single-file library in dist/coroutine.odin..." -ForegroundColor Cyan
+        python tools/amalgamate.py --all-targets
+    }
+    "test-dist"
+    {
+        Write-Host "Testing amalgamated dist/coroutine.odin with examples/dist_test..." -ForegroundColor Cyan
+        python tools/amalgamate.py --verify
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Running under qemu-riscv64..." -ForegroundColor Green
-            qemu-riscv64 ./build/test_riscv64.bin
+            odin run examples/dist_test -out:build/dist_test.exe
         }
     }
     default

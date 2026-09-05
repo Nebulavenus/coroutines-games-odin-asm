@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:time"
 import "core:math/rand"
 
-import "../../src/coroutine"
+import coroutine "../.."
 
 // ============================================================================
 // Performance Benchmark Suite (6 Standard Metrics)

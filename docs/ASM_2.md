@@ -213,7 +213,7 @@ A non-diverging template (`asm()`) must prove that at least one reachable block 
 
 ### 7.1 LLVM Backend Missing Label Colon (`llvm_backend_asm.cpp:390`)
 
-In `E:\OdinLang\Odin\src\llvm_backend_asm.cpp`:
+In `Odin\src\llvm_backend_asm.cpp`:
 ```cpp
 // llvm_backend_asm.cpp line 388
 virtual void write_label_def(AstIdent *label_ident) {
@@ -232,7 +232,7 @@ virtual void write_label_def(AstIdent *label_ident) {
 
 ### 7.2 Vector Scratch Registers & Early-Clobber (`=&`) Output Semantic Trap
 
-In `E:\OdinLang\Odin\src\llvm_backend_asm.cpp` (lines 208–233):
+In `Odin\src\llvm_backend_asm.cpp` (lines 208–233):
 - Scratch parameter bindings (`reg: type, reg = %pin #no_init`) are lowered in Pass 1 as uninitialized output parameters with the **early-clobber modifier**: `=&{pin}`.
 - When an instruction writes an XMM scratch parameter to memory (e.g. `movdqu [%rsp + off], xmm_reg`), Odin lowers it into AT&T syntax: `movdqu $N, off(%rsp)`.
 - Because LLVM considers `$N` an early-clobber output register rather than an input, LLVM's register allocator treats the source register as undefined at the entry point of the inline assembly call.

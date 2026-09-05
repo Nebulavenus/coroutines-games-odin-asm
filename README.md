@@ -304,12 +304,16 @@ A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows
 
 ## Documentation & Technical Deep Dives
 
-* **[Multi-ISA Stackful Coroutines & Cross-Platform ASM Manual (`PLAN6.md`)](PLAN6.md)**: Production implementation guide, SSA findings, Link Register return trampolines, and opcode tables.
-* **[Inline Assembly Guide & Principles (`ASM.md`)](ASM.md)**: Low-level inline assembly conventions and `#byte` machine code standards.
+* **[Library Distribution & Vendoring Guide (`DISTRIBUTION.md`)](docs/DISTRIBUTION.md)**: Zero-dependency single-file amalgamation (`dist/coroutine.odin`) and `odin:shared` root package vendoring.
+* **[Architecture & Design Specifications (`ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**: Engine design philosophy, structured concurrency invariants, memory lifecycle, and scheduling pipeline.
+* **[Cookbook & Gameplay Patterns (`COOKBOOK.md`)](docs/COOKBOOK.md)**: Ready-to-use patterns for cutscenes, boss AI state machines, weapon cooldowns, and physics tweens.
+* **[Multi-ISA Stackful Coroutines & Cross-Platform ASM Manual (`PLAN6.md`)](docs/PLAN6.md)**: Production implementation guide, SSA findings, Link Register return trampolines, and opcode tables.
+* **[Inline Assembly Guide & Principles (`ASM.md`)](docs/ASM.md)**: Low-level inline assembly conventions and `#byte` machine code standards.
 * **[Low-Level Hardware & Inline Assembly Architecture (`TECH_ASM.md`)](docs/tech/TECH_ASM.md)**: Hardware matrices, register preservation contracts, and stack frame layouts for AMD64, ARM64, and RISC-V 64.
 * **[Odin Inline Assembly Compiler Analysis & Roadmap (`TECH_ODIN_INLINE_ASM_ANALYSIS.md`)](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md)**: Compiler frontend internals, SSA register liveness diagnostics, and language roadmap for high-level assembly context switching.
 * **[Memory Architecture & Stack Safety (`TECH_MEMORY.md`)](docs/tech/TECH_MEMORY.md)**: Virtual memory guard pages, stack watermarking, and canaries.
 * **[Multi-Domain Engine Clocks (`TECH_CLOCK.md`)](docs/tech/TECH_CLOCK.md)**: Continuous zero-drift fixed ticks and time dilation.
+* **[Verification & Architecture Compliance Report (`REPORTS.md`)](docs/REPORTS.md)**: 188-test catalog, zero-allocation benchmark telemetry, and multi-ISA target matrix.
 
 ---
 

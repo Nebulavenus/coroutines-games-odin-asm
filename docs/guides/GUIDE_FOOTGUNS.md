@@ -333,8 +333,39 @@ if stored_fiber.status == .Running { // CRASH or corrupted state!
 2. When a fiber slot is recycled, its generation counter is automatically incremented.
 3. Checking `coroutine.fiber_is_alive(&sched, handle)` or `coroutine.fiber_find_by_handle(&sched, handle)` performs a single-instruction direct array lookup in $O(1)$ time, instantly detecting stale handles with **100% ABA safety**.
 
+---
+
+## Footgun 12: Inlining Across Fiber Context Switches & Register Allocation Under `-o:speed`
+
+### The Trap
+When compiling with aggressive whole-program optimization (`-o:speed -use-single-module`), the LLVM compiler inline-expands small utility procedures like `yield_frame` or user loops. 
+Under the x86-64 calling conventions (both Windows x64 and System V AMD64), registers like `%xmm0` through `%xmm5` are **caller-saved (volatile)** scratch registers. 
+
+When a procedure containing floating-point computations (such as tweens, timers, or physics steps) is inlined across a fiber yield point, the compiler may retain intermediate loop counters (e.g. `duration`, `elapsed`, or loop bounds) in volatile floating-point registers. Because fiber context switching switches execution to the scheduler (which uses SSE/AVX registers for other tasks before switching back), those volatile scratch registers are not preserved across the switch! When the fiber resumes, values held in volatile registers are clobbered (often zeroed), causing loop bounds to immediately terminate prematurely.
+
+Furthermore, in single-module builds where the compiler sees both the caller frame and the coroutine body, LLVM's scalar replacement of aggregates (SROA) and alias analysis may assume that local stack variables passed by reference (e.g. `out_1: f32`) cannot be modified across `scheduler_step(&sched)`, failing to reload them into registers in unit test assert loops.
+
+```odin
+// DANGEROUS UNDER -o:speed -use-single-module:
+// If yield_frame is #force_inline, the compiler may keep `duration` in volatile %xmm registers across the context switch.
+for elapsed < duration {
+    yield_frame(f)
+    elapsed += delta_time(f)
+    // On resume, duration in %xmm register is 0.0 -> loop terminates after 1 iteration!
+}
+```
+
+### How the Engine Mitigates It
+1. **ABI Boundary Enforcement**: Procedures that invoke `fiber_context_switch` (`wait_frames`, `wait_time`, `yield`, etc.) are intentionally kept as standard non-inlined function boundaries. This forces LLVM's register allocator to spill all active caller-saved registers (`%xmm0-%xmm5`, `%rax`, `%rcx`, etc.) to the fiber stack across the call boundary according to the platform ABI.
+2. **Callee-Saved Hardware Registers Preserved**: The assembly context switch (`fiber_context_switch`) fully preserves all callee-saved registers defined by the platform ABI:
+   - **Win64**: `%rbx`, `%rbp`, `%rdi`, `%rsi`, `%r12-%r15`, and `%xmm6-%xmm15` (160 bytes of SIMD state).
+   - **System V**: `%rbx`, `%rbp`, `%r12-%r15`.
+   - **ARM64**: `x19-x28`, `fp`, `lr`, and `d8-d15` (160 bytes).
+   - **RISC-V 64**: `s0-s11` and `fs0-fs11` (208 bytes).
+3. **Volatile Status Reloads**: Scheduler status checks across context switches use `intrinsics.volatile_load` to prevent SSA caching across inline assembly blocks.
+
 ### The Rule
-> **Never store raw `^Fiber` pointers across yield points or in game structs. Always store `Fiber_Handle` (32-bit value) and resolve it via `fiber_find_by_handle(sched, handle)` or `fiber_is_alive(sched, handle)`.**
+> **Keep yield/wait procedures as distinct function boundaries (never `#force_inline`). In test harnesses or benchmarks inspecting local scalar values modified by fibers across `scheduler_step`, aggregate values into structs or use pointers to ensure LLVM loads refreshed memory.**
 
 ---
 
@@ -355,5 +386,6 @@ if stored_fiber.status == .Running { // CRASH or corrupted state!
 │ 9. Use Ticker for periodic loops: Eliminates cumulative delta-time drift.   │
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
+│ 12. Never #force_inline yield points: Call boundaries preserve registers.   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

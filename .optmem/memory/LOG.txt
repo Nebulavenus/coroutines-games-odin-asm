@@ -80,3 +80,8 @@
 #79 2026-09-04 Documented Odin inline asm compiler internals, SSA rules, #no_init scratch pattern, and LLVM label colon bug in inline_asm_analysis.md and ASM_2.md for Option A high-level context switching.
 #80 2026-09-04 Migrated Win64 & SysV AMD64 callee-saved GPRs to high-level inline asm (push/pop) using two-step #no_init scratch bindings; verified 188/188 tests passing and 16.89ns switch latency across 6-target matrix.
 #81 2026-09-04 Reverted coroutines context switch to pure #byte production solution (188/188 tests passing); documented LLVM XMM early-clobber output trap and compiler CFG archaeology in inline_asm_analysis.md and ASM_2.md.
+#82 2026-09-05 Migrated to root package layout (package coroutine) for odin:shared vendoring; added tools/amalgamate.py producing zero-dep dist/coroutine.odin verified across 5 targets; moved game demo to examples/game; 188/188 tests passing on Win64, Linux AMD64, ARM64, and RISC-V 64.
+#83 2026-09-05 Documented Footgun 12 & TECH_ODIN_INLINE_ASM_ANALYSIS: AMD64 compiler clobber bitmask only tracks xmm0; small yield procedures must retain call boundaries to spill SIMD registers under LLVM -o:speed.
+#84 2026-09-05 Moved all root markdown files into docs/ keeping only AGENTS.md and README.md in root; updated links in README.md and AGENTS.md.
+#85 2026-09-05 Kept CHANGELOG.md in project root alongside README.md and AGENTS.md per user preference.
+#86 2026-09-05 Wired test-arm64 and test-riscv64 in build.ps1 to run_wsl_qemu.ps1; verified 188/188 tests passing across native Windows x64, WSL2 Linux AMD64, ARM64 QEMU, and RISC-V 64 QEMU
