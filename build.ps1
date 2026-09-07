@@ -1,6 +1,6 @@
 param (
     [Parameter(Mandatory=$false, Position=0)]
-    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench", "check-arm64", "check-riscv64", "check-all", "test-arm64", "test-riscv64", "amalgamate", "dist", "test-dist")]
+    [ValidateSet("build", "run", "test", "debug", "release", "matrix", "showcase", "run-showcase", "quest", "run-quest", "bench", "run-bench", "check-arm64", "check-riscv64", "check-wasm", "check-all", "test-arm64", "test-riscv64", "wasm", "test-wasm", "web-game", "test-web-game", "run-web-game", "pack-itch", "amalgamate", "dist", "test-dist")]
     [string]$Action
 )
 
@@ -24,6 +24,32 @@ function Invoke-OdinBuild
     $buildArgs = @("build", $Source, "-out:$Output") + $linkerArgs + @("-show-timings") + $ExtraArgs
     odin @buildArgs
     return $LASTEXITCODE
+}
+
+function Get-WasmOptPath
+{
+    # 1. Check system PATH first
+    $cmd = Get-Command "wasm-opt" -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    # 2. Check local tools/binaryen/bin
+    $isWin = $IsWindows -or ($env:OS -eq "Windows_NT")
+    $ext = if ($isWin) { ".exe" } else { "" }
+    $localOpt = "$PSScriptRoot/tools/binaryen/bin/wasm-opt$ext"
+    if (Test-Path $localOpt) {
+        return $localOpt
+    }
+
+    # 3. Auto-download using cross-platform download script
+    Write-Host "wasm-opt not found. Running cross-platform downloader..." -ForegroundColor Yellow
+    & "$PSScriptRoot/tools/download_binaryen.ps1"
+    if (Test-Path $localOpt) {
+        return $localOpt
+    }
+
+    return $null
 }
 
 function Invoke-OdinTest
@@ -210,10 +236,15 @@ switch ($Action)
         Write-Host "Cross-checking RISC-V 64 target (linux_riscv64)..." -ForegroundColor Cyan
         odin check . -no-entry-point -target:linux_riscv64
     }
+    "check-wasm"
+    {
+        Write-Host "Cross-checking WebAssembly target (js_wasm32)..." -ForegroundColor Cyan
+        odin check . -no-entry-point -target:js_wasm32
+    }
     "check-all"
     {
-        Write-Host "Cross-checking all 6 target architectures..." -ForegroundColor Yellow
-        $targets = @("windows_amd64", "linux_amd64", "darwin_amd64", "darwin_arm64", "linux_arm64", "linux_riscv64")
+        Write-Host "Cross-checking all 7 target architectures..." -ForegroundColor Yellow
+        $targets = @("windows_amd64", "linux_amd64", "darwin_amd64", "darwin_arm64", "linux_arm64", "linux_riscv64", "js_wasm32")
         $failed = 0
         foreach ($tgt in $targets)
         {
@@ -228,7 +259,7 @@ switch ($Action)
             }
         }
         if ($failed -eq 0) {
-            Write-Host "All 6 multi-ISA targets successfully verified!" -ForegroundColor Green
+            Write-Host "All 7 multi-ISA/Wasm targets successfully verified!" -ForegroundColor Green
         } else {
             Write-Host "$failed targets failed cross-check!" -ForegroundColor Red
         }
@@ -240,6 +271,76 @@ switch ($Action)
     "test-riscv64"
     {
         & "$PSScriptRoot/run_wsl_qemu.ps1" riscv64
+    }
+    "wasm"
+    {
+        Write-Host "Building WebAssembly coroutine test suite..." -ForegroundColor Cyan
+        $wasmDir = "$PSScriptRoot/examples/wasm_test"
+        odin build $wasmDir -target:js_wasm32 -out:"$wasmDir/test.wasm"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $wasmOpt = Get-WasmOptPath
+        if ($wasmOpt) {
+            Write-Host "Post-processing with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
+            & $wasmOpt --asyncify "$wasmDir/test.wasm" -o "$wasmDir/test_opt.wasm"
+        } else {
+            Write-Host "[WARNING] wasm-opt not found. Run tools/download_binaryen.ps1 or python tools/download_binaryen.py" -ForegroundColor Yellow
+        }
+    }
+    "test-wasm"
+    {
+        Write-Host "Running WebAssembly test suite via Node.js..." -ForegroundColor Cyan
+        $wasmDir = "$PSScriptRoot/examples/wasm_test"
+        odin build $wasmDir -target:js_wasm32 -out:"$wasmDir/test.wasm"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $wasmOpt = Get-WasmOptPath
+        if ($wasmOpt) {
+            Write-Host "Post-processing with Binaryen Asyncify..." -ForegroundColor Cyan
+            & $wasmOpt --asyncify "$wasmDir/test.wasm" -o "$wasmDir/test_opt.wasm"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node "$PSScriptRoot/tools/run_wasm.js" "$wasmDir/test_opt.wasm"
+        } else {
+            Write-Host "[ERROR] wasm-opt required for Asyncify execution. Run tools/download_binaryen.ps1 or python tools/download_binaryen.py" -ForegroundColor Red
+            exit 1
+        }
+    }
+    "web-game"
+    {
+        Write-Host "Building WebAssembly boss fight game (examples/game)..." -ForegroundColor Cyan
+        $webDir = "$PSScriptRoot/build/web"
+        if (-not (Test-Path $webDir)) {
+            New-Item -ItemType Directory -Path $webDir -Force | Out-Null
+        }
+        odin build examples/game -target:js_wasm32 -out:"$webDir/game.wasm"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $wasmOpt = Get-WasmOptPath
+        if ($wasmOpt) {
+            Write-Host "Post-processing game with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
+            & $wasmOpt --asyncify "$webDir/game.wasm" -o "$webDir/game_opt.wasm"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } else {
+            Write-Host "[ERROR] wasm-opt not found. Required for Asyncify! Run tools/download_binaryen.ps1 or python tools/download_binaryen.py" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "Copying web adapter and shell assets..." -ForegroundColor Cyan
+        Copy-Item "$PSScriptRoot/tools/web/index.html" "$webDir/index.html" -Force
+        Copy-Item "$PSScriptRoot/tools/web/raylib_canvas.js" "$webDir/raylib_canvas.js" -Force
+        Write-Host "Web game bundle created in build/web/ (index.html, game_opt.wasm, raylib_canvas.js)" -ForegroundColor Green
+    }
+    "test-web-game"
+    {
+        Write-Host "Testing WebAssembly game loop via headless Node.js runner (1000 frames)..." -ForegroundColor Cyan
+        & $PSCommandPath web-game
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        node "$PSScriptRoot/tools/web/test_headless_game.js" "$PSScriptRoot/build/web/game_opt.wasm" 1000
+    }
+    "run-web-game"
+    {
+        & $PSCommandPath web-game
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        Write-Host "Starting local HTTP server on http://localhost:8080 (Press Ctrl+C to stop)..." -ForegroundColor Green
+        python -m http.server -d "$PSScriptRoot/build/web" 8080
     }
     "amalgamate"
     {
@@ -258,6 +359,53 @@ switch ($Action)
         if ($LASTEXITCODE -eq 0) {
             odin run examples/dist_test -out:build/dist_test.exe
         }
+    }
+    "pack-itch"
+    {
+        Write-Host "Building and packaging itch.io WebAssembly release..." -ForegroundColor Cyan
+        
+        $webDir = "$PSScriptRoot/build/web"
+        if (-not (Test-Path $webDir)) {
+            New-Item -ItemType Directory -Path $webDir -Force | Out-Null
+        }
+        odin build examples/game -target:js_wasm32 -out:"$webDir/game.wasm"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $wasmOpt = Get-WasmOptPath
+        if ($wasmOpt) {
+            Write-Host "Post-processing game with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
+            & $wasmOpt --asyncify "$webDir/game.wasm" -o "$webDir/game_opt.wasm"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        } else {
+            Write-Host "[ERROR] wasm-opt not found. Required for Asyncify!" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "Copying minimal itch.io web assets..." -ForegroundColor Cyan
+        Copy-Item "$PSScriptRoot/tools/web/index.html" "$webDir/index.html" -Force
+        Copy-Item "$PSScriptRoot/tools/web/raylib_canvas.js" "$webDir/raylib_canvas.js" -Force
+
+        $zipPath = "$PSScriptRoot/build/boss_fight_itch.zip"
+        if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+        }
+
+        Write-Host "Creating itch.io release archive at $zipPath..." -ForegroundColor Cyan
+        $filesToZip = @(
+            "$webDir/index.html",
+            "$webDir/game_opt.wasm",
+            "$webDir/raylib_canvas.js"
+        )
+        Compress-Archive -Path $filesToZip -DestinationPath $zipPath -Force
+
+        $zipItem = Get-Item $zipPath
+        $zipSizeMb = ($zipItem.Length / 1MB).ToString("F2")
+        Write-Host "=================================================================" -ForegroundColor Green
+        Write-Host " SUCCESS: itch.io WebAssembly release package created!" -ForegroundColor Green
+        Write-Host " Archive: $zipPath ($zipSizeMb MB)" -ForegroundColor Green
+        Write-Host " Upload directly to itch.io as 'HTML: playable in browser'!" -ForegroundColor Green
+        Write-Host " (Verified: index.html is located at the archive root)" -ForegroundColor Green
+        Write-Host "=================================================================" -ForegroundColor Green
     }
     default
     {

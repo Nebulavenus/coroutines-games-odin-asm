@@ -3,7 +3,7 @@
 This technical document details the low-level hardware mechanics, inline assembly primitives, register preservation contracts, synthetic stack frame initialization, and compiler safety invariants across **AMD64 (x86-64)**, **ARM64 (AArch64)**, and **RISC-V 64 (RV64GC)** powering the **Odin Stackful Coroutine Engine**.
 
 > [!NOTE]
-> For an in-depth breakdown of Odin's compiler internals, SSA liveness verification, and the future roadmap for high-level assembly context switching, see [`TECH_ODIN_INLINE_ASM_ANALYSIS.md`](./TECH_ODIN_INLINE_ASM_ANALYSIS.md).
+> For WebAssembly (`js_wasm32`) Asyncify execution model, leaf yield protocols, and state machine unwinding, see [`TECH_WASM_ASYNCIFY.md`](./TECH_WASM_ASYNCIFY.md). For an in-depth breakdown of Odin's compiler internals, SSA liveness verification, and the future roadmap for high-level assembly context switching, see [`TECH_ODIN_INLINE_ASM_ANALYSIS.md`](./TECH_ODIN_INLINE_ASM_ANALYSIS.md).
 
 ---
 

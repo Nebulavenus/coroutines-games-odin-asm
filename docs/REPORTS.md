@@ -177,7 +177,7 @@ Finished 188 tests in ~320ms. All tests were successful.
 
 ## 3. Performance Benchmark Suite Results (`.\build.ps1 run-bench`)
 
-The engine includes a dedicated 6-suite benchmark runner ([`examples/bench/main.odin`](examples/bench/main.odin)) executed with host native optimizations (`-o:speed -microarch:native -no-bounds-check -disable-assert`):
+The engine includes a dedicated 6-suite benchmark runner ([`examples/bench/main.odin`](../examples/bench/main.odin)) executed with host native optimizations (`-o:speed -microarch:native -no-bounds-check -disable-assert`):
 
 ```
 ================================================================================

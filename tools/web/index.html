@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Odin Coroutines Boss Battle</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            background: #000000;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #canvas-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000000;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            max-width: 100vw;
+            max-height: 100vh;
+            object-fit: contain;
+            aspect-ratio: 16 / 9;
+            outline: none;
+            cursor: crosshair;
+        }
+        #loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: #080a0f;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.95rem;
+            color: #38bdf8;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+        .spinner {
+            width: 36px;
+            height: 36px;
+            border: 3px solid rgba(56, 189, 248, 0.2);
+            border-top-color: #38bdf8;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 12px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #controls-hint {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 4px 16px;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            pointer-events: none;
+            opacity: 0.85;
+            transition: opacity 0.3s;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            white-space: nowrap;
+            z-index: 5;
+        }
+        #controls-hint span {
+            color: #38bdf8;
+            font-weight: 600;
+            font-family: monospace;
+        }
+        @media (max-height: 480px) {
+            #controls-hint { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="game-canvas" width="1280" height="720" tabindex="0"></canvas>
+        <div id="loading-overlay">
+            <div class="spinner"></div>
+            <div>Loading Odin WebAssembly Engine...</div>
+        </div>
+        <div id="controls-hint">
+            <div><span>WASD</span> Move</div>
+            <div><span>SPACE</span> Shoot</div>
+            <div><span>E</span> EMP Stun</div>
+            <div><span>P</span> Pause</div>
+            <div><span>H</span> HUD</div>
+            <div><span>R</span> Restart</div>
+        </div>
+    </div>
+
+    <script type="module">
+        const canvas = document.getElementById('game-canvas');
+        const loading = document.getElementById('loading-overlay');
+        const controlsHint = document.getElementById('controls-hint');
+
+        let memory = null;
+        function getMemory() {
+            return memory;
+        }
+
+        // Cache-busting dynamic import of raylib adapter
+        const { createRaylibWeb } = await import(`./raylib_canvas.js?v=${Date.now()}`);
+
+        // Minimal Odin runtime imports (odin_env)
+        const odinEnv = {
+            write: (fd, ptr, len) => {
+                const mem = getMemory();
+                if (!mem) return 0;
+                const bytes = new Uint8Array(mem.buffer, ptr, len);
+                const str = new TextDecoder('utf-8').decode(bytes);
+                if (fd === 2) console.error(str);
+                else console.log(str);
+                return len;
+            },
+            read: () => 0,
+            time_now: () => BigInt(Math.floor(performance.now() * 1e6)),
+            tick_now: () => BigInt(Math.floor(performance.now() * 1e6)),
+            rand_bytes: (ptr, len) => {
+                const mem = getMemory();
+                if (!mem) return;
+                const bytes = new Uint8Array(mem.buffer, ptr, len);
+                crypto.getRandomValues(bytes);
+            },
+            sqrt: (v) => Math.sqrt(v),
+            sin: (v) => Math.sin(v),
+            cos: (v) => Math.cos(v),
+            pow: (x, y) => Math.pow(x, y),
+            fmuladd: (x, y, z) => x * y + z,
+            ln: (v) => Math.log(v),
+            exp: (v) => Math.exp(v),
+            trap: () => { throw new Error("Odin runtime trap"); },
+            alert: (ptr, len) => {
+                const mem = getMemory();
+                const bytes = new Uint8Array(mem.buffer, ptr, len);
+                alert(new TextDecoder('utf-8').decode(bytes));
+            },
+            abort: () => { throw new Error("Odin runtime abort"); },
+            evaluate_expression: () => 0
+        };
+
+        const raylib = createRaylibWeb(canvas, getMemory);
+
+        // Asyncify no-op imports (wasm-opt --asyncify replaces them with internals)
+        const asyncifyImports = {
+            start_unwind: () => {},
+            stop_unwind: () => {},
+            start_rewind: () => {},
+            stop_rewind: () => {}
+        };
+
+        const imports = {
+            odin_env: odinEnv,
+            'wasm/libraylib.web.a': raylib,
+            asyncify: asyncifyImports
+        };
+
+        try {
+            const response = await fetch(`game_opt.wasm?v=${Date.now()}`);
+            if (!response.ok) throw new Error(`HTTP ${response.status} loading game_opt.wasm`);
+
+            const wasmBytes = await response.arrayBuffer();
+            const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
+
+            memory = instance.exports.memory;
+
+            // Run Odin initialization
+            if (instance.exports._start) {
+                instance.exports._start();
+            }
+
+            // Initialize Game
+            if (instance.exports.game_wasm_init) {
+                instance.exports.game_wasm_init();
+            }
+
+            loading.style.opacity = '0';
+            setTimeout(() => loading.style.display = 'none', 300);
+
+            // Auto-focus canvas for immediate keyboard controls in iframe
+            canvas.addEventListener('click', () => canvas.focus());
+            window.addEventListener('load', () => canvas.focus());
+            canvas.focus();
+
+            let lastTime = performance.now();
+
+            function frame(time) {
+                const dt = Math.min((time - lastTime) / 1000.0, 0.1);
+                lastTime = time;
+
+                raylib.setFrameDt(dt);
+
+                if (instance.exports.game_wasm_step) {
+                    instance.exports.game_wasm_step(dt);
+                }
+
+                requestAnimationFrame(frame);
+            }
+
+            requestAnimationFrame(frame);
+
+        } catch (err) {
+            loading.innerHTML = `<div style="color:#ef4444; font-weight:bold; font-size:1rem;">Failed to load game</div><div style="margin-top:8px; font-size:0.85rem; color:#94a3b8;">${err.message}</div>`;
+            console.error("[Browser Web] Wasm load error:", err);
+        }
+    </script>
+</body>
+</html>

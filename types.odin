@@ -126,6 +126,18 @@ Wait_Queue :: struct {
 // Fiber Structure
 // ============================================================================
 
+when ODIN_ARCH == .wasm32 {
+    ASYNCIFY_STORAGE_SIZE :: 4096
+} else {
+    ASYNCIFY_STORAGE_SIZE :: 8
+}
+
+Asyncify_Buffer :: struct {
+    top:     u32,
+    end:     u32,
+    storage: [ASYNCIFY_STORAGE_SIZE]byte,
+}
+
 Fiber :: struct {
     // --- Execution Context & Stack ---
     handle:           Fiber_Handle,
@@ -138,6 +150,10 @@ Fiber :: struct {
     status:           Fiber_Status,
     scope:            ^Fiber_Scope,
     sched:            ^Scheduler,
+
+    // --- WebAssembly Asyncify Execution State ---
+    wasm_started:     bool,
+    asyncify_buf:     Asyncify_Buffer,
 
     // --- Intrusive Tree Hierarchy (Structured Concurrency) ---
     parent:           ^Fiber,
@@ -167,6 +183,11 @@ Fiber :: struct {
     wake_frame:       u64,               // Target engine frame for Sleeping_Frames
     wake_clock:       Time_Clock,        // Target clock domain (.Sim_Scaled, .Real_Time, .Fixed_Tick)
     heap_index:       int,               // Index in Timer Min-Heap (for O(log N) deletion on abort)
+
+    // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe on WebAssembly) ---
+    ticker_interval:  f32,
+    ticker_next_wake: f64,
+    ticker_use_real:  bool,
 
     // Condition polling
     condition_fn:     proc(user_data: rawptr) -> bool,

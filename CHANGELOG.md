@@ -2,6 +2,76 @@
 
 All notable changes to this project will be documented in this file.
 
+## [WebAssembly Shadow-Stack Hardening & WASM_LIMITATIONS Architecture] - 2026-09-08
+
+### Added
+- **Built-in Fiber-Owned Zero-Drift Ticker (`api.odin`, `types.odin`, `pool.odin`)**:
+  - Added `ticker_interval: f32`, `ticker_next_wake: f64`, and `ticker_use_real: bool` directly inside the `Fiber` struct in persistent pool/heap memory.
+  - Added overloaded `coroutine.ticker_wait(f, interval_seconds, use_real_time)` and convenience alias `coroutine.wait_ticker(f, interval_seconds)` requiring zero stack struct allocations (`&Ticker`).
+  - Added `coroutine.ticker_rebase(f)` to reset schedule timestamps cleanly after interruptions, stuns, or animation state switches.
+  - Fully immune to WebAssembly Asyncify shadow-stack clobbering across interleaved fibers.
+- **Unit Test 189 (`coroutine_test.odin`)**:
+  - Validated fiber-owned ticker zero-drift timing, multi-fiber non-interference, and clean rebase behavior with 189/189 tests passing.
+- **WebAssembly Limitations & Roadmap Documentation (`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`)**:
+  - Detailed the dual-stack model (VM execution stack vs LLVM shadow stack in linear memory).
+  - Documented root causes of shadow-stack aliasing across Asyncify yields.
+  - Codified the **3 Golden Rules of WebAssembly Coroutines**.
+  - Documented the multi-phase architectural roadmap towards native Wasm Stack-Switching (`cont.new`, `suspend`, `resume`).
+
+## [WebAssembly Test Suite Expansion & EMP Fiber Fix] - 2026-09-08
+
+### Added
+- **WebAssembly Comprehensive Test Suite Expansion (`examples/wasm_test/main.odin`)**:
+  - Expanded test suite from 8 to 12 automated test suites:
+    - **Test 9**: Signal primitives (`signal_wait`, `signal_emit`) with multi-waiter FIFO scheduling and waiter tracking.
+    - **Test 10**: Deep nested `race()` cancelling an active `sync()` combinator containing multiple child attack fibers.
+    - **Test 11**: Ticker zero-drift timing precision and safe cancellation via `Fiber_Scope`.
+    - **Test 12**: Multi-round EMP stun AI fuzzing simulating rapid signal emissions across 300 frames with zero leaked fibers or heap nodes.
+  - All 12 WebAssembly test suites passing with 0 failures under `.\build.ps1 test-wasm`.
+
+### Fixed
+- **Boss EMP Attack Fiber Multiplication & Projectile Spam (`examples/game/main.odin`, `api.odin`)**:
+  - **Root Cause**: On WebAssembly with Asyncify, all fibers share the single Odin runtime shadow stack in linear memory. When fibers yield, local structs whose addresses are taken (such as `ticker: coroutine.Ticker`) can be overwritten by other interleaved fibers (e.g. camera shake, floating text, particles). When the attack fiber woke from stun, `ticker.interval` was zeroed out, causing `ticker_wait` to fail the forward-time check and fall back to `yield_frame(f)`, firing 8 bullets every single frame (500+ projectiles runaway burst).
+  - **Remedy**: Replaced stack-allocated `Ticker` instances in `boss_spiral_shoot_subloop` and `boss_targeted_burst_subloop` with direct primitive `coroutine.wait(f, seconds)` calls where wake times are persisted directly in `f.wake_time` on the heap/pool.
+  - **Defense-in-Depth**: Hardened `ticker_wait` in `api.odin` to clamp `t.interval = max(0.0001, t.interval)`, eliminating 1-frame busy spins if an uninitialized or zero-interval ticker is encountered.
+  - **Player EMP Guard**: Added `emp_cooldown: f32` (1.8s) to `Player` in `examples/game/main.odin` preventing runaway stun spamming while the boss is already in stun recovery.
+
+### Added
+- **Browser-Playable Boss Fight Port (`examples/game/main.odin`)**:
+  - Ported native Raylib boss battle demo to `js_wasm32` WebAssembly using Binaryen Asyncify and HTML5 Canvas 2D.
+  - Exported browser lifecycle hooks (`game_wasm_init`, `game_wasm_step`, `game_wasm_destroy`) driven via `requestAnimationFrame` on `<canvas>` (1280x720) while preserving desktop native blocking loop for Win64/Linux.
+- **Lightweight Zero-C HTML5 Canvas 2D Raylib Adapter (`tools/web/raylib_canvas.js`)**:
+  - Implemented all 21 Raylib C ABI imports directly in JavaScript (`DrawCircleV`, `DrawLine`, `DrawRectangle`, `DrawText`, keyboard/mouse input dispatch) with zero external C libraries or Emscripten SDK dependencies.
+- **Web Game Build Pipeline & Headless Automation (`build.ps1`, `tools/web/test_headless_game.js`)**:
+  - Added `.\build.ps1 web-game`: compiles `examples/game` -> `build/web/game.wasm`, optimizes with `wasm-opt --asyncify` -> `build/web/game_opt.wasm`, and packages `index.html` + `raylib_canvas.js`.
+  - Added `.\build.ps1 test-web-game`: headless Node.js runner simulating 1000 frames (16.7 seconds @ 60 FPS, 300,000+ draw calls) with zero traps, leaks, or desyncs.
+  - Added `.\build.ps1 run-web-game`: builds bundle and spawns local HTTP server on `http://localhost:8080`.
+- **Ergonomic Browser Control Scheme & Restart Support**:
+  - Replaced browser-conflicting function keys with clean letter bindings: `P` / `Escape` (pause/resume), `H` / `Tab` (toggle hierarchy inspector), `N` / `.` (step 1 frame), `M` (step 10 frames), `E` / `B` (EMP stun).
+  - Added dedicated restart action (`R` / `Enter`) both during active gameplay and on Game Over/Victory screens.
+  - Added browser default event prevention for `Space`, `Tab`, `F1-F5`, and arrow keys in `raylib_canvas.js` to prevent viewport scrolling or focus loss.
+
+### Fixed
+- **Deterministic Math Random in WebAssembly Coroutines (`examples/game/main.odin`)**:
+  - Replaced Odin `core:math/rand` inside fiber routines (`camera_shake_coroutine`, particle spawns, damage numbers) with lightweight deterministic LCG `game_rand_f32`.
+  - Eliminated `RuntimeError: memory access out of bounds` caused by `runtime.default_random_generator_proc` accessing `@(thread_local)` TLS state or crossing into foreign JS `rand_bytes` during Asyncify unwinding/rewinding.
+  - Added defensive null guard in `trigger_camera_shake`.
+
+## [WebAssembly (js_wasm32) Asyncify Multi-Platform Architecture] - 2026-09-07
+
+### Added
+- **WebAssembly Target Architecture (`js_wasm32`)**:
+  - Implemented full WebAssembly support using Binaryen Asyncify post-processing pipeline (`asm_wasm32.odin`), expanding the multi-ISA runtime to 7 architectures (`windows_amd64`, `linux_amd64`, `darwin_amd64`, `darwin_arm64`, `linux_arm64`, `linux_riscv64`, `js_wasm32`).
+  - Implemented symmetric unwinding/rewinding leaf yield protocol (`wasm_yield_leaf`): calling `_raw_start_unwind` during execution to initiate call-stack unwinding, and `_raw_stop_rewind` upon reentry during rewind to cleanly resume forward execution with zero stack corruption.
+  - Retained 100% straight-line structured concurrency API parity across all primitives: `wait`, `wait_frames`, `sync`, `race`, unbuffered CSP channels, multi-domain clocks (`time_scale`, `real_time`), and intrusive `Fiber_Scope` hierarchical cancellation.
+  - Zero C/POSIX or Emscripten runtime dependencies; purely native Odin runtime environment powered by Node.js runner (`tools/run_wasm.js`).
+- **WebAssembly Test Suite & Automation (`examples/wasm_test/main.odin`)**:
+  - Authored comprehensive 8-suite headless WebAssembly test runner covering minimal spawn, local variable stack preservation across yields, concurrent interleaving, structured `sync()`, structured `race()`, unbuffered CSP channels, multi-domain clocks, and group scope aborts (8/8 suites passing, 0 failures).
+  - Integrated `wasm`, `check-wasm`, and `test-wasm` tasks into `build.ps1`.
+  - Expanded `check-all` verification matrix to all 7 target architectures.
+- **Single-File Amalgamation & Vendoring Support (`tools/amalgamate.py`)**:
+  - Updated amalgamation pipeline to generate dual standalone drop-ins in `dist/`: `dist/coroutine.odin` (native multi-ISA: AMD64, ARM64, RISC-V 64 with `#+build !js`) and `dist/coroutine_wasm32.odin` (WebAssembly with `#+build wasm32`), verified with `odin check -no-entry-point` across all 7 targets.
+
 ## [Root Package Layout & Amalgamated Single-File Distribution] - 2026-09-05
 
 ### Added
@@ -24,15 +94,15 @@ All notable changes to this project will be documented in this file.
 ## [Inline ASM Deep-Dive & #byte Production Standard Baseline] - 2026-09-04
 
 ### Added
-- **Odin Inline Assembly Specification & Compiler Internals ([`ASM_2.md`](ASM_2.md), [`inline_asm_analysis.md`](inline_asm_analysis.md))**:
+- **Odin Inline Assembly Specification & Compiler Internals ([`docs/ASM_2.md`](docs/ASM_2.md), [`docs/inline_asm_analysis.md`](docs/inline_asm_analysis.md))**:
   - Documented complete inline assembly AST rules, undocumented directives (`#no_init`, `#skip`, `#align`), and two-step scratch parameter bindings.
   - Documented LLVM backend lowering constraints: missing label colon in AMD64/RISC-V (`llvm_backend_asm.cpp:390`), base pointer/frame pointer interference on `%rsp`/`%rbp`, and vector register early-clobber (`=&`) corruption on scratch XMM stores.
   - Completed git archaeology across project commit history and Odin compiler PRs (PR #7444 `bill/asm-cfg`, sub-register width lattice `in_w`, and backward liveness checks).
   - Confirmed `#byte` machine code arrays as the canonical production standard for the coroutine runtime across all 6 target architectures (`windows_amd64`, `linux_amd64`, `darwin_amd64`, `darwin_arm64`, `linux_arm64`, `linux_riscv64`), maintaining 100% test pass (188/188 tests) and 16.89ns context switch latency.
-- **Full Odin Inline Assembly Specification ([`ASM_2.md`](ASM_2.md))**:
+- **Full Odin Inline Assembly Specification ([`docs/ASM_2.md`](docs/ASM_2.md))**:
   - Authored authoritative manual covering all undocumented compiler directives (`#no_init`, `#skip`, `#align`, `#byte`), scratch parameter bindings, width-views, template directives (`#volatile`, `#align_stack`, `#pure`), and clobber constraints.
   - Documented SSA dataflow analysis (`seed_regs`, `seed_pm`, `in_w` lattice), CFG block construction, terminal instructions, and template exit requirements (`check_asm_cfg_block_leaves`).
-- **Comprehensive Compiler Internals & Option A Specification ([`inline_asm_analysis.md`](inline_asm_analysis.md))**:
+- **Comprehensive Compiler Internals & Option A Specification ([`docs/inline_asm_analysis.md`](docs/inline_asm_analysis.md))**:
   - Identified 6 root-cause blockers across frontend SSA (`check_asm_cfg_report_undef_reg`, `in_w[0]`), frontend CFG (terminal calls, dead writes), backend codegen (missing label colon in `llvm_backend_asm.cpp:390`), and LLVM machine function register allocation (frame pointer interference on `%rbp`).
   - Documented Option A pure high-level inline assembly context switch pattern with named labels and direct mnemonics, along with the upstream Odin compiler patch.
   - Documented why `#byte` remains the optimal production standard for stock Odin compiler compatibility.

@@ -1,10 +1,10 @@
 package main
 
+import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:math"
 import "core:math/linalg"
-import "core:math/rand"
 import "core:mem"
 import rl "vendor:raylib"
 
@@ -45,15 +45,16 @@ Particle :: struct {
 }
 
 Player :: struct {
-    pos:          rl.Vector2,
-    speed:        f32,
-    radius:       f32,
-    hp:           f32,
-    max_hp:       f32,
-    can_dash:     bool,
-    is_dashing:   bool,
+    pos:           rl.Vector2,
+    speed:         f32,
+    radius:        f32,
+    hp:            f32,
+    max_hp:        f32,
+    can_dash:      bool,
+    is_dashing:    bool,
     dash_cooldown: f32,
-    scope:        coroutine.Fiber_Scope,
+    emp_cooldown:  f32,
+    scope:         coroutine.Fiber_Scope,
 }
 
 Boss :: struct {
@@ -98,6 +99,14 @@ Game :: struct {
 // Global Game Reference for Coroutines
 g_game: ^Game
 
+g_rng_state: u32 = 0x853c49e6
+
+game_rand_f32 :: proc(min_val, max_val: f32) -> f32 {
+    g_rng_state = g_rng_state * 1664525 + 1013904223
+    t := f32(g_rng_state & 0x00FFFFFF) / f32(0x01000000)
+    return min_val + (max_val - min_val) * t
+}
+
 // ============================================================================
 // Particle & Visual Helpers
 // ============================================================================
@@ -106,15 +115,15 @@ spawn_particles :: proc(pos: rl.Vector2, count: int, color: rl.Color) {
     if g_game == nil do return
     for _ in 0 ..< count {
         if g_game.particle_count >= MAX_PARTICLES do break
-        angle := rand.float32_range(0, math.TAU)
-        spd := rand.float32_range(50, 250)
+        angle := game_rand_f32(0, math.TAU)
+        spd := game_rand_f32(50, 250)
         p := Particle{
             pos      = pos,
             vel      = {math.cos(angle) * spd, math.sin(angle) * spd},
             color    = color,
             alpha    = 1.0,
-            size     = rand.float32_range(3, 8),
-            lifetime = rand.float32_range(0.3, 0.7),
+            size     = game_rand_f32(3, 8),
+            lifetime = game_rand_f32(0.3, 0.7),
             alive    = true,
         }
         g_game.particles[g_game.particle_count] = p
@@ -151,8 +160,8 @@ camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: f32) {
         curr := intensity * decay
         if curr > 0.0 {
             g_game.camera_offset = {
-                rand.float32_range(-curr, curr),
-                rand.float32_range(-curr, curr),
+                game_rand_f32(-curr, curr),
+                game_rand_f32(-curr, curr),
             }
         } else {
             g_game.camera_offset = {0, 0}
@@ -162,6 +171,7 @@ camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: f32) {
 }
 
 trigger_camera_shake :: proc(intensity: f32) {
+    if g_game == nil do return
     coroutine.spawn(&g_game.sched, camera_shake_coroutine, intensity)
 }
 
@@ -173,6 +183,7 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
     // Tween upward position with juicy back-easing and fade out
     dur: f32 = 0.8
     elapsed: f32 = 0.0
+
     for elapsed < dur {
         coroutine.yield_frame(f)
         elapsed += coroutine.delta_time(f)
@@ -188,7 +199,7 @@ spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color = rl.
     if g_game == nil do return
     ft := Floating_Text{
         text  = text,
-        pos   = pos + {rand.float32_range(-20, 20), rand.float32_range(-10, 10)},
+        pos   = pos + {game_rand_f32(-20, 20), game_rand_f32(-10, 10)},
         color = color,
         alpha = 1.0,
         scale = scale,
@@ -237,11 +248,9 @@ boss_patrol_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     angle_offset: f32 = 0.0
-    ticker: coroutine.Ticker
-    coroutine.ticker_init(&ticker, 0.25)
 
     for {
-        coroutine.ticker_wait(f, &ticker)
+        coroutine.wait(f, 0.25)
         if !b.alive do break
 
         bullets_count := 8
@@ -261,11 +270,10 @@ boss_targeted_burst_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         coroutine.wait(f, 1.8)
         if !b.alive do break
 
-        // Fire 3 targeted bursts towards player using a precision zero-drift Ticker
-        burst_ticker: coroutine.Ticker
-        coroutine.ticker_init(&burst_ticker, 0.12)
+        // Fire 3 targeted bursts towards player
         for _ in 0 ..< 3 {
-            coroutine.ticker_wait(f, &burst_ticker)
+            coroutine.wait(f, 0.12)
+            if !b.alive do break
             dir := linalg.normalize(g_game.player.pos - b.pos)
             vel := dir * 420.0
             spawn_projectile(b.pos, vel, 9.0, rl.RED, true)
@@ -518,15 +526,20 @@ game_destroy :: proc(g: ^Game) {
 }
 
 game_update :: proc(g: ^Game, dt: f32) {
-    if rl.IsKeyPressed(.F3) {
-        coroutine.scheduler_set_paused(&g.sched, !coroutine.scheduler_is_paused(&g.sched))
+    // Global restart at any time
+    if rl.IsKeyPressed(.R) {
+        game_init(g)
+        return
     }
 
-    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
+    // Debug & Inspection Controls (P / Esc: Pause, H / Tab: Hierarchy)
+    if rl.IsKeyPressed(.P) || rl.IsKeyPressed(.ESCAPE) || rl.IsKeyPressed(.F3) {
+        coroutine.scheduler_set_paused(&g.sched, !coroutine.scheduler_is_paused(&g.sched))
+    }
+    if rl.IsKeyPressed(.H) || rl.IsKeyPressed(.TAB) || rl.IsKeyPressed(.F1) {
         g.show_coroutine_debugger = !g.show_coroutine_debugger
     }
 
-    // Determine simulation delta-time for this frame
     sim_dt: f32 = 0.0
 
     if !coroutine.scheduler_is_paused(&g.sched) {
@@ -538,24 +551,27 @@ game_update :: proc(g: ^Game, dt: f32) {
             g.step_flash_timer = max(0.0, g.step_flash_timer - dt)
         }
 
-        if rl.IsKeyPressed(.F4) {
-            sim_dt = 0.016
+        step_1_pressed := rl.IsKeyPressed(.N) || rl.IsKeyPressed(.PERIOD) || rl.IsKeyPressed(.F4)
+        step_10_pressed := rl.IsKeyPressed(.M) || rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && step_1_pressed)
+        step_hold := rl.IsKeyDown(.N) || rl.IsKeyDown(.PERIOD) || rl.IsKeyDown(.F4)
+
+        if step_1_pressed && !rl.IsKeyDown(.LEFT_SHIFT) {
+            sim_dt = 1.0 / 60.0
             g.step_count += 1
             g.last_step_dt = sim_dt
             g.step_flash_timer = 0.4
-        } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
-            sim_dt = 0.160 // 10 frames (~160ms jump)
+        } else if step_10_pressed {
+            sim_dt = 10.0 / 60.0
             g.step_count += 10
             g.last_step_dt = sim_dt
             g.step_flash_timer = 0.5
-        } else if rl.IsKeyDown(.F4) {
-            // Slow-motion continuous step when holding F4 (~15 FPS slow-mo)
+        } else if step_hold {
             g.hold_step_timer += dt
-            if g.hold_step_timer >= 0.066 {
-                g.hold_step_timer = 0.0
-                sim_dt = 0.016
+            if g.hold_step_timer >= 0.15 { // Slow-motion ~6-7 FPS
+                sim_dt = 1.0 / 60.0
                 g.step_count += 1
                 g.last_step_dt = sim_dt
+                g.hold_step_timer = 0.0
                 g.step_flash_timer = 0.2
             }
         } else {
@@ -564,7 +580,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     // Latch actions while paused or running
-    if rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) {
+    if rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) || rl.IsKeyPressed(.K) {
         g.latched_dash = true
     }
     if rl.IsMouseButtonPressed(.LEFT) || rl.IsKeyPressed(.J) || rl.IsKeyPressed(.Z) {
@@ -573,22 +589,29 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
     if sim_dt <= 0.0 {
-        coroutine.scheduler_step(&g.sched, dt)
+        coroutine.scheduler_advance_real(&g.sched, dt)
         return
     }
 
-    g.game_time += sim_dt
-
-    // Step the Coroutine Engine
     if !coroutine.scheduler_is_paused(&g.sched) {
-        coroutine.scheduler_step(&g.sched, sim_dt)
-    } else {
-        coroutine.scheduler_single_step(&g.sched, sim_dt)
+        g.game_time += sim_dt
     }
 
-    if g.game_over || g.victory do return
+    // Step Coroutines Engine (Dual-Clock Driven)
+    if coroutine.scheduler_is_paused(&g.sched) {
+        coroutine.scheduler_single_step(&g.sched, sim_dt)
+    } else {
+        coroutine.scheduler_step(&g.sched, sim_dt)
+    }
 
-    // --- Player Input & Movement ---
+    if g.game_over || g.victory {
+        if rl.IsKeyPressed(.R) || rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.SPACE) {
+            game_init(g)
+        }
+        return
+    }
+
+    // --- Player Movement (WASD / Arrows) ---
     move_dir := rl.Vector2{0, 0}
     if rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)    do move_dir.y -= 1
     if rl.IsKeyDown(.S) || rl.IsKeyDown(.DOWN)  do move_dir.y += 1
@@ -598,21 +621,23 @@ game_update :: proc(g: ^Game, dt: f32) {
     if linalg.length(move_dir) > 0 {
         move_dir = linalg.normalize(move_dir)
         g.player.pos += move_dir * g.player.speed * sim_dt
+        g.player.pos.x = clamp(g.player.pos.x, g.player.radius, f32(SCREEN_WIDTH) - g.player.radius)
+        g.player.pos.y = clamp(g.player.pos.y, g.player.radius, f32(SCREEN_HEIGHT) - g.player.radius)
     }
 
-    // Clamp Player to screen bounds
-    g.player.pos.x = clamp(g.player.pos.x, g.player.radius, f32(SCREEN_WIDTH) - g.player.radius)
-    g.player.pos.y = clamp(g.player.pos.y, g.player.radius, f32(SCREEN_HEIGHT) - g.player.radius)
-
-    // Player Dash Trigger (Space, Right Mouse or Latched)
-    do_dash := g.latched_dash || rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT)
+    // --- Player Dash Coroutine Trigger (Space / RMB / K) ---
+    do_dash := g.latched_dash || rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) || rl.IsKeyPressed(.K)
     g.latched_dash = false
     if do_dash && g.player.can_dash && !coroutine.scope_is_busy(&g.player.scope) {
         coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash")
     }
 
-    // Player EMP Parry Burst (B key / X key): Stun Boss directly via Signal & vaporize bullets!
-    if rl.IsKeyPressed(.B) || rl.IsKeyPressed(.X) {
+    // --- Player EMP / Stun Trigger (E / B / X key) ---
+    if g.player.emp_cooldown > 0.0 do g.player.emp_cooldown -= sim_dt
+
+    do_emp := rl.IsKeyPressed(.E) || rl.IsKeyPressed(.B) || rl.IsKeyPressed(.X)
+    if do_emp && g.player.emp_cooldown <= 0.0 {
+        g.player.emp_cooldown = 1.8 // Prevent runaway EMP spamming while boss is stunned
         coroutine.signal_emit(&g.sched, &g.boss.stun_signal)
         bullets_destroyed := 0
         for i := g.projectile_count - 1; i >= 0; i -= 1 {
@@ -667,9 +692,9 @@ game_update :: proc(g: ^Game, dt: f32) {
                 dmg: f32 = 12.0
                 if g.boss.shield_alpha > 0.3 {
                     dmg = 2.0
-                    spawn_floating_text("BLOCKED!", g.boss.pos + {rand.float32_range(-30, 30), -50}, rl.SKYBLUE)
+                    spawn_floating_text("BLOCKED!", g.boss.pos + {game_rand_f32(-30, 30), -50}, rl.SKYBLUE)
                 } else {
-                    spawn_floating_text(fmt.tprintf("-%.0f", dmg), g.boss.pos + {rand.float32_range(-40, 40), -40}, rl.YELLOW)
+                    spawn_floating_text(fmt.tprintf("-%.0f", dmg), g.boss.pos + {game_rand_f32(-40, 40), -40}, rl.YELLOW)
                 }
                 g.boss.hp -= dmg
                 spawn_particles(p.pos, 6, rl.GOLD)
@@ -855,15 +880,15 @@ game_render :: proc(g: ^Game) {
     // Instructions & Pause Banner
     if coroutine.scheduler_is_paused(&g.sched) {
         flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
-        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", g.step_count, g.last_step_dt, g.game_time)
-        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 850, 24, {15, 18, 30, 220})
-        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 850, 24, flash_col)
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | N / .: 1-Frame | M: 10-Frames | Hold N: Slow-Mo | P: Resume", g.step_count, g.last_step_dt, g.game_time)
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 900, 24, {15, 18, 30, 220})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 900, 24, flash_col)
         rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
     } else {
-        rl.DrawText("WASD: Move | LMB: Shoot | Space: Dash | B: EMP Parry | F1: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+        rl.DrawText("WASD: Move | LMB/J: Shoot | Space/RMB: Dash | E/B: EMP | H/Tab: Hierarchy | P: Pause | R: Restart", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
     }
 
-    // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
+    // --- Live Coroutine Hierarchy Visualizer Overlay (H / TAB / F1) ---
     if g.show_coroutine_debugger {
         panel_x: i32 = 25
         panel_y: i32 = 140
@@ -875,9 +900,9 @@ game_render :: proc(g: ^Game) {
 
         pause_header := ""
         if coroutine.scheduler_is_paused(&g.sched) {
-            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", g.step_count, g.game_time)
+            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | N: 1F, M: 10F]", g.step_count, g.game_time)
         }
-        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (F1) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
+        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (H / TAB) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
 
         stats := coroutine.scheduler_pool_stats(&g.sched)
         stats_text := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
@@ -956,13 +981,14 @@ game_render :: proc(g: ^Game) {
     if g.game_over {
         rl.DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, {0, 0, 0, 180})
         rl.DrawText("GAME OVER", SCREEN_WIDTH/2 - 140, SCREEN_HEIGHT/2 - 40, 48, rl.RED)
-        rl.DrawText("Press ESC to exit", SCREEN_WIDTH/2 - 80, SCREEN_HEIGHT/2 + 20, 20, rl.RAYWHITE)
+        rl.DrawText("Press R or ENTER to Restart", SCREEN_WIDTH/2 - 140, SCREEN_HEIGHT/2 + 20, 20, rl.RAYWHITE)
     }
 
     if g.victory {
         rl.DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, {0, 0, 0, 180})
         rl.DrawText("VICTORY ACHIEVED!", SCREEN_WIDTH/2 - 240, SCREEN_HEIGHT/2 - 40, 48, rl.GOLD)
         rl.DrawText("All Boss AI Coroutines Terminated Cleanly", SCREEN_WIDTH/2 - 200, SCREEN_HEIGHT/2 + 20, 20, rl.GREEN)
+        rl.DrawText("Press R or ENTER to Play Again", SCREEN_WIDTH/2 - 150, SCREEN_HEIGHT/2 + 55, 20, rl.RAYWHITE)
     }
 
     rl.EndDrawing()
@@ -972,30 +998,89 @@ game_render :: proc(g: ^Game) {
 // Main Application Entry
 // ============================================================================
 
-main :: proc() {
-    context.logger = log.create_console_logger()
-
-    track: mem.Tracking_Allocator
-    mem.tracking_allocator_init(&track, context.allocator)
-    context.allocator = mem.tracking_allocator(&track)
-    defer {
-        for _, leak in track.allocation_map {
-            fmt.printf("%v leaked %v bytes\n", leak.location, leak.size)
-        }
-        mem.tracking_allocator_clear(&track)
+when ODIN_OS == .JS {
+    main :: proc() {
+        // Default WebAssembly entrypoint executed upon module instantiation
     }
 
-    rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "SkookumScript Concurrency Engine - Boss Fight Demo")
-    defer rl.CloseWindow()
-    rl.SetTargetFPS(60)
+    g_wasm_game: Game
+    g_wasm_game_ready: bool
+    g_wasm_step_count: int
 
-    game: Game
-    game_init(&game)
-    defer game_destroy(&game)
+    @(export)
+    game_wasm_init :: proc "c" () -> bool {
+        context = runtime.default_context()
+        fmt.println("[Game Wasm] game_wasm_init: initializing window and game...")
+        rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Coroutines Boss AI Demo")
+        rl.SetTargetFPS(60)
+        game_init(&g_wasm_game)
+        g_wasm_game_ready = true
+        fmt.println("[Game Wasm] game_init complete! Active game set:", &g_wasm_game != nil, "| Ready Queue:", len(g_wasm_game.sched.ready_queue), "| Timer Heap:", len(g_wasm_game.sched.timer_heap))
+        return true
+    }
 
-    for !rl.WindowShouldClose() {
-        dt := rl.GetFrameTime()
-        game_update(&game, dt)
-        game_render(&game)
+    @(export)
+    game_wasm_step :: proc "c" (dt: f32) -> bool {
+        context = runtime.default_context()
+        if !g_wasm_game_ready do return false
+        g_wasm_step_count += 1
+        if g_wasm_step_count == 1 || g_wasm_step_count % 180 == 0 {
+            fmt.println("[Game Wasm] Step #", g_wasm_step_count, "| dt:", dt, "| Boss HP:", g_wasm_game.boss.hp, "| Player HP:", g_wasm_game.player.hp, "| Camera Offset:", g_wasm_game.camera_offset)
+        }
+        game_update(&g_wasm_game, dt)
+        game_render(&g_wasm_game)
+        return true
+    }
+
+    @(export)
+    game_wasm_destroy :: proc "c" () {
+        context = runtime.default_context()
+        if g_wasm_game_ready {
+            fmt.println("[Game Wasm] game_wasm_destroy: cleaning up...")
+            game_destroy(&g_wasm_game)
+            rl.CloseWindow()
+            g_wasm_game_ready = false
+            fmt.println("[Game Wasm] Cleanup complete.")
+        }
+    }
+
+    @(export)
+    game_wasm_get_projectile_count :: proc "c" () -> int {
+        return g_wasm_game.projectile_count
+    }
+
+    @(export)
+    game_wasm_get_active_fibers :: proc "c" () -> int {
+        context = runtime.default_context()
+        stats := coroutine.scheduler_pool_stats(&g_wasm_game.sched)
+        return stats.active_fibers
+    }
+} else {
+    main :: proc() {
+        context.logger = log.create_console_logger()
+
+        track: mem.Tracking_Allocator
+        mem.tracking_allocator_init(&track, context.allocator)
+        context.allocator = mem.tracking_allocator(&track)
+        defer {
+            for _, leak in track.allocation_map {
+                fmt.printf("%v leaked %v bytes\n", leak.location, leak.size)
+            }
+            mem.tracking_allocator_clear(&track)
+        }
+
+        rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "SkookumScript Inspired Concurrency Engine - Boss Fight Demo")
+        defer rl.CloseWindow()
+        rl.SetTargetFPS(60)
+
+        game: Game
+        game_init(&game)
+        defer game_destroy(&game)
+
+        for !rl.WindowShouldClose() {
+            dt := rl.GetFrameTime()
+            game_update(&game, dt)
+            game_render(&game)
+        }
     }
 }

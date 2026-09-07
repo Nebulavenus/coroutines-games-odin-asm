@@ -246,6 +246,9 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.wake_frame = 0
     fiber.wake_clock = .Sim_Scaled
     fiber.heap_index = -1
+    fiber.ticker_interval = 0
+    fiber.ticker_next_wake = 0
+    fiber.ticker_use_real = false
     fiber.condition_fn = nil
     fiber.condition_data = nil
     fiber.entry_proc = nil
@@ -320,6 +323,9 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.wake_frame = 0
     fiber.wake_clock = .Sim_Scaled
     fiber.heap_index = -1
+    fiber.ticker_interval = 0
+    fiber.ticker_next_wake = 0
+    fiber.ticker_use_real = false
     fiber.condition_fn = nil
     fiber.condition_data = nil
     fiber.entry_proc = nil
@@ -467,6 +473,11 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
         sp_words[3] = rawptr(fiber)                  // s2 (Self-Identity)
 
         fiber.saved_sp = rawptr(sp)
+    } else when ODIN_ARCH == .wasm32 {
+        fiber.wasm_started = false
+        fiber.asyncify_buf.top = u32(uintptr(&fiber.asyncify_buf.storage[0]))
+        fiber.asyncify_buf.end = u32(uintptr(&fiber.asyncify_buf.storage[0]) + ASYNCIFY_STORAGE_SIZE)
+        fiber.saved_sp = fiber
     }
 }
 
@@ -488,6 +499,8 @@ fiber_trampoline_entry :: proc "c" () {
         #no_bounds_check {
             fiber = (^Fiber)(get_s2_reg())
         }
+    } else when ODIN_ARCH == .wasm32 {
+        fiber = g_wasm_current_fiber
     }
 
     if fiber == nil do return
@@ -520,8 +533,12 @@ fiber_trampoline_entry :: proc "c" () {
 }
 
 fiber_yield_final :: proc "c" (fiber: ^Fiber) {
-    if fiber.sched != nil {
-        fiber_context_switch(&fiber.saved_sp, fiber.sched.scheduler_sp)
+    when ODIN_ARCH == .wasm32 {
+        return
+    } else {
+        if fiber.sched != nil {
+            fiber_context_switch(&fiber.saved_sp, fiber.sched.scheduler_sp)
+        }
     }
 }
 

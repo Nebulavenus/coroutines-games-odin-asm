@@ -4,6 +4,7 @@ import "base:runtime"
 import "base:intrinsics"
 import "core:math"
 import "core:mem"
+import "core:fmt"
 
 // ============================================================================
 // Spawning Coroutines
@@ -352,8 +353,9 @@ ticker_init :: proc(t: ^Ticker, interval_seconds: f32, use_real_time: bool = fal
     t.next_wake = 0.0
 }
 
-ticker_wait :: proc(f: ^Fiber, t: ^Ticker) {
+ticker_wait_struct :: proc(f: ^Fiber, t: ^Ticker) {
     if f == nil || f.sched == nil || t == nil do return
+    if t.interval <= 0.0001 do t.interval = 0.0001
 
     now := t.use_real ? f.sched.clock.real_time : f.sched.clock.sim_time
     if t.next_wake <= 0.0 {
@@ -388,6 +390,62 @@ ticker_wait :: proc(f: ^Fiber, t: ^Ticker) {
             yield_frame(f)
         }
     }
+}
+
+// Built-in fiber-owned zero-drift ticker wait.
+// Stores interval and next wake timestamp directly on the Fiber struct in persistent memory.
+// 100% immune to WebAssembly Asyncify shadow-stack corruption across interleaved yields.
+ticker_wait_direct :: proc(f: ^Fiber, interval_seconds: f32, use_real_time: bool = false) {
+    if f == nil || f.sched == nil do return
+    interval := max(0.0001, interval_seconds)
+    now := use_real_time ? f.sched.clock.real_time : f.sched.clock.sim_time
+
+    if f.ticker_interval != interval || f.ticker_use_real != use_real_time || f.ticker_next_wake <= 0.0 {
+        f.ticker_interval = interval
+        f.ticker_use_real = use_real_time
+        f.ticker_next_wake = now + f64(interval)
+    } else {
+        f.ticker_next_wake += f64(interval)
+        // If system fell severely behind, clamp forward to prevent cascade burst
+        if f.ticker_next_wake < now {
+            f.ticker_next_wake = now + f64(interval)
+        }
+    }
+
+    if f.ticker_next_wake > now {
+        f.wake_time = f.ticker_next_wake
+        if use_real_time {
+            f.wake_clock = .Real_Time
+            f.status = .Sleeping_Real_Time
+            real_timer_heap_push(f.sched, f)
+        } else {
+            f.wake_clock = .Sim_Scaled
+            f.status = .Sleeping_Time
+            timer_heap_push(f.sched, f)
+        }
+        f.stored_context = context
+        fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+        context = f.stored_context
+    } else {
+        if use_real_time {
+            yield_real(f)
+        } else {
+            yield_frame(f)
+        }
+    }
+}
+
+ticker_wait :: proc{ticker_wait_struct, ticker_wait_direct}
+
+// Convenience alias: Fiber-owned ticker wait (safe against Wasm shadow stack aliasing)
+wait_ticker :: proc(f: ^Fiber, interval_seconds: f32, use_real_time: bool = false) {
+    ticker_wait_direct(f, interval_seconds, use_real_time)
+}
+
+// Reset/rebase the fiber-owned ticker to cleanly start next interval from now + interval
+ticker_rebase :: proc(f: ^Fiber) {
+    if f == nil do return
+    f.ticker_next_wake = 0.0
 }
 
 fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
@@ -746,6 +804,27 @@ ease_out_elastic :: proc(t: f32) -> f32 {
     return math.pow(2.0, -10.0 * t) * math.sin((t * 10.0 - 0.75) * c4) + 1.0
 }
 
+ease_apply :: #force_inline proc(fn: Ease_Proc, t: f32) -> f32 {
+    if fn == nil || fn == ease_linear {
+        return t
+    } else if fn == ease_in_out_quad {
+        return ease_in_out_quad(t)
+    } else if fn == ease_in_quad {
+        return ease_in_quad(t)
+    } else if fn == ease_out_quad {
+        return ease_out_quad(t)
+    } else if fn == ease_in_out_cubic {
+        return ease_in_out_cubic(t)
+    } else if fn == ease_out_bounce {
+        return ease_out_bounce(t)
+    } else if fn == ease_out_back {
+        return ease_out_back(t)
+    } else if fn == ease_out_elastic {
+        return ease_out_elastic(t)
+    }
+    return fn(t)
+}
+
 tween_f32 :: proc(
     f: ^Fiber,
     output: ^f32,
@@ -759,11 +838,6 @@ tween_f32 :: proc(
         return
     }
 
-    ease_fn: Ease_Proc = ease_linear
-    if ease != nil {
-        ease_fn = ease
-    }
-
     elapsed: f32 = 0.0
     output^ = start
 
@@ -771,7 +845,7 @@ tween_f32 :: proc(
         yield_frame(f)
         elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_fn(t)
+        eased_t := ease_apply(ease, t)
         output^ = start + (target - start) * eased_t
     }
 
@@ -791,11 +865,6 @@ tween_vec2 :: proc(
         return
     }
 
-    ease_fn: Ease_Proc = ease_linear
-    if ease != nil {
-        ease_fn = ease
-    }
-
     elapsed: f32 = 0.0
     output^ = start
 
@@ -803,7 +872,7 @@ tween_vec2 :: proc(
         yield_frame(f)
         elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_fn(t)
+        eased_t := ease_apply(ease, t)
         output.x = start.x + (target.x - start.x) * eased_t
         output.y = start.y + (target.y - start.y) * eased_t
     }
@@ -824,11 +893,6 @@ tween_vec3 :: proc(
         return
     }
 
-    ease_fn: Ease_Proc = ease_linear
-    if ease != nil {
-        ease_fn = ease
-    }
-
     elapsed: f32 = 0.0
     output^ = start
 
@@ -836,7 +900,7 @@ tween_vec3 :: proc(
         yield_frame(f)
         elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_fn(t)
+        eased_t := ease_apply(ease, t)
         output.x = start.x + (target.x - start.x) * eased_t
         output.y = start.y + (target.y - start.y) * eased_t
         output.z = start.z + (target.z - start.z) * eased_t
@@ -858,11 +922,6 @@ tween_vec4 :: proc(
         return
     }
 
-    ease_fn: Ease_Proc = ease_linear
-    if ease != nil {
-        ease_fn = ease
-    }
-
     elapsed: f32 = 0.0
     output^ = start
 
@@ -870,7 +929,7 @@ tween_vec4 :: proc(
         yield_frame(f)
         elapsed += delta_time(f)
         t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_fn(t)
+        eased_t := ease_apply(ease, t)
         output.x = start.x + (target.x - start.x) * eased_t
         output.y = start.y + (target.y - start.y) * eased_t
         output.z = start.z + (target.z - start.z) * eased_t

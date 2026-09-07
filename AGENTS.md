@@ -1,4 +1,4 @@
-# Universal TokToken MCP Enforcement & Engineering Manual
+# Universal TokToken MCP Enforcement & Engineering Manual (v0.6.0)
 
 > [!IMPORTANT]
 > **CRITICAL RUNTIME DIRECTIVE & CONTEXT TAX LAW**:
@@ -20,7 +20,7 @@ Never use linear file inspection (`inspect_file`, `view_file`) or raw text scann
 `inspect_file` / `view_file` is authorized **ONLY** for non-symbol configuration manifests, documentation, and data tables:
 * Documentation & Notes: `*.md`, `*.txt`, `*.rst`
 * Configurations: `*.toml`, `*.json`, `*.yaml`, `*.yml`, `*.ini`, `.env*`
-* Build Manifests: `CMakeLists.txt`, `Makefile`, `Justfile`
+* Build Manifests: `CMakeLists.txt`, `Makefile`, `Justfile`, `build.ps1`
 * **Hard Window Ceiling**: Never request more than **35 lines** per `inspect_file` call. Linear reading of entire files is prohibited.
 
 ### ✅ Permitted Native Operations
@@ -74,6 +74,8 @@ Locate exact symbol identifiers without pulling source code implementations into
    `toktoken(action="inspect_outline", target="src/module.odin", options={"compact": true})`
 3. **Find string literals, constants, or log messages**:
    `toktoken(action="search_text", target="ERROR_BUFFER_FULL", options={"filter": "src", "group_by": "file", "limit": 5})`
+4. **Search symbols across all local dependencies** (`.toktoken.json`):
+   `toktoken(action="search_symbols", target="target_name", options={"with_deps": true, "compact": true, "limit": 5})`
 
 ### Turn 2: Exact Context Retrieval (Single Turn)
 > [!TIP]
@@ -86,15 +88,17 @@ Once the canonical symbol ID (`path/file.ext::symbol_name#kind`) is identified, 
    *(Retrieves definition source, parameters, outbound imports, and immediate module outline in 1 step).*
 2. **Batched Symbol Retrieval**:
    `toktoken(action="inspect_symbol", target="src/a.odin::symA#function,src/b.odin::symB#class", options={"compact": true})`
+3. **Dependency Symbol Inspection**:
+   `toktoken(action="inspect_bundle", target="@alias::path/file.ext::symbol#kind", options={"compact": true})`
 
 ---
 
 ## 4. Mandatory Batching & Operational Turn Consolidation
 
-Every standalone tool invocation adds a conversational turn ($n$), multiplying the cumulative context re-transmission cost[cite: 1]. Consolidate all operations into minimal turns:
+Every standalone tool invocation adds a conversational turn ($n$), multiplying the cumulative context re-transmission cost. Consolidate all operations into minimal turns:
 
 ### 4.1 Multi-Symbol Batching (Single-Turn AST Retrieval)
-Never emit sequential symbol requests across consecutive conversational turns[cite: 1].
+Never emit sequential symbol requests across consecutive conversational turns.
 * ❌ **Forbidden**: Turn 1 (`inspect_symbol(A)`) $\rightarrow$ Turn 2 (`inspect_symbol(B)`) $\rightarrow$ Turn 3 (`inspect_symbol(C)`).
 * ✅ **Mandatory**: Pass comma-separated symbol IDs in a single turn:
   `toktoken(action="inspect_symbol", target="src/net.odin::listen#function,src/net.odin::accept#function,src/net.odin::Socket#class", options={"compact": true})`
@@ -110,14 +114,16 @@ Task and state managers must NEVER be called per micro-operation.
 
 ### 4.3 Documentation & Non-Code Manifest Inspection Batching
 * ❌ **Forbidden**: Probing configuration files, plans, or documentation across multiple sequential window reads (`inspect_file(lines="1-20")`, then `inspect_file(lines="21-40")`).
-* ✅ **Mandatory**: If reading documentation (`*.md`), task lists (`PLAN.md`), or manifests (`*.toml`, `*.json`), inspect the exact target section or bounded region (up to 35 lines) in a single turn. Use `search_text` to locate target sections within large documents before reading.---
+* ✅ **Mandatory**: If reading documentation (`*.md`), task lists (`PLAN.md`), or manifests (`*.toml`, `*.json`), inspect the exact target section or bounded region (up to 35 lines) in a single turn. Use `search_text` to locate target sections within large documents before reading.
+
+---
 
 ## 5. Terminal & Shell Command Execution Hygiene (`run_command`)
 
 Shell command output is the largest single source of unpruned context bloat. All terminal commands MUST adhere to strict output suppression:
 
 1. **Quiet Flags on Builds & Compilers**:
-   * Odin: `odin test src/ -quiet` or `odin build src/ -error-pos-style:unix`
+   * Odin: `odin test src/ -quiet` or `odin build src/ -error-pos-style:unix` (or via `.\build.ps1`)
    * C/C++ / CMake: `toktoken exec -- cmake --build build --config Debug` or `ctest --test-dir build --output-on-failure`
    * Rust / Cargo: `cargo test --quiet` or `cargo check --quiet`
    * Go: `go test -short ./...`
@@ -163,17 +169,19 @@ Every source code modification MUST follow the strict 5-step cycle:
 4. **Sync Index**: `toktoken(action="index_file", target="path/to/modified_file.ext")` *(Mandatory immediately after write)*
 5. **Verify**: `run_command(CommandLine="toktoken exec -- <build/test command>")`
 
-> **Note**: Do NOT invoke `manage_task` or state tracking tools inside this loop. Sync task trackers only after the entire feature passes verification.---
+> **Note**: Do NOT invoke `manage_task` or state tracking tools inside this loop. Sync task trackers only after the entire feature passes verification.
 
-## 9. Complete TokToken Command Catalog (All 27 Capabilities)
+---
+
+## 9. Complete TokToken Command Catalog (All 31 Capabilities)
 
 All sub-actions are executed via `ToolName="toktoken"`. Target parameters automatically map to the appropriate subtool:
 
 ### 9.1 Code Search & Discovery
 | Action / Subtool | Target Format | Key Options | Description & Usage |
 | :--- | :--- | :--- | :--- |
-| `"search"` / `"search_symbols"` | `"query"` | `{"kind": "function,class", "compact": true, "limit": 10}` | Search symbols across languages with rank weighting. |
-| `"search_text"` / `"grep"` | `"pattern"` | `{"filter": "src", "group_by": "file", "limit": 10}` | Literal string or regex code search (always filter directory). |
+| `"search"` / `"search_symbols"` | `"query"` | `{"kind": "function,class", "compact": true, "limit": 10, "with_deps": true, "dependency": "alias"}` | Search symbols across languages with rank weighting (optionally across or targeted to dependencies). |
+| `"search_text"` / `"grep"` | `"pattern"` | `{"filter": "src", "group_by": "file", "limit": 10, "with_deps": true, "dependency": "alias"}` | Literal string or regex code search (always filter directory; supports `--with-deps`). |
 | `"search_similar"` | `"path::symbol#kind"` | `{"limit": 5}` | Discover related symbols or alternative implementations. |
 | `"search_cooccurrence"` | `"SymbolA,SymbolB"` | `{"limit": 5}` | Find files sharing architectural patterns or co-occurring symbols. |
 | `"suggest"` / `"overview"` | `""` | `{}` | Overview of unfamiliar repos (entrypoints, distributions, keywords). |
@@ -181,9 +189,9 @@ All sub-actions are executed via `ToolName="toktoken"`. Target parameters automa
 ### 9.2 Code Inspection & Context Assembly
 | Action / Subtool | Target Format | Key Options | Description & Usage |
 | :--- | :--- | :--- | :--- |
-| `"inspect"` / `"inspect_symbol"` | `"path::symbol#kind"` | `{"compact": true, "virtual": false}` | Retrieve exact definition source code (comma-separate IDs for batching). |
-| `"inspect_bundle"` | `"path::symbol#kind"` | `{"compact": true, "format": "markdown"}` | **Primary context tool**: source + imports + outline + siblings in one turn. |
-| `"inspect_outline"` | `"path/to/file.ext"` | `{"compact": true}` | File symbol table of contents (without implementation bodies). |
+| `"inspect"` / `"inspect_symbol"` | `"path::symbol#kind"` or `"@alias::path::sym#kind"` | `{"compact": true, "virtual": false, "dependency": "alias"}` | Retrieve exact definition source code (comma-separate IDs for batching). |
+| `"inspect_bundle"` | `"path::symbol#kind"` or `"@alias::path::sym#kind"` | `{"compact": true, "format": "markdown", "dependency": "alias"}` | **Primary context tool**: source + imports + outline + siblings in one turn. |
+| `"inspect_outline"` | `"path/to/file.ext"` or `"@alias::path/to/file.ext"` | `{"compact": true, "dependency": "alias"}` | File symbol table of contents (without implementation bodies). |
 | `"inspect_file"` | `"path/to/file.ext"` | `{"lines": "10-45"}` | Bounded line viewing for non-symbol blocks ONLY (max 35 lines). |
 | `"inspect_tree"` | `""` | `{"depth": 2}` | High-level workspace directory structure. |
 | `"inspect_hierarchy"` | `"path/to/file.ext"` | `{}` | Class/type inheritance tree and nested member hierarchy. |
@@ -212,6 +220,14 @@ All sub-actions are executed via `ToolName="toktoken"`. Target parameters automa
 | `"cache_clear"` | `""` | `{"all": true, "force": true}` | Purge index cache for current project or globally. |
 | `"help"` | `"tool_name"` | `{}` | View parameter schemas, usage examples, and canonical kinds. |
 
+### 9.5 Local Dependency Management
+| Action / Subtool | Target Format | Key Options | Description & Usage |
+| :--- | :--- | :--- | :--- |
+| `"deps_list"` | `""` | `{}` | List registered local dependencies, index status, and symbol counts. |
+| `"deps_add"` | `"path/to/dep"` | `{"alias": "name"}` | Register a local dependency directory and build its SQLite index if needed. |
+| `"deps_update"` | `"[alias]"` | `{}` | Incrementally sync dependency indices based on file mtimes. |
+| `"deps_remove"` | `"alias"` | `{}` | Deregister a dependency from `.toktoken.json`. |
+
 ---
 
 ## 10. Multi-Language 15 Canonical Kinds Taxonomy
@@ -235,6 +251,7 @@ Never query language-specific syntax keywords (e.g. `proc`, `struct`, `fn`, `typ
 | **Blade / Twig / Razor** | `blade` / `twig` / `razor` | `@section`, `{% block %}`, `@code`<br>components, directives | `directive`, `function`, `variable` |
 | **Markdown / Docs** | `markdown` | `# Heading 1`<br>`## Heading 2`<br>`### Heading 3+` | `chapter`<br>`section`<br>`subsection` |
 
+---
 
 # Memory (Project-Scoped Durable Memory)
 
@@ -273,11 +290,13 @@ Never edit or delete anything under `.\.optmem\memory` manually: the tool manage
 ## Subagents
 
 Parallel primary sessions in this workspace may write memories. A subagent must not:
-When spawning a subagent, explicitly instruct: `You are a subagent. Don't run memo.`---
+When spawning a subagent, explicitly instruct: `You are a subagent. Don't run memo.`
+
+---
 
 # Odin Programming Specific Guideline
-The project folder contains .\build.ps1 script to run Odin commands like build, check, test. Adjust it as needed and use instead of calling manually Odin commands. Sometimes it may be used if .\build.ps1 don't contains them and they are too specific.
-Read docs/ARCHITECTURE.md to understand what project goal is and its design decision.
+The project folder contains `.\build.ps1` script to run Odin commands like build, check, test. Adjust it as needed and use instead of calling manually Odin commands. Sometimes it may be used if `.\build.ps1` doesn't contain them and they are too specific.
+Read `docs/ARCHITECTURE.md` to understand what project goal is and its design decisions.
 For this project we need TDD approach, to cover it with unit tests and progress with an implementation.
-Document changes in CHANGELOG.md if it exists.
-Use new odin feature its in docs/ASM.md.
+Document changes in `CHANGELOG.md` if it exists.
+Use new odin feature, it's in `docs/ASM.md`.

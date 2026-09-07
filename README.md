@@ -85,7 +85,7 @@ The documentation is organized into **4 structured engineering tracks**:
 * [`docs/tutorials/03_structured_concurrency.md`](docs/tutorials/03_structured_concurrency.md) — Boss Combat with `sync` and `race`
 * [`docs/tutorials/04_advanced_control_flow.md`](docs/tutorials/04_advanced_control_flow.md) — AI Decision Trees with `rush`, `fallback` & `with_timeout`
 * [`docs/tutorials/05_synchronization.md`](docs/tutorials/05_synchronization.md) — True ZII Signals, `Fiber_Mutex`, `Channel(T)` & `Event(T)`
-* [`COOKBOOK.md`](COOKBOOK.md) — 17 Production Gameplay Architecture Recipes
+* [`docs/COOKBOOK.md`](docs/COOKBOOK.md) — 17 Production Gameplay Architecture Recipes
 
 ### Track 2: Engine Integration & Architecture
 *Target Audience: Lead gameplay engineers, engine architects.*
@@ -100,6 +100,8 @@ The documentation is organized into **4 structured engineering tracks**:
 ### Track 3: Low-Level Hardware, Memory & Concurrency Specs
 *Target Audience: Systems programmers, runtime developers.*
 * [`docs/tech/TECH_ASM.md`](docs/tech/TECH_ASM.md) — AMD64 Inline ASM Switch, ABI Registers, Trampolines & `#volatile` Barriers
+* [`docs/tech/TECH_WASM_ASYNCIFY.md`](docs/tech/TECH_WASM_ASYNCIFY.md) — WebAssembly Asyncify Architecture, State Machine Unwind/Rewind & Leaf Yield Protocol
+* [`docs/wasm/README.md`](docs/wasm/README.md) — Dedicated WebAssembly Suite: Dual-Stack Memory, Zero-C Canvas & WasmFX Roadmap
 * [`docs/tech/TECH_CLOCK.md`](docs/tech/TECH_CLOCK.md) — 3-Tier Clock Math, Precision Limits, Dual Min-Heaps & Zero-Drift Ticks
 * [`docs/tech/TECH_MEMORY.md`](docs/tech/TECH_MEMORY.md) — 1MB Slabs, Canaries, Hardware `PAGE_NOACCESS` / `PROT_NONE`, 4KB Arenas & Memory Wall
 * [`docs/tech/TECH_CONCURRENCY.md`](docs/tech/TECH_CONCURRENCY.md) — Structured Concurrency Tree Topology & 4-Stage Zero-Shift Dispatch Pipeline
@@ -113,8 +115,8 @@ The documentation is organized into **4 structured engineering tracks**:
 * [`docs/guides/GUIDE_DETERMINISM.md`](docs/guides/GUIDE_DETERMINISM.md) — Discrete Integer Ticks, Float Safety, Netcode & Replays
 * [`docs/guides/GUIDE_PERFORMANCE.md`](docs/guides/GUIDE_PERFORMANCE.md) — Zero-Allocation Guarantees, Pre-Warming & Cache Sizing
 * [`docs/guides/GUIDE_DEBUGGER.md`](docs/guides/GUIDE_DEBUGGER.md) — Visual F1 Hierarchy Tree HUD, Stack Usage Profiling & Freeze-Step Control
-* [`ARCHITECTURE.md`](ARCHITECTURE.md) — Complete Engine Architecture Specification
-* [`REPORTS.md`](REPORTS.md) — Verification Matrix & 161-Test Compliance Report
+* [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Complete Engine Architecture Specification
+* [`docs/REPORTS.md`](docs/REPORTS.md) — Verification Matrix & 161-Test Compliance Report
 
 ---
 
@@ -310,6 +312,7 @@ A PowerShell build script [`build.ps1`](build.ps1) is provided for all workflows
 * **[Multi-ISA Stackful Coroutines & Cross-Platform ASM Manual (`PLAN6.md`)](docs/PLAN6.md)**: Production implementation guide, SSA findings, Link Register return trampolines, and opcode tables.
 * **[Inline Assembly Guide & Principles (`ASM.md`)](docs/ASM.md)**: Low-level inline assembly conventions and `#byte` machine code standards.
 * **[Low-Level Hardware & Inline Assembly Architecture (`TECH_ASM.md`)](docs/tech/TECH_ASM.md)**: Hardware matrices, register preservation contracts, and stack frame layouts for AMD64, ARM64, and RISC-V 64.
+* **[WebAssembly Asyncify Architecture & Implementation (`TECH_WASM_ASYNCIFY.md`)](docs/tech/TECH_WASM_ASYNCIFY.md)**: WebAssembly Harvard architecture, Binaryen Asyncify transformation, leaf yield protocols, and dual amalgamation.
 * **[Odin Inline Assembly Compiler Analysis & Roadmap (`TECH_ODIN_INLINE_ASM_ANALYSIS.md`)](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md)**: Compiler frontend internals, SSA register liveness diagnostics, and language roadmap for high-level assembly context switching.
 * **[Memory Architecture & Stack Safety (`TECH_MEMORY.md`)](docs/tech/TECH_MEMORY.md)**: Virtual memory guard pages, stack watermarking, and canaries.
 * **[Multi-Domain Engine Clocks (`TECH_CLOCK.md`)](docs/tech/TECH_CLOCK.md)**: Continuous zero-drift fixed ticks and time dilation.

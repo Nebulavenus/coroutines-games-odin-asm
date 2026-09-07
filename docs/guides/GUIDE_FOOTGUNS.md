@@ -369,6 +369,37 @@ for elapsed < duration {
 
 ---
 
+## Footgun 13: WebAssembly Linear Memory Shadow-Stack Aliasing Across Asyncify Yields
+
+### The Mistake
+```odin
+// DANGEROUS ON WEBASSEMBLY (js_wasm32):
+boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
+    ticker: coroutine.Ticker // <-- Local struct allocated on shared LLVM shadow stack!
+    coroutine.ticker_init(&ticker, 0.1)
+    for {
+        coroutine.ticker_wait(f, &ticker) // Passes pointer across yield
+        fire_bullet(boss)
+    }
+}
+```
+
+### What Happens
+WebAssembly uses a **dual-stack model**. Asyncify serializes and restores the **VM Execution Stack** (local primitives `i32`, `f32`), but **does NOT save or partition linear memory** (`memory.buffer`). Local variables whose addresses are taken (`&ticker`) reside on the C/LLVM shadow stack pointed to by `(global $__stack_pointer)`.
+
+Because all fibers share the single shadow stack, when `boss_ai` sleeps or stuns, other interleaved fibers push their stack frames down from `$__stack_pointer` and **physically overwrite `ticker` in linear memory**. When `boss_ai` wakes, `ticker.interval` has been corrupted (often to `0.0`), triggering a runaway 1-frame busy spin!
+
+### The Solution
+1. **Use Fiber-Owned Timing**: Use `coroutine.wait_ticker(f, interval)` or `coroutine.ticker_wait(f, interval)`. Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
+2. **Keep Scalar Values in Locals**: Primitive values (`timer: f32`, `ticks: int`) live in Wasm VM registers and are perfectly restored by Asyncify.
+3. **Store Composite State in Entities**: Store multi-field cross-yield state in persistent entities (`^Boss`, `^Player`) or inside the fiber's private 4KB arena (`f.temp_arena`).
+4. **Deep Dive**: See [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md) for full architectural analysis and stack-switching roadmap.
+
+### The Rule
+> **Never retain pointers to local stack-allocated structs across yields when targeting WebAssembly. Use fiber-owned primitives (`wait_ticker`), fiber temp arenas (`f.temp_arena`), or persistent entity structs.**
+
+---
+
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
 ```text

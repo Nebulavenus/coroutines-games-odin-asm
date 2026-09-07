@@ -292,4 +292,4 @@ Between August 24 and August 28, 2026, Odin merged several major PRs authored by
 - **`b4cf9b14b` (`asm: Implement sub-register width analysis`)**: Added the `in_w` bit-width lattice, initializing raw physical registers `%reg` to 0 defined bits at entry block 0.
 - **`6f65d775c` (`Re-add check_asm_cfg_liveness`)**: Enforced dead-write detection on unread register modifications near template exit.
 
-These compiler enhancements broke the original high-level code with strict compile-time errors. Consequently, in commit [`f6ae2a7`](CHANGELOG.md), context switching was migrated to `#byte` machine code arrays, while high-level inline assembly was retained for stack and register extractors (`get_rsp`, `get_sp`, `get_r12_reg`, `get_x19_reg`, `get_s2_reg`).
+These compiler enhancements broke the original high-level code with strict compile-time errors. Consequently, in commit [`f6ae2a7`](../CHANGELOG.md), context switching was migrated to `#byte` machine code arrays, while high-level inline assembly was retained for stack and register extractors (`get_rsp`, `get_sp`, `get_r12_reg`, `get_x19_reg`, `get_s2_reg`).

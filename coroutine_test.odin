@@ -1,3 +1,4 @@
+#+build !js
 package coroutine
 
 import "core:testing"
@@ -8494,6 +8495,61 @@ test_high_level_inline_asm_stack_and_register_extractors :: proc(t: ^testing.T) 
     }
 }
 
+// Test 189: Fiber-Owned Built-in Zero-Drift Ticker & Rebase Safety
+@(test)
+test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ticks := 0
+    spawn(&sched, proc(f: ^Fiber, count: ^int) {
+        // Use direct fiber-owned ticker (no stack struct allocated)
+        for {
+            wait_ticker(f, 0.05)
+            count^ += 1
+        }
+    }, &ticks)
+
+    // Step 0.05s * 5 = 0.25s:
+    // Step 1 (0.05s): fiber initializes ticker, sets next_wake = 0.10s, sleeps
+    // Step 2 (0.10s): tick 1, next_wake = 0.15s
+    // Step 3 (0.15s): tick 2, next_wake = 0.20s
+    // Step 4 (0.20s): tick 3, next_wake = 0.25s
+    // Step 5 (0.25s): tick 4, next_wake = 0.30s
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.05)
+    }
+    testing.expect_value(t, ticks, 4)
+
+    // Rebase and multi-fiber non-interference test
+    fiber_a_ticks := 0
+    fiber_b_ticks := 0
+
+    spawn(&sched, proc(f: ^Fiber, a_ptr: ^int) {
+        for {
+            ticker_wait(f, 0.02)
+            a_ptr^ += 1
+        }
+    }, &fiber_a_ticks)
+
+    spawn(&sched, proc(f: ^Fiber, b_ptr: ^int) {
+        for {
+            ticker_wait(f, 0.04)
+            b_ptr^ += 1
+        }
+    }, &fiber_b_ticks)
+
+    // Step 0.02s * 5 = 0.10s:
+    // Fiber A (0.02s): init at 0.02s, ticks at 0.04s, 0.06s, 0.08s, 0.10s -> 4 ticks
+    // Fiber B (0.04s): init at 0.02s, next_wake = 0.06s, ticks at 0.06s, 0.10s -> 2 ticks
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.02)
+    }
+    testing.expect_value(t, fiber_a_ticks, 4)
+    testing.expect_value(t, fiber_b_ticks, 2)
+}
+
 // ============================================================================
 // Full Test Suite Dispatcher (for QEMU / Cross-Platform Standalone Runners)  
 // ============================================================================
@@ -8688,6 +8744,7 @@ run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) 
         { "test_simulate_until_val_by_value_dispatch", test_simulate_until_val_by_value_dispatch },
         { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
         { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
+        { "test_fiber_owned_ticker_zero_drift_and_rebase", test_fiber_owned_ticker_zero_drift_and_rebase },
     }
 
     total := len(tests)

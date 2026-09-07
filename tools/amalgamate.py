@@ -17,12 +17,21 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-SOURCE_FILES = [
+NATIVE_SOURCE_FILES = [
     "config.odin",
     "types.odin",
     "asm_amd64.odin",
     "asm_arm64.odin",
     "asm_riscv64.odin",
+    "pool.odin",
+    "scheduler.odin",
+    "api.odin",
+]
+
+WASM_SOURCE_FILES = [
+    "config.odin",
+    "types.odin",
+    "asm_wasm32.odin",
     "pool.odin",
     "scheduler.odin",
     "api.odin",
@@ -39,13 +48,31 @@ UNIFIED_IMPORTS = [
     'import "core:sys/posix"',
 ]
 
-HEADER_TEMPLATE = """// ============================================================================
-// Odin Stackful Coroutine Engine (coroutines_asm) — Amalgamated Single-File Build
+HEADER_TEMPLATE_NATIVE = """#+build !js
+// ============================================================================
+// Odin Stackful Coroutine Engine (coroutines_asm) — Amalgamated Multi-ISA Build
 //
 // Multi-ISA Cooperative Concurrency Runtime for Games and Systems in Odin.
 // Supports AMD64 (Win64 & SysV), ARM64 (AAPCS64), and RISC-V 64 (LP64D).
 // Zero heap allocations per frame, True ZII, OS kernel intrusive wait queues,
 // CSP channels, multi-domain clocks, and structured concurrency scopes.
+//
+// Repository: https://github.com/Nebulavenus/coroutines-games-odin-asm
+// Generated : {timestamp}
+// License    : MIT
+// ============================================================================
+
+package coroutine
+
+{imports}
+"""
+
+HEADER_TEMPLATE_WASM = """#+build wasm32
+// ============================================================================
+// Odin Stackful Coroutine Engine (coroutines_asm) — WebAssembly (js_wasm32) Build
+//
+// WebAssembly Asyncify Cooperative Concurrency Runtime for Games and Systems in Odin.
+// Retains 100% API parity with native engine: wait, sync, race, CSP channels, clocks.
 //
 // Repository: https://github.com/Nebulavenus/coroutines-games-odin-asm
 // Generated : {timestamp}
@@ -63,16 +90,20 @@ TARGETS_TO_VERIFY = [
     "darwin_arm64",
     "linux_arm64",
     "linux_riscv64",
+    "js_wasm32",
 ]
 
 
 def clean_file_content(content: str) -> str:
-    """Strip 'package <name>' and top-level 'import ...' declarations."""
+    """Strip 'package <name>', '#+build ...' and top-level 'import ...' declarations."""
     lines = content.splitlines()
     cleaned = []
 
     for line in lines:
         stripped = line.strip()
+        # Skip build tags like #+build ...
+        if stripped.startswith("#+build"):
+            continue
         # Skip package declarations
         if re.match(r"^package\s+\w+", stripped):
             continue
@@ -85,14 +116,11 @@ def clean_file_content(content: str) -> str:
     return result
 
 
-def amalgamate(root_dir: Path, output_path: Path) -> int:
-    """Generate the amalgamated coroutine.odin file."""
-    print(f"[amalgamate] Root directory: {root_dir}")
-    print(f"[amalgamate] Target output : {output_path}")
-
+def build_amalgamation(root_dir: Path, source_files: list[str], header_template: str, output_path: Path) -> int:
+    """Helper to assemble a set of source files into a target destination."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    header = HEADER_TEMPLATE.format(
+    header = header_template.format(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         imports="\n".join(UNIFIED_IMPORTS),
     )
@@ -100,7 +128,7 @@ def amalgamate(root_dir: Path, output_path: Path) -> int:
     sections = [header]
     total_lines = 0
 
-    for filename in SOURCE_FILES:
+    for filename in source_files:
         filepath = root_dir / filename
         if not filepath.exists():
             print(f"[ERROR] Required source file not found: {filepath}", file=sys.stderr)
@@ -120,15 +148,34 @@ def amalgamate(root_dir: Path, output_path: Path) -> int:
         )
         sections.append(banner)
         sections.append(cleaned_code)
-        print(f"  + Amalgamated {filename} ({file_lines} lines)")
 
     final_content = "\n".join(sections) + "\n"
 
     with open(output_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(final_content)
 
-    print(f"[amalgamate] Successfully written: {output_path}")
-    print(f"[amalgamate] Total lines: {len(final_content.splitlines())} lines")
+    print(f"  + Generated {output_path.name} ({len(final_content.splitlines())} lines)")
+    return 0
+
+
+def amalgamate(root_dir: Path, target: Path) -> int:
+    """Generate both native multi-ISA and wasm32 single-file builds in dist/."""
+    dist_dir = target if target.is_dir() or target.suffix == "" else target.parent
+    print(f"[amalgamate] Root directory: {root_dir}")
+    print(f"[amalgamate] Target dist   : {dist_dir}")
+
+    native_out = dist_dir / "coroutine.odin"
+    wasm_out = dist_dir / "coroutine_wasm32.odin"
+
+    ret = build_amalgamation(root_dir, NATIVE_SOURCE_FILES, HEADER_TEMPLATE_NATIVE, native_out)
+    if ret != 0:
+        return ret
+
+    ret = build_amalgamation(root_dir, WASM_SOURCE_FILES, HEADER_TEMPLATE_WASM, w_out := wasm_out)
+    if ret != 0:
+        return ret
+
+    print(f"[amalgamate] Successfully written: {native_out} & {wasm_out}")
     return 0
 
 
