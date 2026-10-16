@@ -242,7 +242,7 @@ scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
     }, scope)
 }
 
-fiber_is_alive :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
+fiber_is_alive_sched :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
     if sched == nil || handle == 0 do return false
     idx := int(fiber_handle_index(handle))
     if idx < len(sched.fiber_pool.all_fibers) {
@@ -254,7 +254,17 @@ fiber_is_alive :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> bool {
     return false
 }
 
-fiber_status :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
+fiber_is_alive_fiber :: proc(f: ^Fiber, handle: Fiber_Handle) -> bool {
+    if f == nil || f.sched == nil do return false
+    return fiber_is_alive_sched(f.sched, handle)
+}
+
+fiber_is_alive :: proc{
+    fiber_is_alive_sched,
+    fiber_is_alive_fiber,
+}
+
+fiber_status_sched :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
     if sched == nil || handle == 0 do return .Completed, false
     // 1. O(1) Check active fiber slot
     idx := int(fiber_handle_index(handle))
@@ -270,6 +280,16 @@ fiber_status :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_
         return entry.status, true
     }
     return .Completed, false
+}
+
+fiber_status_fiber :: proc(f: ^Fiber, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
+    if f == nil || f.sched == nil do return .Completed, false
+    return fiber_status_sched(f.sched, handle)
+}
+
+fiber_status :: proc{
+    fiber_status_sched,
+    fiber_status_fiber,
 }
 
 fiber_join :: proc(f: ^Fiber, target_handle: Fiber_Handle) -> (ok: bool) {
@@ -303,14 +323,6 @@ fiber_set_name :: #force_inline proc(f: ^Fiber, name: string) {
 
 fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
     return f != nil ? f.debug_name : ""
-}
-
-wait_ptr :: proc(f: ^Fiber, seconds_ptr: ^f32) {
-    if seconds_ptr == nil {
-        yield_frame(f)
-        return
-    }
-    wait(f, seconds_ptr^)
 }
 
 wait_frames :: proc(f: ^Fiber, frames: int) {
@@ -437,21 +449,40 @@ ticker_wait_direct :: proc(f: ^Fiber, interval_seconds: f32, use_real_time: bool
 
 ticker_wait :: proc{ticker_wait_struct, ticker_wait_direct}
 
-// Convenience alias: Fiber-owned ticker wait (safe against Wasm shadow stack aliasing)
-wait_ticker :: proc(f: ^Fiber, interval_seconds: f32, use_real_time: bool = false) {
-    ticker_wait_direct(f, interval_seconds, use_real_time)
-}
-
 // Reset/rebase the fiber-owned ticker to cleanly start next interval from now + interval
 ticker_rebase :: proc(f: ^Fiber) {
     if f == nil do return
     f.ticker_next_wake = 0.0
 }
 
-fiber_set_cleanup :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
+@(private="file")
+Scoped_Cleanup_Node :: struct {
+    prev_proc: proc(user_data: rawptr),
+    prev_data: rawptr,
+}
+
+fiber_set_cleanup_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
     if f == nil do return
+    if (f.cleanup_proc == cleanup_mutex_hook || f.cleanup_proc == cleanup_sem_hook) && f.cleanup_data != nil {
+        node := (^Scoped_Cleanup_Node)(f.cleanup_data)
+        for (node.prev_proc == cleanup_mutex_hook || node.prev_proc == cleanup_sem_hook) && node.prev_data != nil {
+            node = (^Scoped_Cleanup_Node)(node.prev_data)
+        }
+        node.prev_proc = cleanup_proc
+        node.prev_data = user_data
+        return
+    }
     f.cleanup_proc = cleanup_proc
     f.cleanup_data = user_data
+}
+
+fiber_set_cleanup_ptr :: proc(f: ^Fiber, cleanup_proc: proc(user_data: ^$T), user_data: ^T) {
+    fiber_set_cleanup_raw(f, cast(proc(rawptr))cleanup_proc, rawptr(user_data))
+}
+
+fiber_set_cleanup :: proc{
+    fiber_set_cleanup_raw,
+    fiber_set_cleanup_ptr,
 }
 
 scheduler_set_watchdog :: proc(sched: ^Scheduler, enabled: bool, max_slice_ms: f64 = 100.0) {
@@ -825,10 +856,11 @@ ease_apply :: #force_inline proc(fn: Ease_Proc, t: f32) -> f32 {
     return fn(t)
 }
 
-tween_f32 :: proc(
+@(private="file")
+tween_impl :: proc(
     f: ^Fiber,
-    output: ^f32,
-    start, target: f32,
+    output: ^$T,
+    start, target: T,
     duration: f32,
     ease: Ease_Proc = nil,
 ) {
@@ -852,6 +884,16 @@ tween_f32 :: proc(
     output^ = target
 }
 
+tween_f32 :: proc(
+    f: ^Fiber,
+    output: ^f32,
+    start, target: f32,
+    duration: f32,
+    ease: Ease_Proc = nil,
+) {
+    tween_impl(f, output, start, target, duration, ease)
+}
+
 tween_vec2 :: proc(
     f: ^Fiber,
     output: ^[2]f32,
@@ -859,25 +901,7 @@ tween_vec2 :: proc(
     duration: f32,
     ease: Ease_Proc = nil,
 ) {
-    if f == nil || output == nil do return
-    if duration <= 0.0 {
-        output^ = target
-        return
-    }
-
-    elapsed: f32 = 0.0
-    output^ = start
-
-    for elapsed < duration {
-        yield_frame(f)
-        elapsed += delta_time(f)
-        t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_apply(ease, t)
-        output.x = start.x + (target.x - start.x) * eased_t
-        output.y = start.y + (target.y - start.y) * eased_t
-    }
-
-    output^ = target
+    tween_impl(f, output, start, target, duration, ease)
 }
 
 tween_vec3 :: proc(
@@ -887,26 +911,7 @@ tween_vec3 :: proc(
     duration: f32,
     ease: Ease_Proc = nil,
 ) {
-    if f == nil || output == nil do return
-    if duration <= 0.0 {
-        output^ = target
-        return
-    }
-
-    elapsed: f32 = 0.0
-    output^ = start
-
-    for elapsed < duration {
-        yield_frame(f)
-        elapsed += delta_time(f)
-        t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_apply(ease, t)
-        output.x = start.x + (target.x - start.x) * eased_t
-        output.y = start.y + (target.y - start.y) * eased_t
-        output.z = start.z + (target.z - start.z) * eased_t
-    }
-
-    output^ = target
+    tween_impl(f, output, start, target, duration, ease)
 }
 
 tween_vec4 :: proc(
@@ -916,27 +921,7 @@ tween_vec4 :: proc(
     duration: f32,
     ease: Ease_Proc = nil,
 ) {
-    if f == nil || output == nil do return
-    if duration <= 0.0 {
-        output^ = target
-        return
-    }
-
-    elapsed: f32 = 0.0
-    output^ = start
-
-    for elapsed < duration {
-        yield_frame(f)
-        elapsed += delta_time(f)
-        t := math.clamp(elapsed / duration, 0.0, 1.0)
-        eased_t := ease_apply(ease, t)
-        output.x = start.x + (target.x - start.x) * eased_t
-        output.y = start.y + (target.y - start.y) * eased_t
-        output.z = start.z + (target.z - start.z) * eased_t
-        output.w = start.w + (target.w - start.w) * eased_t
-    }
-
-    output^ = target
+    tween_impl(f, output, start, target, duration, ease)
 }
 
 // Unified overloaded entry point
@@ -1017,28 +1002,14 @@ wait_until_timeout_ptr :: proc(
     if timeout_seconds <= 0.0 do return false, true
 
     State :: struct {
-        cond:      proc(data: ^T) -> bool,
-        data:      ^T,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
+        cond: proc(data: ^T) -> bool,
+        data: ^T,
     }
-    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_until(f, s.cond, s.data)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    s := State{cond = condition, data = data}
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, s: ^State) {
+        wait_until(f, s.cond, s.data)
+    }, &s, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 wait_until_timeout_val :: proc(
@@ -1053,28 +1024,14 @@ wait_until_timeout_val :: proc(
     if timeout_seconds <= 0.0 do return false, true
 
     State :: struct {
-        cond:      proc(data: T) -> bool,
-        data:      T,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
+        cond: proc(data: T) -> bool,
+        data: T,
     }
-    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_until(f, s.cond, s.data)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    s := State{cond = condition, data = data}
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, s: ^State) {
+        wait_until(f, s.cond, s.data)
+    }, &s, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 wait_until_timeout_nil :: proc(
@@ -1086,28 +1043,11 @@ wait_until_timeout_nil :: proc(
     if condition != nil && condition() do return true, false
     if timeout_seconds <= 0.0 do return false, true
 
-    State :: struct {
-        cond:      proc() -> bool,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
-    }
-    s := State{cond = condition, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_until(f, s.cond)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    cond := condition
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, c: ^proc() -> bool) {
+        wait_until(f, c^)
+    }, &cond, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 // Unified overloaded entry point
@@ -1124,28 +1064,14 @@ wait_while_timeout_ptr :: proc(
     if timeout_seconds <= 0.0 do return false, true
 
     State :: struct {
-        cond:      proc(data: ^T) -> bool,
-        data:      ^T,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
+        cond: proc(data: ^T) -> bool,
+        data: ^T,
     }
-    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_while(f, s.cond, s.data)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    s := State{cond = condition, data = data}
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, s: ^State) {
+        wait_while(f, s.cond, s.data)
+    }, &s, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 wait_while_timeout_val :: proc(
@@ -1160,28 +1086,14 @@ wait_while_timeout_val :: proc(
     if timeout_seconds <= 0.0 do return false, true
 
     State :: struct {
-        cond:      proc(data: T) -> bool,
-        data:      T,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
+        cond: proc(data: T) -> bool,
+        data: T,
     }
-    s := State{cond = condition, data = data, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_while(f, s.cond, s.data)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    s := State{cond = condition, data = data}
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, s: ^State) {
+        wait_while(f, s.cond, s.data)
+    }, &s, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 wait_while_timeout_nil :: proc(
@@ -1193,28 +1105,11 @@ wait_while_timeout_nil :: proc(
     if condition == nil || !condition() do return true, false
     if timeout_seconds <= 0.0 do return false, true
 
-    State :: struct {
-        cond:      proc() -> bool,
-        timeout:   f32,
-        met:       bool,
-        timed_out: bool,
-    }
-    s := State{cond = condition, timeout = timeout_seconds, met = false, timed_out = false}
-
-    winner := race(f,
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait_while(f, s.cond)
-            s.met = true
-        }, &s, name = "Cond Wait Branch"),
-
-        branch(proc(f: ^Fiber, s: ^State) {
-            wait(f, s.timeout)
-            s.timed_out = true
-        }, &s, name = "Cond Timeout Branch"),
-    )
-
-    if winner == 1 do return false, true
-    return s.met, s.timed_out
+    cond := condition
+    timed_out = with_timeout(f, timeout_seconds, proc(f: ^Fiber, c: ^proc() -> bool) {
+        wait_while(f, c^)
+    }, &cond, "Cond Wait Branch")
+    return !timed_out, timed_out
 }
 
 // Unified overloaded entry point
@@ -1244,7 +1139,7 @@ signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
     context = f.stored_context
 }
 
-signal_emit :: proc(sched: ^Scheduler, sig: ^Signal) {
+signal_emit_sched :: proc(sched: ^Scheduler, sig: ^Signal) {
     if sched == nil || sig == nil || wait_queue_is_empty(&sig.waiters) do return
 
     for {
@@ -1255,6 +1150,16 @@ signal_emit :: proc(sched: ^Scheduler, sig: ^Signal) {
             append(&sched.ready_queue, f.handle)
         }
     }
+}
+
+signal_emit_fiber :: proc(f: ^Fiber, sig: ^Signal) {
+    if f == nil || f.sched == nil do return
+    signal_emit_sched(f.sched, sig)
+}
+
+signal_emit :: proc{
+    signal_emit_sched,
+    signal_emit_fiber,
 }
 
 signal_waiter_count :: #force_inline proc "contextless" (sig: ^Signal) -> int {
@@ -1305,7 +1210,7 @@ mutex_lock :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
     m.owner = f.handle
 }
 
-mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
+mutex_unlock_sched :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     if sched == nil || m == nil do return
 
     for {
@@ -1323,6 +1228,16 @@ mutex_unlock :: proc(sched: ^Scheduler, m: ^Fiber_Mutex) {
     m.locked = false
 }
 
+mutex_unlock_fiber :: proc(f: ^Fiber, m: ^Fiber_Mutex) {
+    if f == nil || f.sched == nil do return
+    mutex_unlock_sched(f.sched, m)
+}
+
+mutex_unlock :: proc{
+    mutex_unlock_sched,
+    mutex_unlock_fiber,
+}
+
 mutex_owner :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> Fiber_Handle {
     return m != nil ? m.owner : 0
 }
@@ -1337,10 +1252,9 @@ mutex_waiter_count :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> int 
 
 @(private="file")
 Scoped_Mutex_Cleanup_Ctx :: struct {
-    sched:     ^Scheduler,
-    m:         ^Fiber_Mutex,
-    prev_proc: proc(user_data: rawptr),
-    prev_data: rawptr,
+    using node: Scoped_Cleanup_Node,
+    sched:      ^Scheduler,
+    m:          ^Fiber_Mutex,
 }
 
 @(private="file")
@@ -1357,19 +1271,17 @@ cleanup_mutex_hook :: proc(user_data: rawptr) {
 with_mutex_ptr :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber, data: ^$T), data: ^T) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Mutex_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         m         = m,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_mutex_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         mutex_unlock(f.sched, m)
     }
     body(f, data)
@@ -1384,19 +1296,17 @@ with_mutex_val :: proc(
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "with_mutex_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Mutex_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         m         = m,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_mutex_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         mutex_unlock(f.sched, m)
     }
     body(f, data)
@@ -1405,19 +1315,17 @@ with_mutex_val :: proc(
 with_mutex_nil :: proc(f: ^Fiber, m: ^Fiber_Mutex, body: proc(f: ^Fiber)) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Mutex_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         m         = m,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_mutex_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         mutex_unlock(f.sched, m)
     }
     body(f)
@@ -1454,7 +1362,7 @@ event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
     return payload, true
 }
 
-event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
+event_emit_sched :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if sched == nil || ev == nil || wait_queue_is_empty(&ev.waiters) do return
 
@@ -1467,6 +1375,16 @@ event_emit :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
             append(&sched.ready_queue, f.handle)
         }
     }
+}
+
+event_emit_fiber :: proc(f: ^Fiber, ev: ^Event($T), payload: T) {
+    if f == nil || f.sched == nil do return
+    event_emit_sched(f.sched, ev, payload)
+}
+
+event_emit :: proc{
+    event_emit_sched,
+    event_emit_fiber,
 }
 
 event_waiter_count :: #force_inline proc(ev: ^Event($T)) -> int {
@@ -1517,7 +1435,7 @@ semaphore_acquire :: proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
     context = f.stored_context
 }
 
-semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int = 1) {
+semaphore_release_sched :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int = 1) {
     if sched == nil || sem == nil || count <= 0 do return
 
     if sem.max_permits > 0 {
@@ -1537,6 +1455,16 @@ semaphore_release :: proc(sched: ^Scheduler, sem: ^Fiber_Semaphore, count: int =
     }
 }
 
+semaphore_release_fiber :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, count: int = 1) {
+    if f == nil || f.sched == nil do return
+    semaphore_release_sched(f.sched, sem, count)
+}
+
+semaphore_release :: proc{
+    semaphore_release_sched,
+    semaphore_release_fiber,
+}
+
 semaphore_available_permits :: #force_inline proc(sem: ^Fiber_Semaphore) -> int {
     return sem != nil ? sem.permits : 0
 }
@@ -1547,10 +1475,9 @@ semaphore_waiter_count :: #force_inline proc "contextless" (sem: ^Fiber_Semaphor
 
 @(private="file")
 Scoped_Sem_Cleanup_Ctx :: struct {
-    sched:     ^Scheduler,
-    sem:       ^Fiber_Semaphore,
-    prev_proc: proc(user_data: rawptr),
-    prev_data: rawptr,
+    using node: Scoped_Cleanup_Node,
+    sched:      ^Scheduler,
+    sem:        ^Fiber_Semaphore,
 }
 
 @(private="file")
@@ -1567,19 +1494,17 @@ cleanup_sem_hook :: proc(user_data: rawptr) {
 with_semaphore_ptr :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fiber, data: ^$T), data: ^T) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Sem_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         sem       = sem,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_sem_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         semaphore_release(f.sched, sem)
     }
     body(f, data)
@@ -1594,19 +1519,17 @@ with_semaphore_val :: proc(
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "with_semaphore_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Sem_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         sem       = sem,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_sem_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         semaphore_release(f.sched, sem)
     }
     body(f, data)
@@ -1615,19 +1538,17 @@ with_semaphore_val :: proc(
 with_semaphore_nil :: proc(f: ^Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^Fiber)) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    prev_proc := f.cleanup_proc
-    prev_data := f.cleanup_data
     ctx := Scoped_Sem_Cleanup_Ctx{
+        prev_proc = f.cleanup_proc,
+        prev_data = f.cleanup_data,
         sched     = f.sched,
         sem       = sem,
-        prev_proc = prev_proc,
-        prev_data = prev_data,
     }
     f.cleanup_proc = cleanup_sem_hook
     f.cleanup_data = &ctx
     defer {
-        f.cleanup_proc = prev_proc
-        f.cleanup_data = prev_data
+        f.cleanup_proc = ctx.prev_proc
+        f.cleanup_data = ctx.prev_data
         semaphore_release(f.sched, sem)
     }
     body(f)
@@ -1650,7 +1571,7 @@ latch_destroy :: proc(latch: ^Fiber_Latch) {
     wait_queue_destroy(&latch.waiters)
 }
 
-latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
+latch_count_down_sched :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
     if sched == nil || latch == nil || n <= 0 do return
     if latch.count == 0 do return
 
@@ -1665,6 +1586,16 @@ latch_count_down :: proc(sched: ^Scheduler, latch: ^Fiber_Latch, n: int = 1) {
             }
         }
     }
+}
+
+latch_count_down_fiber :: proc(f: ^Fiber, latch: ^Fiber_Latch, n: int = 1) {
+    if f == nil || f.sched == nil do return
+    latch_count_down_sched(f.sched, latch, n)
+}
+
+latch_count_down :: proc{
+    latch_count_down_sched,
+    latch_count_down_fiber,
 }
 
 latch_wait :: proc(f: ^Fiber, latch: ^Fiber_Latch) {
@@ -1898,14 +1829,29 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
                 ch.buffer[0] = value
                 ch.count = 1
 
+                Unbuf_Send_Cleanup_Ctx :: struct {
+                    ch:        ^Channel(T),
+                    prev_proc: proc(user_data: rawptr),
+                    prev_data: rawptr,
+                }
                 cleanup_unbuf_sender :: proc(user_data: rawptr) {
-                    chan_ptr := (^Channel(T))(user_data)
-                    if chan_ptr != nil && chan_ptr.capacity == 0 && chan_ptr.count > 0 {
-                        chan_ptr.count = 0
+                    ctx := (^Unbuf_Send_Cleanup_Ctx)(user_data)
+                    if ctx != nil {
+                        if ctx.ch != nil && ctx.ch.capacity == 0 && ctx.ch.count > 0 {
+                            ctx.ch.count = 0
+                        }
+                        if ctx.prev_proc != nil {
+                            ctx.prev_proc(ctx.prev_data)
+                        }
                     }
                 }
+                cleanup_ctx := Unbuf_Send_Cleanup_Ctx{
+                    ch        = ch,
+                    prev_proc = f.cleanup_proc,
+                    prev_data = f.cleanup_data,
+                }
                 f.cleanup_proc = cleanup_unbuf_sender
-                f.cleanup_data = rawptr(ch)
+                f.cleanup_data = &cleanup_ctx
 
                 wait_queue_push_back(&ch.send_waiters, f)
                 f.status = .Suspended_Join
@@ -1913,8 +1859,8 @@ chan_send :: proc(f: ^Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
                 fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
                 context = f.stored_context
 
-                f.cleanup_proc = nil
-                f.cleanup_data = nil
+                f.cleanup_proc = cleanup_ctx.prev_proc
+                f.cleanup_data = cleanup_ctx.prev_data
 
                 // If other unbuffered senders are queued, wake the next one to take its turn
                 for {

@@ -8518,7 +8518,7 @@ test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, count: ^int) {
         // Use direct fiber-owned ticker (no stack struct allocated)
         for {
-            wait_ticker(f, 0.05)
+            ticker_wait(f, 0.05)
             count^ += 1
         }
     }, &ticks)
@@ -8623,6 +8623,160 @@ test_scheduler_reinit_no_memory_leak :: proc(t: ^testing.T) {
 
     testing.expect_value(t, len(track.allocation_map), 0)
     testing.expect_value(t, len(track.bad_free_array), 0)
+}
+
+@(test)
+test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    // 1. Test ^Fiber overloads for signal_emit, event_emit, mutex_unlock, semaphore_release,
+    //    latch_count_down, fiber_is_alive, fiber_status, fiber_cancel, scope_cancel, scope_destroy.
+    QoL_Ctx :: struct {
+        sig:          Signal,
+        ev:           Event(int),
+        mtx:          Fiber_Mutex,
+        sem:          Fiber_Semaphore,
+        latch:        Fiber_Latch,
+        child_scope:  Fiber_Scope,
+        target_h:     Fiber_Handle,
+        ev_received:  int,
+        sig_woke:     bool,
+        latch_woke:   bool,
+        status_alive: bool,
+        status_val:   Fiber_Status,
+    }
+    qctx: QoL_Ctx
+    signal_init(&qctx.sig)
+    defer signal_destroy(&qctx.sig)
+    event_init(&qctx.ev)
+    defer event_destroy(&qctx.ev)
+    mutex_init(&qctx.mtx)
+    defer mutex_destroy(&qctx.mtx)
+    semaphore_init(&qctx.sem, 1)
+    defer semaphore_destroy(&qctx.sem)
+    latch_init(&qctx.latch, 1)
+    defer latch_destroy(&qctx.latch)
+
+    qctx.target_h = spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    })
+
+    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
+        wait(f, 10.0)
+    }, &qctx, scope = &qctx.child_scope)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
+        signal_wait(f, &c.sig)
+        c.sig_woke = true
+    }, &qctx)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
+        if val, ok := event_wait(f, &c.ev); ok {
+            c.ev_received = val
+        }
+    }, &qctx)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
+        latch_wait(f, &c.latch)
+        c.latch_woke = true
+    }, &qctx)
+
+    // Step once so waiters suspend
+    scheduler_step(&sched, 0.01)
+
+    // Spawn driver fiber that uses `f` (^Fiber) directly as first argument for all primitives
+    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
+        c.status_alive = fiber_is_alive(f, c.target_h)
+        st, _ := fiber_status(f, c.target_h)
+        c.status_val = st
+
+        mutex_lock(f, &c.mtx)
+        mutex_unlock(f, &c.mtx)
+
+        semaphore_acquire(f, &c.sem)
+        semaphore_release(f, &c.sem)
+
+        signal_emit(f, &c.sig)
+        event_emit(f, &c.ev, 777)
+        latch_count_down(f, &c.latch)
+
+        fiber_cancel(f, c.target_h)
+        scope_cancel(f, &c.child_scope)
+        scope_destroy(f, &c.child_scope)
+    }, &qctx)
+
+    scheduler_step(&sched, 0.01)
+    scheduler_step(&sched, 0.01)
+
+    testing.expect_value(t, qctx.status_alive, true)
+    testing.expect_value(t, qctx.status_val, Fiber_Status.Sleeping_Time)
+    testing.expect_value(t, qctx.sig_woke, true)
+    testing.expect_value(t, qctx.ev_received, 777)
+    testing.expect_value(t, qctx.latch_woke, true)
+    testing.expect_value(t, fiber_is_alive(&sched, qctx.target_h), false)
+    testing.expect_value(t, scope_active_count(&qctx.child_scope), 0)
+    testing.expect_value(t, mutex_is_locked(&qctx.mtx), false)
+    testing.expect_value(t, semaphore_available_permits(&qctx.sem), 1)
+
+    // 2. Test nested cleanup hook chaining:
+    //    custom fiber_set_cleanup + with_mutex + with_semaphore + unbuffered chan_send abort
+    Chain_Ctx :: struct {
+        mtx:          Fiber_Mutex,
+        sem:          Fiber_Semaphore,
+        ch:           Channel(int),
+        user_cleaned: int,
+    }
+    cctx: Chain_Ctx
+    mutex_init(&cctx.mtx)
+    defer mutex_destroy(&cctx.mtx)
+    semaphore_init(&cctx.sem, 1)
+    defer semaphore_destroy(&cctx.sem)
+    chan_init(&cctx.ch, 0)
+    defer chan_destroy(&cctx.ch)
+
+    sender_h := spawn(&sched, proc(f: ^Fiber, c: ^Chain_Ctx) {
+        fiber_set_cleanup(f, proc(c: ^Chain_Ctx) {
+            c.user_cleaned += 10
+        }, c)
+
+        with_mutex(f, &c.mtx, proc(f: ^Fiber, c: ^Chain_Ctx) {
+            with_semaphore(f, &c.sem, proc(f: ^Fiber, c: ^Chain_Ctx) {
+                // Suspend in unbuffered rendezvous
+                chan_send(f, &c.ch, 42)
+            }, c)
+        }, c)
+    }, &cctx)
+
+    scheduler_step(&sched, 0.01)
+    // Verify mutex is locked, semaphore is acquired, and unbuffered channel has count == 1
+    testing.expect_value(t, mutex_is_locked(&cctx.mtx), true)
+    testing.expect_value(t, semaphore_available_permits(&cctx.sem), 0)
+    testing.expect_value(t, cctx.ch.count, 1)
+
+    // Cancel the fiber mid-rendezvous: ALL 4 cleanup hooks in the chain must run!
+    fiber_cancel(&sched, sender_h)
+
+    testing.expect_value(t, cctx.ch.count, 0)
+    testing.expect_value(t, semaphore_available_permits(&cctx.sem), 1)
+    testing.expect_value(t, mutex_is_locked(&cctx.mtx), false)
+    testing.expect_value(t, cctx.user_cleaned, 10)
+
+    // 3. Verify that calling fiber_set_cleanup INSIDE with_mutex is not clobbered on normal exit
+    inner_h := spawn(&sched, proc(f: ^Fiber, c: ^Chain_Ctx) {
+        with_mutex(f, &c.mtx, proc(f: ^Fiber, c: ^Chain_Ctx) {
+            fiber_set_cleanup(f, proc(c: ^Chain_Ctx) {
+                c.user_cleaned += 100
+            }, c)
+        }, c)
+        wait(f, 10.0)
+    }, &cctx)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, mutex_is_locked(&cctx.mtx), false)
+    fiber_cancel(&sched, inner_h)
+    testing.expect_value(t, cctx.user_cleaned, 110)
 }
 
 // ============================================================================
@@ -8821,6 +8975,7 @@ run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) 
         { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
         { "test_fiber_owned_ticker_zero_drift_and_rebase", test_fiber_owned_ticker_zero_drift_and_rebase },
         { "test_scheduler_reinit_no_memory_leak", test_scheduler_reinit_no_memory_leak },
+        { "test_api_qol_fiber_overloads_and_nested_cleanup_chaining", test_api_qol_fiber_overloads_and_nested_cleanup_chaining },
     }
 
     total := len(tests)
