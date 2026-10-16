@@ -113,10 +113,11 @@ read_byte :: asm(in_val: u64) -> (res: u8) [
 }
 ```
 
-### 3.6 Template-Level Directives
-- `#volatile`: Prevents the compiler from optimizing out or reordering the inline assembly block. Required for any template performing memory writes, stack operations, or hardware I/O.
+### 3.6 Template-Level Directives & `#preserve %reg`
+- `#volatile`: Prevents the compiler from optimizing out or reordering the inline assembly block (inferred automatically when memory or control-flow side effects are present).
 - `#align_stack`: Directs the backend to enforce ABI stack alignment (16-byte alignment on x86_64/AAPCS64) before the assembly block.
 - `#pure`: Asserts that the template has no observable side effects and depends strictly on its inputs (enables constant folding and CSE).
+- `#preserve %reg`: Seeds `%reg` as initialized on entry (`seed_regs` / `entry_seed_w`) and live on exit (`exit_live`) **without** emitting an LLVM output allocation constraint (`={reg}`). Essential for reading and restoring ABI-reserved/callee-saved registers (`%rbp`, `%rbx`, `%rsi`, `%rdi`, `%rsp`, `%sp`, `%ra`).
 
 ### 3.7 Clobber Directives
 Informs LLVM of registers, flags, or memory mutated by the template:
@@ -124,12 +125,12 @@ Informs LLVM of registers, flags, or memory mutated by the template:
 [
     #clobber %rax,
     #clobber %rcx,
-    #clobber flags,
+    #clobber %flags,
     #clobber memory,
 ]
 ```
 > [!TIP]
-> **Silencing Dead-Write Diagnostics**: Adding `#clobber %reg` marks that register as live at template exit (`exit_live`), which eliminates compiler warnings on instructions like `pop rbp_reg` near the end of a template.
+> **Silencing Dead-Write Diagnostics**: Adding `#clobber %reg` or `#preserve %reg` marks that register as live at template exit (`exit_live`), which eliminates compiler warnings on instructions like `pop %rbp` near the end of a template when the exit block is linked to the trailing label.
 
 ---
 
@@ -209,32 +210,14 @@ A non-diverging template (`asm()`) must prove that at least one reachable block 
 
 ---
 
-## 7. Compiler Codegen Issues & LLVM Low-Level Constraints
+## 7. Compiler Codegen Fixes & Target-Specific Constraints (`dev-2026-10:151d53f44`)
 
-### 7.1 LLVM Backend Missing Label Colon (`llvm_backend_asm.cpp:390`)
+### 7.1 Resolved: LLVM Backend Label Colon & RIP-Relative `[.label]`
+- `lbAsmGenerate::write_label_def` (`llvm_backend_asm.cpp:90-93`) now emits the trailing colon `:` on AMD64 and RISC-V 64 (`.L_<tmpl>_<label>${:uid}:`).
+- AMD64 supports `[.label]` RIP-relative memory operands (`lea %rax, [.switch_done]`), ARM64 supports `adr %x30, .switch_done`, and RISC-V 64 supports `lla %ra, .switch_done`.
 
-In `Odin\src\llvm_backend_asm.cpp`:
-```cpp
-// llvm_backend_asm.cpp line 388
-virtual void write_label_def(AstIdent *label_ident) {
-    String name = label_ident->token.string;
-    write_cstr(".L_");
-    write_string(tmpl_entity->token.string);
-    write_cstr("_");
-    write_string(name);
-    write_cstr("${:uid}"); // BUG: Missing trailing colon ':'
-}
-```
-- **ARM64**: Overrides `write_label_def` with `gb_string_append_fmt(asm_string, "%d:", ...)`, successfully emitting the colon.
-- **AMD64 & RISC-V 64**: Use the default `write_label_def`, which omits the colon. When LLVM assembles the inline block, it encounters `.L_<tmpl>_<label>0` without a colon, rejecting it with:
-  `LLVM Error: <inline asm>: unknown directive .L_...`
-- **Workaround on Stock Odin**: Use `#byte` machine code for jump trampolines or avoid internal label definitions on AMD64/RISC-V until patched.
+### 7.2 Remaining Target-Specific Constraints
+- **AMD64**: 100% high-level `asm` (zero `#byte`). Because `CLOBBER_REGS_NAMED` omits `ClobberReg_RSP` from `exit_live`, use `xchg %rsp, %rdx` (Win64) / `xchg %rsp, %rsi` (SysV) for stack switching and place a never-taken `jz .switch_done` before `ret` to link the CFG block to `.switch_done:`.
+- **ARM64**: `register_strings` (`asm_tables_arm64.cpp:1361`) lists only `v0..v31` (128-bit) and `write_operand` prints bare `v8` for `Ast_AsmRegister`, so `stp`/`ldp d8..d15` (and `sp`-writing ops that would otherwise emit `~{sp}` LLVM warnings) retain `#byte`, while `get_sp` and all GPR/label/memory instructions use high-level `asm`.
+- **RISC-V 64**: `check_register` (`check_asm.cpp:947-965`) types all 64-bit registers as `t_u64` (`AsmRegClass_Integer`), so `fsd`/`fld fs0..fs11` retain `#byte`, while `get_sp` and all GPR/label/memory instructions use high-level `asm`.
 
-### 7.2 Vector Scratch Registers & Early-Clobber (`=&`) Output Semantic Trap
-
-In `Odin\src\llvm_backend_asm.cpp` (lines 208–233):
-- Scratch parameter bindings (`reg: type, reg = %pin #no_init`) are lowered in Pass 1 as uninitialized output parameters with the **early-clobber modifier**: `=&{pin}`.
-- When an instruction writes an XMM scratch parameter to memory (e.g. `movdqu [%rsp + off], xmm_reg`), Odin lowers it into AT&T syntax: `movdqu $N, off(%rsp)`.
-- Because LLVM considers `$N` an early-clobber output register rather than an input, LLVM's register allocator treats the source register as undefined at the entry point of the inline assembly call.
-- This results in live vector/SIMD state being overwritten with uninitialized data, causing hardware runtime traps (`Illegal_Instruction` / `0xC000001D`) when returning to calling scopes that execute floating-point/vector operations.
-- **Rule for System Runtimes**: Callee-saved SIMD register arrays across context switches must use deterministic `#byte` opcodes to preserve exact hardware register bit patterns without compiler register-allocator interference.

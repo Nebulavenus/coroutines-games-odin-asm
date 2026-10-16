@@ -104,13 +104,14 @@ When switching between fibers:
 
 ---
 
-### D. Link Register Return Trampolines on RISC Architectures
-Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_frames`, `scheduler_step`), the CPU's Link Register (`x30` on ARM64, `ra` on RISC-V 64) points to the outer caller upon entering the template. To ensure clean return flow, both RISC architectures use a **Branch-and-Link Return Trampoline**:
-* **ARM64**: `bl .switch_body` (+8B) sets `x30` pointing to `b .switch_done` (+108B), so `ret` at the end of `.switch_body` jumps directly to `.switch_done` on the restored fiber's stack.
-* **RISC-V 64**: `jal ra, +8` (+8B) sets `ra` pointing to `j .switch_done` (+224B), so `jalr zero, ra, 0` returns directly to `.switch_done` on the restored fiber's stack.
+### D. Symbolic Resume Label Capture Across Architectures
+Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_frames`, `scheduler_step`), no `call`/`bl`/`jal` instruction is emitted at the call site. To resume cleanly at the end of the template when switched back in, all three architectures capture the address of the trailing `.switch_done:` label using high-level symbolic instructions:
+* **AMD64 (`asm_amd64.odin`)**: `lea %rax, [.switch_done]; push %rax` pushes the RIP-relative resume address onto the stack (`0` `#byte` directives across the entire file).
+* **ARM64 (`asm_arm64.odin`)**: `adr %x30, .switch_done` loads the PC-relative address of `.switch_done:` into `%x30` (LR) before `stp %x29, %x30, [%sp, 0]`, so `ret` jumps directly to `.switch_done:` on the restored fiber's stack.
+* **RISC-V 64 (`asm_riscv64.odin`)**: `lla %ra, .switch_done` expands to `auipc + addi` to load `.switch_done:` into `%ra` before `sd %ra, [%sp + 0]`, so `jalr %zero, %ra, 0` jumps directly to `.switch_done:` on the restored fiber's stack.
 
 ### F. High-Level Inline Assembly Register & Stack Extractors
-For operations with well-defined dataflow, the engine uses **100% pure high-level Odin inline assembly templates**:
+For register and stack-pointer inspection, the engine uses **100% pure high-level Odin inline assembly templates** (zero `#byte` directives across all architectures):
 * **Fiber Self-Identity Registers**:
   ```odin
   // AMD64
@@ -120,14 +121,14 @@ For operations with well-defined dataflow, the engine uses **100% pure high-leve
   // RISC-V 64
   get_s2_reg  :: asm() -> (res: rawptr) [ res = %s2 ]  { addi res, %s2, 0 }
   ```
-* **Active Stack Pointer Extraction**:
+* **Active Stack Pointer Extraction (`#preserve %rsp` / `#preserve %sp`)**:
   ```odin
-  // AMD64 (uses effective address arithmetic to avoid unproduced register liveness checks)
-  get_rsp :: asm() -> (sp: rawptr) [ #volatile ] { lea sp, [%rsp] }
+  // AMD64
+  get_rsp :: asm() -> (sp: uintptr) [ #preserve %rsp, #volatile ] { mov sp, %rsp }
   // ARM64
-  get_sp  :: asm() -> (sp: rawptr) [ sp = %x0, #volatile ] { #byte 0xe0, 0x03, 0x00, 0x91 }
+  get_sp  :: asm() -> (sp: rawptr)  [ sp = %x0, #preserve %sp, #volatile ] { mov sp, %sp }
   // RISC-V 64
-  get_sp  :: asm() -> (sp: rawptr) [ sp = %a0, #volatile ] { #byte 0x13, 0x05, 0x01, 0x00 }
+  get_sp  :: asm() -> (sp: rawptr)  [ sp = %a0, #preserve %sp, #volatile ] { addi sp, %sp, 0 }
   ```
 
 ---
@@ -159,14 +160,15 @@ When a fiber is acquired from the pool, `fiber_synthesize_initial_stack` sets up
 
 The engine is verified across all targets via automated test runners:
 ```powershell
-# Native Windows Host (All 188 unit tests)
+# Native Windows Host (All 190 unit tests)
 .\build.ps1 test
 
-# Cross-Target Static Compilation Validation (All 6 targets)
+# Cross-Target Static Compilation Validation (All 7 targets)
 .\build.ps1 check-all
 
-# WSL2 QEMU Full Unit Test Suite (All 188 tests on ARM64 & RISC-V 64)
-.\run_wsl_qemu.ps1 test
+# WSL2 QEMU Full Unit Test Suite (All 190 tests on ARM64 & RISC-V 64)
+.\build.ps1 test-arm64
+.\build.ps1 test-riscv64
 
 # WSL2 QEMU 10,000 Concurrent Fiber Benchmarks
 .\run_wsl_qemu.ps1 bench

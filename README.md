@@ -1,6 +1,6 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
-> **Compiler Requirement**: Built and verified with Odin `dev-2026-09` (`master` branch commit [`2c81576cf`](https://github.com/odin-lang/Odin/commit/2c81576cf)).
+> **Compiler Requirement**: Built and verified with Odin `dev-2026-10` (`master` branch commit [`151d53f44`](https://github.com/odin-lang/Odin/commit/151d53f44)).
 
 A high-performance, deterministic **stackful coroutine engine** for [Odin](https://odin-lang.org/), context switching with native inline assembly [`asm`](https://odin-lang.org/docs/inline-asm/).
 

@@ -17,6 +17,9 @@ scheduler_init :: proc(
     alloc_mode: Stack_Allocation_Mode = DEFAULT_ALLOC_MODE,
     allocator := context.allocator,
 ) {
+    if sched.ready_queue != nil || sched.timer_heap != nil || sched.fiber_pool.all_fibers != nil {
+        scheduler_destroy(sched)
+    }
     sched.allocator = allocator.procedure != nil ? allocator : context.allocator
     sched.ready_queue = make([dynamic]Fiber_Handle, sched.allocator)
     sched.timer_heap = make([dynamic]^Fiber, sched.allocator)
@@ -38,6 +41,9 @@ scheduler_init :: proc(
 }
 
 scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
+    if sched.ready_queue != nil || sched.timer_heap != nil || sched.fiber_pool.all_fibers != nil {
+        scheduler_destroy(sched)
+    }
     allocator := config.allocator
     if allocator.procedure == nil {
         allocator = context.allocator
@@ -88,6 +94,12 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
     delete(sched.tick_waiters)
     delete(sched.frame_waiters)
     delete(sched.condition_waiters)
+    sched.ready_queue = nil
+    sched.timer_heap = nil
+    sched.real_timer_heap = nil
+    sched.tick_waiters = nil
+    sched.frame_waiters = nil
+    sched.condition_waiters = nil
     fiber_pool_destroy(&sched.fiber_pool)
 }
 

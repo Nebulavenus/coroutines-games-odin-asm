@@ -1733,6 +1733,9 @@ await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
 // ============================================================================
 
 chan_init :: proc(ch: ^Channel($T), capacity: int = 0, allocator := context.allocator) {
+    if ch.buffer != nil {
+        chan_destroy(ch)
+    }
     ch.capacity = max(0, capacity)
     buf_size := ch.capacity > 0 ? ch.capacity : 1
     ch.buffer = make([]T, buf_size, allocator)
@@ -1751,6 +1754,7 @@ chan_destroy :: proc(ch: ^Channel($T)) {
         chan_close(ch)
     }
     delete(ch.buffer, ch.allocator)
+    ch.buffer = nil
     wait_queue_destroy(&ch.send_waiters)
     wait_queue_destroy(&ch.recv_waiters)
     ch.head = 0

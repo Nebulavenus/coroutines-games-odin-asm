@@ -1,295 +1,93 @@
-# Odin Inline Assembly Analysis: Compiler Internals, Blocking Mechanisms & High-Level ASM (`inline_asm_analysis.md`)
+# Odin Inline Assembly (`asm`) Compiler Analysis & Context Switch Architecture
 
-This document details the deep-dive research into the Odin programming language compiler source code (`Odin\src\check_asm.cpp`, `check_asm_cfg.cpp`, `llvm_backend_asm.cpp`, and `parser.cpp`), explaining the exact compiler frontend, backend, and LLVM machine-instruction mechanisms that blocked high-level assembly in the coroutine library, documenting hidden features uncovered in the compiler, and presenting **Option A** (pure high-level assembly with compiler patch) and its runtime mechanics.
-
----
-
-## 1. Executive Summary & Root Cause Findings
-
-When implementing the stackful coroutine engine (`src/coroutine/asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin`), the context switch was implemented using `#byte` machine code arrays rather than pure high-level assembly mnemonics.
-
-Through compiler source analysis and LLVM code generation verification, **six distinct blocking behaviors across three compiler layers** were identified:
-
-| Layer | Blocker | Compiler Location | Manifestation | Root Cause | Workaround / Solution |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Frontend SSA** | **1. Undefined Register Check** | `check_asm_cfg.cpp:688` (`check_asm_cfg_report_undef_reg`) | `'push' implicitly reads %rbp, but nothing in this template produces a value for it` | Callee-saved registers read at entry without prior write | `#no_init` directive on output/tied/scratch parameters |
-| **Frontend SSA** | **2. Sub-Register Width Lattice Flaw** | `check_asm_cfg.cpp:698` (`in_w[0]`) | `'mov' reads %rcx at 64-bit width but only its low 0 bits are defined` | Entry lattice `in_w[0]` is initialized to `{}` for physical register tokens (`%reg`) | Parameter Indirection (`Ident` token routes to `seed_pm` instead of `in_w`) |
-| **Frontend CFG** | **3. Dead-Write Detection** | `check_asm_cfg.cpp:1015` (`check_asm_cfg_liveness`) | `'pop' writes %rbp but its value is never read before being overwritten or template ends` | Final pops before template return are not read within template | Declare registers in `#clobber %reg` to add them to `exit_live` |
-| **Frontend CFG** | **4. CFG Non-Fallthrough on `call`** | `check_asm_cfg.cpp:284` (`is_terminal`) | `The asm instruction is unreachable` on instructions following `call` | `call` is conservatively marked `is_terminal = true` | Use indirect jump (`jmp rax`), direct branch, or minimal trampoline |
-| **Backend Codegen** | **5. LLVM Missing Label Colon Bug** | `llvm_backend_asm.cpp:390` (`write_label_def`) | `LLVM Error: unknown directive .L_...` & `assembler label ... can not be undefined` | Emits `.L_<tmpl>_<label>${:uid}` without trailing colon `:` on AMD64 & RISC-V | **Option A**: Patch `llvm_backend_asm.cpp` to emit `:` on label definitions |
-| **LLVM Machine RA** | **6. Frame Pointer Interference** | LLVM Machine Function Register Allocator | `LLVM Error: Interference usage of base pointer/frame pointer.` | LLVM reserves `%rbp` as frame pointer; inline asm cannot bind/clobber `%rbp` | Low-level `#byte` machine code (which bypasses LLVM register allocator constraints) |
-| **Frontend Clobber Table** | **7. Vector Clobber Truncation (`xmm0` only)** | `src/asm_tables_amd64.cpp:308-328` (`clobber_bit_for_reg_name`) | Inlined loops clobber `%xmm1..%xmm15` registers under `-o:speed` | `clobber_bit_for_reg_name` table maps only `xmm0` and omits `xmm1..xmm15`; `#clobber` normalizations silently drop higher vector registers | Enforce standard non-inlined procedure call boundaries on all yield procedures (`wait_frames`, `wait`, `yield_frame`) so platform ABI forces spilling all caller-saved SIMD registers |
+This document details the interaction between Odin's inline assembly (`asm`) subsystem (`Odin\src\check_asm.cpp`, `Odin\src\check_asm_cfg.cpp`, `Odin\src\llvm_backend_asm.cpp`, `Odin\src\asm_tables_*.cpp`) and the coroutine context-switching implementation in `asm_amd64.odin`, `asm_arm64.odin`, and `asm_riscv64.odin`.
 
 ---
 
-## 2. In-Depth Compiler Subsystem Walkthrough
+## 1. Compiler Fixes in `dev-2026-10:151d53f44` & `docs/ASM.md`
 
-### 2.1 The Undocumented `#no_init` Directive
+Five upstream compiler improvements in `dev-2026-10:151d53f44` resolved the historical blockers that previously forced raw `#byte` opcodes on AMD64 and `get_sp`:
 
-In `Odin\src\check_asm.cpp` (lines 821–835):
-```cpp
-for (Ast *dir_ : spec->directives) {
-    ast_node(dir, BasicDirective, dir_);
-    String name = dir->name.string;
-    if (name == "no_init") {
-        i32 input_index = -1;
-        check_asm_find_group(input, *asm_template_entity_decls, &input_index);
-        if (input_index >= 0) {
-            auto *i = &(*asm_template_entity_decls)[input_index];
-            i->no_init = true;
-            if (i->tie >= 0) {
-                auto *o = &(*asm_template_entity_decls)[i->tie];
-                o->no_init = true;
-            }
-        }
-    } else {
-        error(dir_, "Invalid directive for an asm specification, got '#%.*s'", LIT(name));
-    }
-}
-```
-
-In `check_asm_cfg.cpp` (lines 405–415):
-```cpp
-u16 seed_regs = 0;
-u64 seed_pm   = 0;
-for_array(i, decls) {
-    auto const &ed = decls[i];
-    u16 pin_bit = cfg->decl_pin_bit[i];
-    if (ed.no_init) {
-        seed_pm |= bit_of(ed.entity);
-        seed_regs |= pin_bit;
-    }
-    // ...
-}
-```
-**Mechanism**:
-- When `#no_init` is attached to a parameter spec, its pinned register bit is added to `seed_regs` and `seed_pm` at block 0.
-- When an instruction at entry reads this register (e.g. `push rbp_reg`), `undef = f->read_regs & ~run_regs` evaluates to 0. No undefined register error is emitted!
-- At template exit (`check_asm_cfg.cpp:818`), `if (ed.tie >= 0 || ed.no_init) continue;` exempts the parameter from mandatory write checks.
-
-### 2.2 The Two-Step Scratch Binding Pattern
-
-In `check_asm.cpp` (lines 567 and 635):
-```cpp
-Entity *input = scope_lookup_current(scope, spec->name->Ident.interned, spec->name->Ident.hash);
-// ...
-if (spec->type != nullptr) {
-    // Scratch parameter declaration
-    Entity *entity = alloc_entity_param(scope, ...);
-    Entity *found = scope_insert(scope, entity); // Inserted into scope HERE
-}
-```
-Because `input` is queried at the start of the spec loop before the scratch parameter is inserted into `scope`, single-step declarations like `[ rbp_reg: u64 = %rbp #no_init ]` evaluate `input == nullptr` when `#no_init` is processed.
-**The Solution (Two-Step Declaration)**:
-```odin
-[
-    rbp_reg: u64,                  // Step 1: Inserts 'rbp_reg' into scope
-    rbp_reg = %rbp #no_init,       // Step 2: 'input' is found; #no_init is successfully set!
-]
-```
-
-### 2.3 Parameter Indirection vs Physical Registers
-
-In `check_asm.cpp` (lines 1770–1835):
-- Explicit register tokens (`Ast_AsmRegister`, e.g. `%rcx`):
-  Populate `facts->read_reg_w` and check the sub-register width lattice `in_w[0]`. Since `in_w[0]` is initialized to `{}` (0 bits), reading `%rcx` triggers:
-  `'mov' reads rcx at 64-bit width but only its low 0 bits are defined on all paths here`.
-- Parameter identifier tokens (`Ast_Ident`, e.g. `val`):
-  Populate `facts->read_params` and check `run_pm & (1 << id)`. Since `val` is an input parameter (or `#no_init` scratch), its bit in `seed_pm` is set.
-- **Rule**: Never use `%reg` directly in instruction operands when reading an existing value. Always bind a parameter name and reference the parameter identifier.
-
-### 2.4 The LLVM Frame Pointer Interference Barrier
-
-When an inline assembly template binds `%rbp` (e.g. `rbp_reg: u64, rbp_reg = %rbp #no_init`) or lists `#clobber %rbp`:
-- Odin generates LLVM inline assembly constraints containing `{rbp}` or `~{rbp}`.
-- LLVM's machine code generator reserves `%rbp` as the frame pointer for any procedure containing non-trivial stack allocations or dynamic stack alignment.
-- When LLVM encounters `{rbp}` or `~{rbp}` in an inline assembly constraint, it aborts compilation with:
-  `LLVM Error: Interference usage of base pointer/frame pointer.`
-- **Crucial Architecture Takeaway**: In standard C/C++ and LLVM compilers, an inline assembly statement inside a regular C/Odin procedure is **strictly prohibited by LLVM** from clobbering or explicitly binding the host procedure's active frame pointer (`%rbp` on x86_64).
-- This explains why operating systems and coroutine libraries (such as Boost.Context, glibc `swapcontext`, and Go runtime) implement stack context switches in standalone assembly files (`.S` / `.asm`) rather than inline assembly statements, or use raw `#byte` opcode streams that bypass LLVM's register allocator constraints!
+1. **`#preserve %reg` Contract (`94aba2bd6`, `check_asm.cpp:3010`, `check_asm_cfg.cpp:439`)**:
+   - Declaring `#preserve %rbp`, `#preserve %rbx`, `#preserve %rsi`, `#preserve %rdi`, `#preserve %rsp`, `#preserve %sp`, or `#preserve %ra` in the `[...]` bindings block seeds `seed_regs` and `entry_seed_w` at entry block `0` (permitting entry reads such as `push %rbp` or `mov sp, %rsp`) and adds them to `exit_live` (verifying restoration before exit) **without** emitting LLVM output register constraints (`={rbp}`), which previously triggered `LLVM Error: Interference usage of base pointer/frame pointer`.
+2. **`#clobber %flags` Syntax (`45413b78a`, `docs/ASM.md:191`)**:
+   - `#clobber flags` is deprecated and replaced by `#clobber %flags`.
+3. **Label Definition Colon Fix (`bea8fc68a`, `llvm_backend_asm.cpp:90-93`)**:
+   - `lbAsmGenerate::write_label_def` now appends the trailing colon `:` on AMD64 and RISC-V 64 (`.L_<tmpl>_<label>${:uid}:`), allowing internal labels like `.switch_done:` to assemble cleanly across all targets.
+4. **RIP-Relative Label Memory Operands (`c7201725d`, `ab99241ce`, `check_asm.cpp:19-25`)**:
+   - `[.label]` is supported on AMD64 (`lea %rax, [.switch_done]`), lowering to `.L_fiber_context_switch_switch_done0(%rip)` and eliminating the old `call .switch_body` / `jmp .switch_done` `#byte` trampoline.
+5. **PC-Relative Symbolic Label Capture on ARM64 & RISC-V (`check_asm.cpp:1062`, `asm_tables_arm64.cpp`)**:
+   - ARM64 supports `adr %x30, .switch_done` and RISC-V 64 supports `lla %ra, .switch_done`, replacing hardcoded PC-relative byte offsets with assembler-resolved local labels.
 
 ---
 
-## 3. The LLVM Backend Label Defect (Root Cause of Blocker 5)
+## 2. Per-Architecture Implementation Status
 
-### 3.1 Code Inspection of `llvm_backend_asm.cpp`
+| Architecture | File | `get_rsp` / `get_sp` & Self-ID | `fiber_context_switch` Status | Remaining `#byte` Instructions |
+| :--- | :--- | :--- | :--- | :--- |
+| **AMD64** (`windows_amd64`, `linux_amd64`, `darwin_amd64`) | `asm_amd64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **100% High-Level `asm`** (`0` `#byte`) | **None (0 `#byte`)** |
+| **ARM64** (`linux_arm64`, `darwin_arm64`) | `asm_arm64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **Hybrid High-Level `asm`** (GPRs `x19..x30`, `adr`, `str`, `cbz`, `ret` in high-level `asm`) | 11 instructions (`stp`/`ldp d8..d15` + 3 `sp`-writing ops) |
+| **RISC-V 64** (`linux_riscv64`) | `asm_riscv64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **Hybrid High-Level `asm`** (`addi %sp`, `lla %ra`, `sd`/`ld ra, s0..s11`, `beq`, `jalr` in high-level `asm`) | 24 instructions (`fsd`/`fld fs0..fs11` only) |
 
-In `Odin\src\llvm_backend_asm.cpp` (lines 388–398):
-```cpp
-virtual void write_label_def(AstIdent *label_ident) {
-    String name = label_ident->token.string;
-    write_cstr(".L_");
-    write_string(tmpl_entity->token.string);
-    write_cstr("_");
-    write_string(name);
-    write_cstr("${:uid}"); // BUG: Missing trailing colon ':'
-}
-virtual void write_label_ref(AstIdent *label_ident) {
-    this->write_label_def(label_ident); // default: same spelling for def and ref
-}
-```
-And in the instruction emission loop (line 305):
-```cpp
-case_ast_node(label, AsmLabelDecl, instr_);
-    this->write_label_def(&label->name->Ident);
-case_end;
-```
+### 2.1 AMD64 (`asm_amd64.odin`) — 100% High-Level `asm` (Zero `#byte`)
+Both `fiber_context_switch` (Windows x64 & System V AMD64) and `get_rsp` / `get_r12_reg` are implemented using **100% high-level Odin `asm` mnemonics** with zero `#byte` directives:
+- **Resume RIP Capture**: `lea %rax, [.switch_done]; push %rax`.
+- **Callee-Saved GPRs & XMMs**: Direct `%rbp`, `%rbx`, `%rsi`, `%rdi`, `%r12`..`%r15` (`push`/`pop`) and `%xmm6`..`%xmm15` (`movdqu [%rsp + offset], %xmmN`). Because `clobber_bit_for_reg_name` returns `0` for `r12`..`r15` and `xmm6`..`xmm15`, they are accessed directly as hardware registers without scratch parameter early-clobber (`=&`) allocation traps.
+- **Stack Pointer Swap & CFG Exit Liveness**:
+  - `CLOBBER_REGS_NAMED` (`asm_tables_amd64.cpp:296`) omits `ClobberReg_RSP` from `exit_live`. Using `xchg %rsp, %rdx` (Windows) / `xchg %rsp, %rsi` (SysV) includes `ClobberReg_RSP` in `facts->read_regs`, preventing a dead-write warning on the stack swap.
+  - Because `ret` is marked `is_terminal = true`, placing a never-taken `jz .switch_done` immediately before `ret` (`add %rsp, 160` on Windows or `test %rsp, %rsp` on SysV guarantees `ZF=0` at runtime since `%rsp != 0`) links the basic block to `.switch_done:` (`check_asm_cfg_block_leaves`), seeding `live_out` with `exit_live` and silencing dead-write warnings on `pop %rdi..%rbp`.
 
-### 3.2 The Asymmetry: ARM64 vs AMD64 / RISC-V
-- In `lbAsmGenerate_arm64`:
+### 2.2 ARM64 (`asm_arm64.odin`) — High-Level `get_sp` & Hybrid `fiber_context_switch`
+- **`get_sp` & `get_x19_reg`**: 100% high-level `asm` (`mov sp, %sp` with `#preserve %sp`; `mov res, %x19`).
+- **`fiber_context_switch`**:
+  - Uses high-level `adr %x30, .switch_done`, `stp`/`ldp` for all 12 callee-saved GPRs (`%x19`..`%x30`), `mov %x2, %sp`, `str %x2, [from_rsp]`, `cbz %x2, .switch_done`, `ret`, and `.switch_done:`.
+  - Retains `#byte` for 2 specific compiler constraints (detailed in Section 3 below).
+
+### 2.3 RISC-V 64 (`asm_riscv64.odin`) — High-Level `get_sp` & Hybrid `fiber_context_switch`
+- **`get_sp` & `get_s2_reg`**: 100% high-level `asm` (`addi sp, %sp, 0` with `#preserve %sp`; `addi res, %s2, 0`).
+- **`fiber_context_switch`**:
+  - Uses high-level `addi %sp, %sp, -208`, `lla %ra, .switch_done`, `sd`/`ld` for `%ra` and `%s0`..`%s11`, `sd %sp, [from_rsp + 0]`, `addi %sp, to_rsp, 0`, `addi %sp, %sp, 208`, `beq %sp, %zero, .switch_done`, `jalr %zero, %ra, 0`, and `.switch_done:`.
+  - Retains `#byte` only for `fsd`/`fld fs0..fs11` (detailed in Section 3 below).
+
+---
+
+## 3. What Remains Unfixed in Odin's Inline `asm` Compiler (`dev-2026-10:151d53f44`)
+
+While AMD64 is now 100% `#byte`-free and ARM64/RISC-V 64 use high-level mnemonics for all GPRs, labels, and control flow, three upstream Odin compiler limitations remain in `dev-2026-10:151d53f44`:
+
+### 3.1 ARM64: Missing 64-bit Scalar SIMD (`d0`–`d31`) Register Names & `vN` Formatting (`asm_tables_arm64.cpp` / `llvm_backend_asm.cpp`)
+- **Compiler Location**: `Odin\src\asm_tables_arm64.cpp:1361` (`register_strings`) and `Odin\src\llvm_backend_asm.cpp:1490` (`lbAsmGenerate_arm64::write_operand`).
+- **Issue**:
+  1. `register_strings` on ARM64 only defines 128-bit vector names `v0`..`v31` (`REG_CLASS_V | REG_SIZE_128`); scalar 64-bit `d0`..`d31` (`REG_CLASS_F | REG_SIZE_64`) and 32-bit `s0`..`s31` names are not in the lookup table.
+  2. When a physical register `%v8` (`Ast_AsmRegister`) is passed to `stp %v8, %v9, [%sp, 96]`, `lbAsmGenerate_arm64::write_operand` writes the bare string `v8, v9` into the LLVM inline assembly string (whereas parameter variables get `${N:d}` or `${N:q}` modifiers). The AArch64 LLVM assembler rejects `stp v8, v9, [sp, #96]` with `error: invalid operand for instruction` because AArch64 `stp`/`ldp` requires width-qualified register names (`d8`/`d9` for 64-bit or `q8`/`q9` for 128-bit).
+- **Upstream Fix Needed**: Add `d0`..`d31` (64-bit) and `q0`..`q31` (128-bit) to `register_strings` in `asm_tables_arm64.cpp` (or format `Ast_AsmRegister` in `lbAsmGenerate_arm64::write_operand` as `qN`/`dN`).
+
+### 3.2 ARM64: Writing to `%sp` Emits `~{sp}` in LLVM Clobber String (`check_asm.cpp`)
+- **Compiler Location**: `Odin\src\check_asm.cpp:2042-2046`.
+- **Issue**: Any instruction in an ARM64 `asm` block that writes to `%sp` (such as `sub %sp, %sp, 160` or `add %sp, %sp, 160`) sets `ClobberReg_SP` in `auto_clobber_regs`. Even when `#preserve %sp` is specified, `check_asm.cpp` appends `~{sp}` to the LLVM inline asm constraint string. Unlike x86_64 and RISC-V, LLVM's AArch64 backend emits `LLVM Warning: inline asm clobber list contains reserved registers: SP` whenever `~{sp}` is present.
+- **Upstream Fix Needed**: Suppress emitting `~{sp}` (and `~{fp}`) into LLVM's clobber constraint string when the register is declared with `#preserve %sp` (since the template contractually restores it before exit).
+
+### 3.3 RISC-V 64: 64-bit Float Registers `%fs0`–`%fs11` Typed as Integer `t_u64` (`check_asm.cpp`)
+- **Compiler Location**: `Odin\src\check_asm.cpp:947-965` (`check_register`).
+- **Issue**: Although `asm_tables_riscv64.cpp:587` correctly tags `fs0`..`fs11` with `REG_CLASS_F | REG_SIZE_64`, `check_register` in `check_asm.cpp` assigns the Odin AST type based solely on bit-width:
   ```cpp
-  void write_label_def(AstIdent *label_ident) override {
-      asm_string = gb_string_append_fmt(asm_string, "%d:", this->arm64_label_number(label_ident));
-  }
-  void write_label_ref(AstIdent *label_ident) override {
-      char dir = this->label_is_forward(label_ident) ? 'f' : 'b';
-      asm_string = gb_string_append_fmt(asm_string, "%d%c", this->arm64_label_number(label_ident), dir);
-  }
+  case 1: operand->type = t_u8;  break;
+  case 2: operand->type = t_u16; break;
+  case 4: operand->type = t_u32; break;
+  case 8: operand->type = t_u64; break; // <-- Assigns integer t_u64 even for REG_CLASS_F!
   ```
-  ARM64 overrides both and explicitly includes `%d:` (with colon) on def, and `%d%c` (without colon) on ref.
-- In `lbAsmGenerate` (default for AMD64 and RISC-V):
-  `write_label_ref` simply forwards to `write_label_def`. Because both use the identical string, the author omitted the colon from `write_label_def` so references wouldn't have colons, but forgot to emit the colon when processing `AsmLabelDecl`!
+  Subsequently, `operand_reg_class` checks `is_type_float(operand->type)` and classifies `%fs0`..`%fs11` as `AsmRegClass_Integer`, causing `fsd %fs0, [%sp + 104]` to fail with:
+  `Error: 'fsd' operand-1 is in the wrong register class, expected 64-bit float register, got 64-bit integer register`.
+- **Upstream Fix Needed**: In `check_register` (`check_asm.cpp:947`), assign `t_f32` / `t_f64` when `(reg_flags & REG_CLASS_F) != 0`.
 
 ---
 
-## 4. Option A: Pure High-Level ASM Specification
+## 4. Memory Lifecycle & Re-Initialization Safety Fixes
 
-Option A implements 100% pure high-level assembly with named labels and direct instruction mnemonics.
-
-### 4.1 The Required Compiler Patch (`Odin\src\llvm_backend_asm.cpp`)
-
-To resolve the label defect upstream in Odin:
-```diff
---- a/src/llvm_backend_asm.cpp
-+++ b/src/llvm_backend_asm.cpp
-@@ -304,6 +304,7 @@ struct lbAsmGenerate {
- 			case_ast_node(label, AsmLabelDecl, instr_);
- 				this->write_label_def(&label->name->Ident);
-+				this->write_cstr(":\n");
- 			case_end;
-```
-*(Per user instruction, this patch is documented here only and NOT applied to `Odin` directly).*
-
-### 4.2 High-Level AMD64 Context Switch Specification (Option A)
-
-```odin
-when ODIN_ARCH == .amd64 && ODIN_OS == .Windows {
-    fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
-        from_rsp = %rcx,
-        to_rsp   = %rdx,
-        rsp_reg: rawptr, rsp_reg = %rsp #no_init,
-        rax_scratch: rawptr = %rax,
-
-        // Callee-saved GPRs via Two-Step #no_init Scratch Binding
-        rbp_reg: u64, rbp_reg = %rbp #no_init,
-        rbx_reg: u64, rbx_reg = %rbx #no_init,
-        rsi_reg: u64, rsi_reg = %rsi #no_init,
-        rdi_reg: u64, rdi_reg = %rdi #no_init,
-        r12_reg: u64, r12_reg = %r12 #no_init,
-        r13_reg: u64, r13_reg = %r13 #no_init,
-        r14_reg: u64, r14_reg = %r14 #no_init,
-        r15_reg: u64, r15_reg = %r15 #no_init,
-
-        #volatile,
-        #clobber flags,
-        #clobber memory,
-        #clobber %rax,
-        #clobber %rsp,
-    ] {
-        // Satisfy CFG reachability
-        test to_rsp, to_rsp
-        jz .resume
-
-        // 1. Save GPRs
-        push rbp_reg
-        push rbx_reg
-        push rsi_reg
-        push rdi_reg
-        push r12_reg
-        push r13_reg
-        push r14_reg
-        push r15_reg
-
-        // 2. Save XMMs (omitted for brevity)
-        // 3. Push Resume Address
-        lea rax_scratch, [.resume]
-        push rax_scratch
-
-        // 4. Swap Stack Pointers
-        mov [from_rsp], rsp_reg
-        mov rsp_reg, to_rsp
-
-        // 5. Jump to Target Fiber's Saved Resume Point
-        ret
-
-    .resume:
-        // 6. Restore GPRs
-        pop r15_reg
-        pop r14_reg
-        pop r13_reg
-        pop r12_reg
-        pop rdi_reg
-        pop rsi_reg
-        pop rbx_reg
-        pop rbp_reg
-    }
-}
-```
-
----
-
----
-
-## 5. Architectural Evaluation: Why `#byte` Remains the Optimal Production Standard
-
-### 5.1 The Four Pillars of `#byte` Superiority
-1. **Immunity to LLVM Frame Pointer & Base Pointer Interference**:
-   Because `#byte` does not emit LLVM register constraints (`{rbp}`, `{rsp}`), LLVM's machine code allocator never raises `Interference usage of base pointer/frame pointer`.
-2. **Immunity to Odin Label Backend Defects**:
-   `#byte` opcodes encode relative offsets in machine code (`0xE8, 0x05...`), entirely bypassing the missing colon in Odin's LLVM label backend (`llvm_backend_asm.cpp:390`).
-3. **Immunity to Vector Register Corruption via Early-Clobber (`=&`) Outputs**:
-   In Odin's LLVM backend (`llvm_backend_asm.cpp:208-233`), scratch parameters are modeled as discarded early-clobber outputs (`=&{xmmN}`). When lowering instructions like `movdqu [%rsp + off], xmm_reg` into GNU AT&T syntax (`movdqu %xmmN, off(%rsp)`), LLVM treats `%xmmN` as an uninitialized output rather than an existing live input. This clobbers the caller's live floating-point/vector registers with undefined values, causing CPU traps (`Illegal_Instruction` / `0xC000001D`). Direct `#byte` emission (`0x44, 0x0F, 0x7F...`) preserves raw CPU hardware vector state without compiler interference.
-4. **100% Stock Compiler Portability**:
-   Works out of the box with any official Odin release without requiring custom patches or local compiler builds.
-5. **Guaranteed Zero-Overhead**:
-   Identical instruction sequences to pure assembly, validated down to the exact mnemonic via `core:rexcode` disassembler verification in Test 187.
-6. **Immunity to Compiler Vector Clobber Truncation (`xmm0`-only limitation)**:
-   In Odin's AMD64 inline assembly table (`src/asm_tables_amd64.cpp:308-328`), the compiler's `clobber_bit_for_reg_name` table maps only `xmm0` and omits `xmm1` through `xmm15`. Consequently, high-level `#clobber %xmm1..%xmm15` directives are silently dropped by the compiler frontend. By encapsulating `#byte` switches behind distinct procedure call boundaries, the platform ABI forces the caller to spill all caller-saved vector registers (`%xmm0..%xmm5`), protecting optimized code from register corruption under `-o:speed`.
-
----
-
-## 6. Git Archaeology & Evolution: Why High-Level ASM Worked in Old Commits
-
-A historical audit across both this codebase and the upstream Odin compiler (`Odin`) explains the transition:
-
-### 6.1 The Historical Working Code (`commit 5e87a71`)
-In early August 2026, context switches were written in raw high-level assembly:
-```odin
-fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [ ... ] {
-    call .switch_body
-    jmp .switch_done
-.switch_body:
-    push %rbp
-    push %rbx
-    ...
-    sub %rsp, 160
-    mov [%rcx], %rsp
-    mov %rsp, %rdx
-    ...
-    ret
-.switch_done:
-}
-```
-At that point:
-- The Odin compiler frontend only performed basic syntactic checks and token validation.
-- It did **not** construct a basic block Control Flow Graph (CFG).
-- It did **not** track register definitions across execution paths.
-- It did **not** evaluate sub-register bit-width lattices.
-
-### 6.2 The Upstream Compiler Overhaul (August 24–28, 2026)
-Between August 24 and August 28, 2026, Odin merged several major PRs authored by gingerBill:
-- **`ee68d39c2` (PR #7444 `bill/asm-cfg`)**: Added `check_asm_cfg.cpp`, introducing a full basic-block CFG and conservative terminal checks (`call` marked `is_terminal = true`).
-- **`b4cf9b14b` (`asm: Implement sub-register width analysis`)**: Added the `in_w` bit-width lattice, initializing raw physical registers `%reg` to 0 defined bits at entry block 0.
-- **`6f65d775c` (`Re-add check_asm_cfg_liveness`)**: Enforced dead-write detection on unread register modifications near template exit.
-
-These compiler enhancements broke the original high-level code with strict compile-time errors. Consequently, in commit [`f6ae2a7`](../CHANGELOG.md), context switching was migrated to `#byte` machine code arrays, while high-level inline assembly was retained for stack and register extractors (`get_rsp`, `get_sp`, `get_r12_reg`, `get_x19_reg`, `get_s2_reg`).
+During verification of the interactive Raylib examples (`examples/game`, `examples/quest_ai`, `examples/showcase`) with Odin's `core:mem.Tracking_Allocator`, we also resolved a lifecycle leak triggered by in-place restarts (pressing `R` in `examples/game/main.odin`):
+- **Root Cause**: Calling `game_init(g)` on an already-initialized `Game` struct invoked `scheduler_init(&g.sched)` without calling `game_destroy(g)` / `scheduler_destroy(&g.sched)` first, overwriting the existing dynamic queues (`ready_queue`, `timer_heap`, `frame_waiters`, `condition_waiters`) and `Fiber_Pool` arrays (`slabs`, `all_fibers`, `free_fibers`) and leaking the 2 prewarmed 1 MB stack slabs and 64 `Fiber` allocations.
+- **Fixes Applied**:
+  1. `fiber_pool_init` (`pool.odin`) and `scheduler_init` / `scheduler_init_config` (`scheduler.odin`) now check if the pool/scheduler is already initialized and automatically invoke `fiber_pool_destroy` / `scheduler_destroy` before re-allocating.
+  2. `fiber_pool_destroy`, `scheduler_destroy`, and `chan_destroy` (`api.odin`) now nil out all freed slices/dynamic arrays so repeated `*_destroy` calls are safe no-ops.
+  3. `game_init`, `world_init`, and `showcase_init` now call their corresponding `*_destroy` procedure if `sched` is already initialized.
+  4. Covered by unit test `test_scheduler_reinit_no_memory_leak` in `coroutine_test.odin` (`190/190` tests passing with 0 leaks).

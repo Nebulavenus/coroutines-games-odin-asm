@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 188-test coverage for the SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 190-test coverage for the SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -8,13 +8,13 @@ This document records the comprehensive verification matrix, architectural analy
 
 | Feature / Subsystem | Verification Method | Status |
 | :--- | :--- | :--- |
-| **Universal Multi-ISA ASM Context Switch** | `src/coroutine/asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin` — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with high-level register extractors | **PASS** |
-| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`%rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#volatile`, `#clobber memory`) preventing LLVM SSA optimization/caching across context switches | **PASS** |
+| **Universal Multi-ISA ASM Context Switch** | `asm_amd64.odin` (100% high-level `asm`, 0 `#byte`), `asm_arm64.odin`, `asm_riscv64.odin` — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with 100% `#byte`-free `get_rsp` / `get_sp` and self-ID extractors | **PASS** |
+| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`#preserve %rbp/%rbx/%rsi/%rdi/%rsp/%sp/%ra`, `#clobber %flags`, `#volatile`, `#clobber memory`) preventing LLVM SSA optimization/caching across context switches | **PASS** |
 | **Per-Fiber Isolated Temporary Allocator** | `src/coroutine/types.odin` & `src/coroutine/pool.odin` — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation | **PASS** |
 | **Multi-Tiered Stack Safety & Guard Pages** | `src/coroutine/pool.odin` — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_NOACCESS` (Windows) / `PROT_NONE` (POSIX) virtual memory | **PASS** |
 | **Stack Overflow Protection** | `src/coroutine/pool.odin` — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation and automatic 100% stack consumption reporting on breach | **PASS** |
 | **Stack Watermarking & High-Water Usage** | `src/coroutine/pool.odin` — `0xAA` watermarked stacks and `fiber_calc_stack_usage` real-time profiler | **PASS** |
-| **Persistent Allocator Reference Storage** | `src/coroutine/types.odin`, `pool.odin`, `scheduler.odin` — Persistent `allocator: mem.Allocator` stored directly in `Fiber_Pool` and `Scheduler` structs | **PASS** |
+| **Persistent Allocator & Re-Init Safety** | `pool.odin`, `scheduler.odin`, `api.odin` — Persistent `allocator: mem.Allocator` storage and automatic cleanup on re-initialization (`scheduler_init`, `fiber_pool_init`, `chan_init`) with zero memory leaks | **PASS** |
 | **3-Tier Multi-Domain Engine Clock** | `src/coroutine/scheduler.odin` — Dual min-heaps (`timer_heap`, `real_timer_heap`), discrete fixed ticks (`wait_ticks`), continuous zero-drift math, and pause/time-scale dilation | **PASS** |
 | **100% Pure Structured Concurrency Matrix** | `src/coroutine/api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, and `branch` descriptors with zero unstructured escape hatches | **PASS** |
 | **Dynamic Task Joining (`fiber_join`)** | `src/coroutine/api.odin` — Dynamic task join awaiting independent fiber handles | **PASS** |
@@ -35,17 +35,17 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (188 Tests Passing)
+## 2. Test Suite Execution Results (190 Tests Passing)
 
-All **188 unit tests** execute cleanly via `build.ps1 test`:
+All **190 unit tests** execute cleanly via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 188 tests in ~320ms. All tests were successful.
+Finished 190 tests in ~320ms. All tests were successful.
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-### Complete 188-Test Catalog across 18 Test Suites:
+### Complete 190-Test Catalog across 18 Test Suites:
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.

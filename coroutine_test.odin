@@ -8474,21 +8474,33 @@ test_multi_isa_byte_opcodes_disassembly_validation :: proc(t: ^testing.T) {
 // Test 188: High-Level Inline Assembly Stack and Register Extractors
 @(test)
 test_high_level_inline_asm_stack_and_register_extractors :: proc(t: ^testing.T) {
+    local_var: u64 = 0xDEADBEEF
+    local_addr := uintptr(&local_var)
+
     when ODIN_ARCH == .amd64 {
         sp := get_rsp()
         testing.expect(t, sp != nil, "get_rsp() must return a non-nil active stack pointer")
+        sp_addr := uintptr(sp)
+        diff := sp_addr > local_addr ? sp_addr - local_addr : local_addr - sp_addr
+        testing.expect(t, diff < 4096, "get_rsp() must be within active stack frame")
 
         r12 := get_r12_reg()
         _ = r12
     } else when ODIN_ARCH == .arm64 {
         sp := get_sp()
         testing.expect(t, sp != nil, "get_sp() must return a non-nil active stack pointer")
+        sp_addr := uintptr(sp)
+        diff := sp_addr > local_addr ? sp_addr - local_addr : local_addr - sp_addr
+        testing.expect(t, diff < 4096, "get_sp() must be within active stack frame")
 
         x19 := get_x19_reg()
         _ = x19
     } else when ODIN_ARCH == .riscv64 {
         sp := get_sp()
         testing.expect(t, sp != nil, "get_sp() must return a non-nil active stack pointer")
+        sp_addr := uintptr(sp)
+        diff := sp_addr > local_addr ? sp_addr - local_addr : local_addr - sp_addr
+        testing.expect(t, diff < 4096, "get_sp() must be within active stack frame")
 
         s2 := get_s2_reg()
         _ = s2
@@ -8548,6 +8560,69 @@ test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, fiber_a_ticks, 4)
     testing.expect_value(t, fiber_b_ticks, 2)
+}
+
+@(test)
+test_scheduler_reinit_no_memory_leak :: proc(t: ^testing.T) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator)
+    defer mem.tracking_allocator_destroy(&track)
+    alloc := mem.tracking_allocator(&track)
+    context.allocator = alloc
+
+    sched: Scheduler
+    scheduler_init(&sched, alloc_mode = .Standard_Slab, allocator = alloc)
+    scheduler_prewarm(&sched, 64)
+
+    scope: Fiber_Scope
+    sig: Signal
+    defer signal_destroy(&sig)
+
+    spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 1.0)
+    }, scope = &scope)
+    spawn(&sched, proc(f: ^Fiber) {
+        yield_frame(f)
+    }, scope = &scope)
+    spawn_ptr(&sched, proc(f: ^Fiber, s: ^Signal) {
+        signal_wait(f, s)
+    }, &sig, scope = &scope)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, scope_active_count(&scope), 3)
+
+    // Re-initialize without calling scheduler_destroy first (simulates in-place game restart)
+    scheduler_init(&sched, alloc_mode = .Standard_Slab, allocator = alloc)
+    scheduler_prewarm(&sched, 64)
+
+    // Outliving scope and wait queue should have been cleanly detached during re-init
+    testing.expect_value(t, scope_active_count(&scope), 0)
+    testing.expect(t, sig.waiters.head == nil)
+
+    // Also test Channel and Generator re-init without explicit destroy
+    ch: Channel(int)
+    chan_init(&ch, capacity = 8, allocator = alloc)
+    chan_init(&ch, capacity = 16, allocator = alloc)
+    chan_destroy(&ch)
+
+    gen: Generator(int)
+    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
+        yield_value(f, g, 42)
+    }, allocator = alloc)
+    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
+        yield_value(f, g, 99)
+    }, allocator = alloc)
+    val, ok := generator_next(&gen)
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, val, 99)
+    generator_destroy(&gen)
+
+    scheduler_destroy(&sched)
+    // Calling destroy a second time must be a safe no-op
+    scheduler_destroy(&sched)
+
+    testing.expect_value(t, len(track.allocation_map), 0)
+    testing.expect_value(t, len(track.bad_free_array), 0)
 }
 
 // ============================================================================
@@ -8745,6 +8820,7 @@ run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) 
         { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
         { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
         { "test_fiber_owned_ticker_zero_drift_and_rebase", test_fiber_owned_ticker_zero_drift_and_rebase },
+        { "test_scheduler_reinit_no_memory_leak", test_scheduler_reinit_no_memory_leak },
     }
 
     total := len(tests)

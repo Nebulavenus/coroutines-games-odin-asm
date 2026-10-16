@@ -99,3 +99,7 @@
 #98 2026-09-08 Verified all Markdown tables across 48 files via tools/check_markdown_tables.py; corrected column count and unescaped character artifacts in docs/wasm/README.md with 0 table issues remaining.
 #99 2026-09-08 Implemented cross-platform Binaryen tooling with tools/download_binaryen.py & modern download_binaryen.ps1 supporting Windows, Linux, and macOS (x86_64/arm64); wired Get-WasmOptPath in build.ps1 with system PATH fallback.
 #100 2026-09-08 pack-itch command creates root-level index.html ZIP for itch.io iframe compatibility with zero-margin responsive canvas
+#101 2026-10-16 Odin dev-2026-10:151d53f44 adds #preserve %reg, #clobber %flags, RIP-relative [.label] on AMD64, and label colons, enabling 100% #byte-free asm_amd64.odin and get_sp on all arches.
+#102 2026-10-16 ARM64/RISC-V fiber_context_switch now use high-level GPR/SP/label ops (adr/lla .switch_done); only ARM64 d8..d15 (unlisted in register_strings) + sp-writes and RISC-V fs0..fs11 (typed u64 in check_register) keep #byte.
+#103 2026-10-16 Verified high-level inline asm migration (100% #byte-free asm_amd64.odin & get_sp, symbolic adr/lla + GPR ops on ARM64/RISC-V): 189/189 tests pass on Win64, ARM64 QEMU, and RISC-V 64 QEMU; check-all and dist pass with 0 warnings/errors.
+#104 2026-10-16 Fixed memory leaks on Scheduler/Fiber_Pool/Channel re-init (e.g. pressing R in examples/game/main.odin) by making scheduler_init, fiber_pool_init, chan_init, and game_init/world_init/showcase_init destroy existing state before re-allocating. 190/190 tests pass.

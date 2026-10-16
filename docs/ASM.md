@@ -1,10 +1,11 @@
 ---
 title: Inline asm Templates Overview
 summary: Overview of the inline `asm` templates in Odin
-weight: 10
+weight: 12
 ---
 
-> **Note:** Supported targets: `amd64`, `arm64`, and `riscv64`.
+> [!NOTE]
+> Supported targets: `amd64`, `arm64`, and `riscv64`.
 
 ## Overview
 
@@ -116,7 +117,7 @@ register (an in-out that needs no tie):
 divmod_u64 :: asm(n: u64, d: u64) -> (quo, rem: u64) [
 	n -> quo = %rax,
 	rem      = %rdx,
-	#clobber flags,
+	#clobber %flags,
 ] {
 	xor %rdx, %rdx
 	div d
@@ -143,7 +144,7 @@ count_less :: asm(x: []i64, n: i64, thr: i64) -> (count: i64) [
 	pred:  i64,
 	predb: u8 = pred,   // low-8 view of pred
 	i:     i64,
-	#clobber flags,
+	#clobber %flags,
 	#clobber memory,
 ] {
 	// ... setl predb ; add acc, pred ...
@@ -183,7 +184,7 @@ identical.
 crc32_buf :: asm(init: u32, p: [^]u8, len: i64) -> (crc: u32) [
 	init -> crc,
 	i: i64,
-	#clobber flags,
+	#clobber %flags,
 	#clobber memory,
 ] {
 	xor i, i
@@ -236,7 +237,7 @@ the instruction stream:
 Three orthogonal axes:
 
 - `#clobber %reg`   - a register is trashed.
-- `#clobber flags`  - the condition codes (flags) are modified.
+- `#clobber %flags` - the condition codes (flags) are modified.
 - `#clobber memory` - memory the compiler cannot see is read or written; also
   forces ordering.
 
@@ -250,7 +251,7 @@ Placed within the `[...]` block:
 
 - `#volatile` marks the whole template as _volatile_: it must not be deleted
   even if its results are unused, nor reordered. This is distinct from
-  `#clobber memory` (an ordering/visibility statement) and from `#clobber flags`.
+  `#clobber memory` (an ordering/visibility statement) and from `#clobber %flags`.
 - `#align_stack` forces stack realignment on entry to the template, for
   instructions that require an aligned stack.
 
@@ -367,11 +368,11 @@ rdtsc :: asm() -> (lo, hi: u32) [
 	rdtsc
 }
 
-cpuid :: asm(leaf: u32) -> (a, b, c, d: u32) [
-	leaf -> a = %eax,
-	b = %ebx,
-	c = %ecx,
-	d = %edx,
+cpuid :: asm(leaf: u32, subleaf: u32) -> (a, b, c, d: u32) [
+	leaf -> a    = %eax,
+	b            = %ebx,
+	subleaf -> c = %ecx,
+	d            = %edx,
 ] {
 	cpuid
 }
@@ -390,7 +391,7 @@ dot_f32x4 :: asm(a, b: [^]f32, n: i64) -> (result: f32) [
 	acc: #simd[4]f32,
 	tmp: #simd[4]f32,
 	i:   i64,
-	#clobber flags,  // the cmp/jl sets flags
+	#clobber %flags, // the cmp/jl sets flags
 	#clobber memory, // conservatively: we read memory the compiler can't see
 ] {
 	xorps acc, acc          // acc = {0,0,0,0}
@@ -442,6 +443,7 @@ memcpy_rep :: asm(dst, src: rawptr, len: uint) -> (end_dst, end_src: rawptr, rem
 	src -> end_src = %rsi,
 	len -> rem     = %rcx,
 ] {
+	cld
 	rep
 	movsb
 }
@@ -558,25 +560,3 @@ main :: proc() {
 	mfence()
 }
 ```
-
----
-
-## Low-Level Stack Switching & Context Switch Trampolines (`#byte`)
-
-When implementing stackful coroutines or fiber context switches in Odin's inline assembly, two critical architectural rules apply:
-
-### 1. The SSA Undefined Register Rule & `#byte`
-In standard `asm(...)` templates, the compiler's SSA dataflow pass (`check_asm_cfg_report_undef_reg`) requires every read register to be defined within the template. While the undocumented `#no_init` directive (detailed in [ASM_2.md](ASM_2.md)) bypasses this rule in the frontend, low-level `#byte` machine code is currently required to prevent LLVM frame pointer interference (`LLVM Error: Interference usage of base pointer/frame pointer`) on `%rbp` and circumvent the LLVM label definition colon bug on AMD64 and RISC-V (documented in [inline_asm_analysis.md](inline_asm_analysis.md)).
-
-### 2. The Link Register (`LR` / `ra`) Trampoline for RISC ISAs
-Inlined assembly templates are expanded directly into the calling procedure. On RISC architectures (ARM64 and RISC-V 64), entering an inlined template has `LR`/`ra` holding the return address of the **outer caller**, not the instruction following the context switch.
-
-To establish clean return semantics, the switch routine uses a **Branch-and-Link Return Trampoline**:
-* **ARM64**: `bl .switch_body` (+8B) sets `x30` to point to `b .switch_done` (+108B), and `.switch_body` finishes with `ret`.
-* **RISC-V 64**: `jal ra, +8` (+8B) sets `ra` to point to `j .switch_done` (+224B), and `.switch_body` finishes with `jalr zero, ra, 0`.
-
-### 3. Exhaustive Caller-Saved Register Clobbers
-To ensure local variables survive across context switches, all caller-saved registers must be explicitly declared with individual `#clobber %reg` directives in the binding block:
-* **ARM64**: `#clobber %x2`..`#clobber %x17`, `#clobber %v0`..`%v7`, `#clobber %v16`..`%v31`, `#clobber memory`.
-* **RISC-V 64**: `#clobber %t0`..`#clobber %t6`, `#clobber %a2`..`#clobber %a7`, `#clobber memory`.
-* **AMD64**: `#clobber %rax`, `%rcx`, `%rdx`, `%r8`..`%r11`, `#clobber flags`, `#clobber memory`.

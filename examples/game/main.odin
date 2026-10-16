@@ -477,6 +477,9 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 // ============================================================================
 
 game_init :: proc(g: ^Game) {
+    if g.sched.fiber_pool.all_fibers != nil {
+        game_destroy(g)
+    }
     coroutine.scheduler_init(&g.sched)
     coroutine.scheduler_prewarm(&g.sched, 64)
 

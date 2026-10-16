@@ -3,3 +3,4 @@ build/
 dist/
 tools/binaryen/
 *.wasm
+.odin-nav/

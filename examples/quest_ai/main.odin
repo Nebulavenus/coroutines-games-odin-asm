@@ -329,6 +329,9 @@ run_simulation_benchmark :: proc(w: ^World) {
 // ============================================================================
 
 world_init :: proc(w: ^World) {
+    if w.sched.fiber_pool.all_fibers != nil {
+        world_destroy(w)
+    }
     coroutine.scheduler_init(&w.sched)
     // Pre-warm stack pool for zero-allocation runtime performance
     coroutine.scheduler_prewarm(&w.sched, 64)

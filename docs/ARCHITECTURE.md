@@ -50,23 +50,23 @@ SkookumScript’s gameplay scripting model relies on five core pillars:
 ### A. The Multi-ISA Context Switch (`asm` primitive)
 To switch between the **Scheduler Stack** and a **Coroutine Fiber Stack**, we only need to preserve the **non-volatile (callee-saved) registers** as dictated by the target ABI standard:
 
-* **AMD64 / x86-64 (Windows x64 & System V ABI):**
-  - Callee-saved: `rbp`, `rbx`, `rsi`, `rdi`, `r12`, `r13`, `r14`, `r15`, and SIMD `xmm6`..`xmm15` on Windows.
+* **AMD64 / x86-64 (Windows x64 & System V ABI) — 100% High-Level `asm` (Zero `#byte`):**
+  - Callee-saved: `rbp`, `rbx`, `rsi`, `rdi`, `r12`, `r13`, `r14`, `r15`, and SIMD `xmm6`..`xmm15` on Windows (`#preserve` + direct register operands).
   - Self-Identity Register: `%r12`.
-  - Trampoline: `call .switch_body` / `jmp .switch_done` / `ret`.
+  - Resume RIP Capture: `lea %rax, [.switch_done]; push %rax` / `jz .switch_done; ret; .switch_done:`.
 * **ARM64 / AArch64 (AAPCS64 Standard):**
-  - Callee-saved: `x29` (FP), `x30` (LR), `x19`–`x28`, `d8`–`d15`.
+  - Callee-saved: `x29` (FP), `x30` (LR), `x19`–`x28` (high-level `stp`/`ldp`), `d8`–`d15` (`#byte`).
   - Self-Identity Register: `%x19`.
-  - Trampoline: `bl .switch_body` (+8B) / `b .switch_done` (+108B) / `ret` (sets `x30` on inlined templates).
+  - Resume Address Capture: `adr %x30, .switch_done` / `cbz %x2, .switch_done; ret; .switch_done:`.
   - Stack frame: Strictly 16-byte aligned, 160 bytes.
 * **RISC-V 64 (LP64D Standard):**
-  - Callee-saved: `ra` (x1), `s0` (x8 / fp), `s1` (x9), `s2`–`s11` (x18–x27), `fs0`–`fs11` (f8–f9, f18–f27).
+  - Callee-saved: `ra` (x1), `s0` (x8 / fp), `s1` (x9), `s2`–`s11` (x18–x27) (high-level `sd`/`ld`), `fs0`–`fs11` (`#byte`).
   - Self-Identity Register: `%s2` (`x18`).
-  - Trampoline: `jal ra, +8` (+8B) / `j .switch_done` (+224B) / `jalr zero, ra, 0`.
+  - Resume Address Capture: `lla %ra, .switch_done` / `beq %sp, %zero, .switch_done; jalr %zero, %ra, 0; .switch_done:`.
   - Stack frame: Strictly 16-byte aligned, 208 bytes.
 
-### B. Inlined Template Expansion & Link Register Trampoline
-In Odin, `asm(...)` templates are inlined directly into callers (`wait_frames`, `scheduler_step`). On RISC architectures (ARM64 & RISC-V 64), entering an inlined template has `LR`/`ra` pointing to the outer caller. The engine uses a branch-and-link trampoline (`bl` / `jal`) to dynamically set `LR`/`ra` to the instruction immediately following the inline template, ensuring clean return flow.
+### B. Inlined Template Expansion & Symbolic Resume Label Capture
+In Odin, `asm(...)` templates are inlined directly into callers (`wait_frames`, `scheduler_step`). Because no `call`/`bl`/`jal` instruction is emitted at the call site, the context switcher explicitly captures the address of the trailing `.switch_done:` label (`lea %rax, [.switch_done]` on AMD64, `adr %x30, .switch_done` on ARM64, `lla %ra, .switch_done` on RISC-V 64) before saving registers.
 
 ### C. Caller-Saved Register Clobber Directives
 Because context switching transfers execution between fibers, all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64) are explicitly declared with individual `#clobber` specifications, forcing the Odin register allocator to safely spill local variables to memory across yields.
@@ -80,9 +80,9 @@ Odin passes an implicit `context` structure to procedures. When switching stacks
 - **Cache Locality:** 1,000 active fibers at 32 KB each consume ~32 MB of virtual memory—completely negligible on modern hardware.
 
 ### F. High-Level Inline Assembly Register & Stack Extractors
-For operations with well-defined dataflow, the engine uses pure high-level Odin inline assembly templates:
+For operations with well-defined dataflow, the engine uses pure high-level Odin inline assembly templates (`#preserve %rsp` / `#preserve %sp`):
 * **Fiber Self-Identity Registers**: `get_r12_reg` (`mov res, %r12` on AMD64), `get_x19_reg` (`mov res, %x19` on ARM64), `get_s2_reg` (`addi res, %s2, 0` on RISC-V 64).
-* **Active Stack Pointer Extraction**: `get_rsp` via effective address arithmetic (`lea sp, [%rsp]` on AMD64) and `get_sp` on ARM64/RISC-V 64.
+* **Active Stack Pointer Extraction**: `get_rsp` (`mov sp, %rsp` on AMD64) and `get_sp` (`mov sp, %sp` on ARM64, `addi sp, %sp, 0` on RISC-V 64) — 100% `#byte`-free across all architectures.
 
 ---
 

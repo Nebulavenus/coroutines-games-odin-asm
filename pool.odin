@@ -16,6 +16,9 @@ fiber_pool_init :: proc(
     alloc_mode: Stack_Allocation_Mode = DEFAULT_ALLOC_MODE,
     allocator := context.allocator,
 ) {
+    if pool.slabs != nil || pool.all_fibers != nil || pool.free_fibers != nil {
+        fiber_pool_destroy(pool)
+    }
     pool.stack_size = max(stack_size, 16 * 1024)
     // Ensure stack_size is aligned to 16 bytes
     if pool.stack_size % 16 != 0 {
@@ -51,6 +54,8 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     }
     delete(pool.all_fibers)
     delete(pool.free_fibers)
+    pool.all_fibers = nil
+    pool.free_fibers = nil
 
     if pool.alloc_mode == .Virtual_Memory_OS {
         when ODIN_OS == .Windows {
@@ -73,6 +78,7 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
         }
     }
     delete(pool.slabs)
+    pool.slabs = nil
 }
 
 STACK_WATERMARK :: 0xAA
