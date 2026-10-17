@@ -5,6 +5,7 @@ import "core:time"
 import "core:math/rand"
 
 import coroutine "../.."
+import sync "../../sync"
 
 // ============================================================================
 // Performance Benchmark Suite (6 Standard Metrics)
@@ -141,7 +142,7 @@ bench_timer_min_heap :: proc() {
     }
 
     // Step scheduler to populate min-heap and advance virtual time
-    for woken_count < TIMER_COUNT && len(sched.ready_queue) + len(sched.timer_heap) > 0 {
+    for woken_count < TIMER_COUNT && len(sched.ready_queue) + len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) > 0 {
         coroutine.scheduler_step(&sched, 0.05)
     }
     elapsed_secs := time.duration_seconds(time.since(t0))
@@ -159,26 +160,26 @@ bench_channel_throughput :: proc() {
     defer coroutine.scheduler_destroy(&sched)
 
     MSG_COUNT :: 1_000_000
-    ch: coroutine.Channel(int)
-    coroutine.chan_init(&ch, capacity = 1024)
-    defer coroutine.chan_destroy(&ch)
+    ch: sync.Channel(int)
+    sync.chan_init(&ch, capacity = 1024)
+    defer sync.chan_destroy(&ch)
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(int)) {
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^sync.Channel(int)) {
         for i in 0 ..< MSG_COUNT {
-            coroutine.chan_send(f, ch, i)
+            sync.chan_send(f, ch, i)
         }
     }, &ch)
 
     received := 0
     Chan_Ctx :: struct {
-        ch:  ^coroutine.Channel(int),
+        ch:  ^sync.Channel(int),
         rec: ^int,
     }
     ctx := Chan_Ctx{ch = &ch, rec = &received}
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Chan_Ctx) {
         for c.rec^ < MSG_COUNT {
-            val, ok := coroutine.chan_recv(f, c.ch)
+            val, ok := sync.chan_recv(f, c.ch)
             if !ok do break
             c.rec^ += 1
         }
@@ -252,9 +253,10 @@ bench_headless_fast_forward :: proc() {
 
     t0 := time.now()
     SIM_SECONDS :: 60.0
-    done, sim_time := coroutine.simulate_until(&sched, 0.016, SIM_SECONDS, proc() -> bool {
-        return false // Run full 60 seconds
-    })
+    for coroutine.scheduler_time(&sched) < SIM_SECONDS {
+        coroutine.scheduler_step(&sched, 0.016)
+    }
+    sim_time := coroutine.scheduler_time(&sched)
     elapsed_secs := time.duration_seconds(time.since(t0))
     speedup := sim_time / elapsed_secs
 

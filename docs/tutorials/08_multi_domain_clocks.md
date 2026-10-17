@@ -1,17 +1,28 @@
-# Tutorial 8: The 3-Tier Clock in Practice — Pausing, Bullet-Time & Fixed Ticks
+# Tutorial 8: Indexed Multi-Domain Clocks — Pausing, Bullet-Time & Fixed Ticks
 
-Commercial games require managing multiple clock domains simultaneously: pausing the gameplay world while animating UI menus, executing bullet-time slow motion during critical hits, and running deterministic fixed-rate physics.
+Commercial games require managing multiple clock domains simultaneously: pausing the gameplay simulation while animating UI menus, executing bullet-time slow motion during critical hits, and running deterministic fixed-rate physics.
 
-This chapter walks through practical implementations of all 3 temporal domains.
+Rather than maintaining duplicate APIs (`spawn_real`, `wait_real`, `wait_ticks`), the engine uses an **Indexed `Clock_Domain` Architecture**:
+- `Scheduler` holds an array of independent timelines: `clocks: [MAX_CLOCKS]Clock_Domain`.
+- Every `Fiber` carries a `clock_id: Clock_ID` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`, or custom).
+- Yielding calls (`wait`, `wait_steps`, `yield`, `ticker_wait`) evaluate automatically against the fiber's assigned clock domain.
+- Child branches in `sync()`, `race()`, and `rush()` automatically inherit `parent.clock_id` (`CLOCK_INHERIT`).
 
 ---
 
-## 1. Domain 1 vs Domain 2: Pausing the World while Animating UI
+## 1. Predefined Clock Domains
 
-When a player hits ESC to open the pause menu:
-1. Set `sched.is_paused = true`.
-2. All gameplay coroutines using `wait(f, seconds)` **stop advancing**.
-3. UI menu coroutines using `wait_real(f, seconds)` **continue animating smoothly**!
+| Clock ID | Name | Description | Typical Use Case |
+| :--- | :--- | :--- | :--- |
+| **`coroutine.CLOCK_SIM`** (0) | Simulation Clock | Default pausable gameplay timeline. | Enemy AI, combat cooldowns, character animations. |
+| **`coroutine.CLOCK_REAL`** (1) | Real / Wall Clock | Unpaused, unscaled real-time timeline. | Pause menus, HUD animations, network timeouts. |
+| **`coroutine.CLOCK_PHYS`** (2) | Fixed Physics Steps | Discrete integer step timeline. | 60 Hz physics sub-stepping, lockstep netcode, replays. |
+
+---
+
+## 2. Stepping the Scheduler with Multiple Clocks
+
+In your main loop, advance each active clock domain with its respective delta, then dispatch all awakened fibers via `scheduler_run`:
 
 ```odin
 package main
@@ -23,7 +34,7 @@ import "coroutine"
 boss_flame_breath :: proc(f: ^coroutine.Fiber) {
     for {
         fmt.println("  [Combat] Dragon casting Flame Breath!")
-        coroutine.wait(f, 1.0) // FROZEN while sched.is_paused == true!
+        coroutine.wait(f, 1.0) // FROZEN while CLOCK_SIM is not advanced!
     }
 }
 
@@ -31,7 +42,7 @@ boss_flame_breath :: proc(f: ^coroutine.Fiber) {
 ui_pause_banner :: proc(f: ^coroutine.Fiber) {
     for {
         fmt.println("  [UI Menu] Blinking '=== PAUSED ===' banner on screen...")
-        coroutine.wait_real(f, 0.5) // STILL ADVANCES while sched.is_paused == true!
+        coroutine.wait(f, 0.5) // Advances whenever CLOCK_REAL is advanced!
     }
 }
 
@@ -40,145 +51,121 @@ main :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
+    // Spawn combat fiber on default CLOCK_SIM:
     coroutine.spawn(&sched, boss_flame_breath)
-    coroutine.spawn_real(&sched, ui_pause_banner)
+
+    // Spawn UI fiber explicitly on CLOCK_REAL:
+    coroutine.spawn(&sched, ui_pause_banner, clock = coroutine.CLOCK_REAL)
+
+    is_paused := false
 
     fmt.println("--- Normal Gameplay (Unpaused) ---")
-    for i := 0; i < 2; i += 1 {
-        coroutine.scheduler_step(&sched, 0.5)
+    for frame := 0; frame < 2; frame += 1 {
+        dt: f32 = 0.5
+        coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, dt)
+        coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, dt)
+        coroutine.scheduler_run(&sched)
     }
 
-    fmt.println("\n>>> PLAYER OPENS PAUSE MENU (is_paused = true) <<<")
-    coroutine.scheduler_set_paused(&sched, true)
+    fmt.println("\n>>> PLAYER OPENS PAUSE MENU (Simulation Frozen) <<<")
+    is_paused = true
 
-    for i := 0; i < 3; i += 1 {
-        fmt.Printf("\n[Paused Tick %d] real_time: %.2fs, sim_time: %.2fs\n",
-            i, sched.clock.real_time, sched.clock.sim_time)
-        coroutine.scheduler_step(&sched, 0.5)
+    for frame := 0; frame < 3; frame += 1 {
+        dt: f32 = 0.5
+        // ONLY advance CLOCK_REAL while paused:
+        coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, dt)
+        if !is_paused {
+            coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, dt)
+        }
+        coroutine.scheduler_run(&sched)
     }
 
-    fmt.println("\n>>> PLAYER CLOSES PAUSE MENU (is_paused = false) <<<")
-    coroutine.scheduler_set_paused(&sched, false)
+    fmt.println("\n>>> PLAYER RESUMES GAME <<<")
+    is_paused = false
 
-    coroutine.scheduler_step(&sched, 0.5)
+    dt: f32 = 0.5
+    coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, dt)
+    coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, dt)
+    coroutine.scheduler_run(&sched)
 }
 ```
 
 ---
 
-## 2. Inline Real-Time Payloads with `spawn_real_val`
+## 3. Bullet-Time Slow Motion
 
-When spawning UI dialogs, damage numbers, or pause banners, passing transient parameters by pointer risks dangling memory once the caller returns. `spawn_real_val` copies the data (up to 128 bytes) directly into `fiber.payload_storage` and binds the fiber to the **Real-Time clock domain**:
+To create Matrix-style slow-motion effects, scale `dt` before advancing `CLOCK_SIM`:
 
 ```odin
-Pause_Banner_Data :: struct {
-    title:        string,
-    elapsed_time: f32,
+sim_time_scale: f32 = 0.20 // 20% speed bullet-time
+
+// Advance Real-Time UI at normal 100% speed:
+coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, raw_dt)
+
+// Advance Simulation with bullet-time scaling:
+if !is_paused {
+    coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, raw_dt * sim_time_scale)
 }
 
-ui_banner_coroutine :: proc(f: ^coroutine.Fiber, data: Pause_Banner_Data) {
+// Dispatch ready fibers:
+coroutine.scheduler_run(&sched)
+```
+
+A fiber executing `coroutine.wait(f, 1.0)` on `CLOCK_SIM` will now take 5.0 real-world seconds to complete, while UI animations on `CLOCK_REAL` remain fluid at full speed.
+
+---
+
+## 4. Deterministic Fixed-Rate Physics Steps (`CLOCK_PHYS`)
+
+For fixed-timestep simulations (such as 60 Hz physics or rollback netcode), advance `CLOCK_PHYS` using fixed-delta slices:
+
+```odin
+FIXED_DT :: 1.0 / 60.0
+
+physics_car_sim :: proc(f: ^coroutine.Fiber) {
     for {
-        fmt.printf("  [UI Banner: %s] Blinking... (real_time: %.2fs)\n", data.title, coroutine.real_time(f))
-        coroutine.wait_real(f, 0.5) // Advances even when sched.is_paused == true!
-    }
-}
-
-// Spawn with by-value inline payload on the real-time clock domain:
-banner := Pause_Banner_Data{title = "PAUSED"}
-coroutine.spawn_real_val(&sched, ui_banner_coroutine, banner)
-```
-
----
-
-## 3. Bullet-Time Slow Motion with `time_scale`
-
-You can create cinematic Matrix-style slow-motion effects by calling `coroutine.scheduler_set_time_scale`:
-
-```odin
-// Normal Speed
-coroutine.scheduler_set_time_scale(&sched, 1.0)
-
-// Trigger 20% Speed Bullet-Time (e.g. during a sniper headshot)
-coroutine.scheduler_set_time_scale(&sched, 0.20)
-
-// A coroutine calling coroutine.wait(f, 1.0) will now take 5.0 real seconds to complete!
-// UI animations using wait_real remain at full 100% real-time speed!
-```
-
----
-
-## 4. Domain 3: Deterministic Physics with `wait_ticks`
-
-For fighting games, rollback netcode, or deterministic physics engines:
-
-```odin
-physics_sim_proc :: proc(f: ^coroutine.Fiber) {
-    for {
-        // Wait exactly 1 discrete integer tick
-        coroutine.wait_ticks(f, 1)
+        // Suspends until exactly 1 fixed physics tick passes:
+        coroutine.wait_steps(f, 1)
         fmt.println("Fixed 60 Hz physics integration step!")
     }
 }
 
+// Spawning on fixed physics domain:
+coroutine.spawn(&sched, physics_car_sim, clock = coroutine.CLOCK_PHYS)
+
 // In Fixed-Tick Game Loop:
-coroutine.scheduler_step_ticks(&sched, 1)
+accumulator += frame_dt
+for accumulator >= FIXED_DT {
+    coroutine.clock_advance(&sched, coroutine.CLOCK_PHYS, FIXED_DT, steps = 1)
+    accumulator -= FIXED_DT
+}
+coroutine.scheduler_run(&sched)
 ```
 
 ---
 
-## 5. Structured Sub-Scope Lifecycle Management (`Fiber_Scope`)
+## 5. Child Clock Inheritance & Cross-Clock Races
 
-In addition to entity root scopes, you can structure component behaviors into sub-scopes (e.g. `combat_scope`, `particle_scope`, `movement_scope`) to perform selective lifecycle management:
+When creating structured branches with `sync`, `race`, or `rush`:
+1. **Clock Inheritance**: Child fibers inherit the parent's `clock_id` automatically (`CLOCK_INHERIT`).
+2. **Cross-Clock Racing**: An individual branch can override its clock domain, enabling cross-clock evaluations:
 
 ```odin
-package main
+// Parent fiber runs on CLOCK_SIM
+winner := coroutine.race(f,
+    // Branch 0 inherits CLOCK_SIM (pauses when game is paused)
+    coroutine.branch(boss_combat_routine, boss),
 
-import "core:fmt"
-import "coroutine"
-
-Sentry_Drone :: struct {
-    entity_scope: coroutine.Fiber_Scope,
-    combat_scope: coroutine.Fiber_Scope,
-}
-
-main :: proc() {
-    sched: coroutine.Scheduler
-    coroutine.scheduler_init(&sched)
-    defer coroutine.scheduler_destroy(&sched)
-
-    drone := Sentry_Drone{}
-    defer {
-        coroutine.scope_destroy(&sched, &drone.entity_scope)
-        coroutine.scope_destroy(&sched, &drone.combat_scope)
-    }
-
-    // Spawn combat AI fiber bound to combat_scope
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
-        fmt.println("[Combat AI] Charging laser cannon...")
-        coroutine.wait(f, 2.0)
-    }, scope = &drone.combat_scope)
-
-    // Spawn movement fiber bound to entity_scope
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
-        fmt.println("[Movement] Patrolling perimeter...")
-        coroutine.wait(f, 5.0)
-    }, scope = &drone.entity_scope)
-
-    coroutine.scheduler_step(&sched, 0.1)
-
-    // Inspect active handles in scope:
-    fmt.printf("Active Combat AI fibers in scope: %d\n", len(drone.combat_scope.handles))
-
-    // EMP Blast: Cancel combat sub-scope in O(1) time!
-    fmt.println("\n>>> EMP BLAST DETONATES: Cancelling Combat Sub-Scope! <<<")
-    cancelled := coroutine.scope_cancel(&sched, &drone.combat_scope)
-    fmt.printf("Cancelled %d combat fibers. Movement fibers continue!\n", cancelled)
-
-    coroutine.scheduler_step(&sched, 0.1)
-}
+    // Branch 1 runs on CLOCK_REAL (unpausable real-time 10.0s deadline)
+    coroutine.branch(proc(f: ^coroutine.Fiber) {
+        coroutine.wait(f, 10.0)
+    }, clock = coroutine.CLOCK_REAL),
+)
 ```
+
+If the player pauses the game, the boss combat loop freezes, but the real-time timeout branch continues ticking!
 
 ---
 
 ## Next Steps
-In [Tutorial 9: Headless CI/CD Testing](09_headless_ci_testing.md), you will learn how to write automated gameplay tests that simulate minutes of combat in milliseconds using `simulate_until`.
+In [Tutorial 9: Headless Simulation Testing](09_headless_ci_testing.md), you will learn how to automate end-to-end gameplay tests in headless CI environments.

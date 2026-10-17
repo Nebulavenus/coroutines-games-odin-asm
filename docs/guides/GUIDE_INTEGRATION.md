@@ -109,14 +109,16 @@ engine_update :: proc(ctx: ^Engine_Context) {
     if frame_time > 0.25 do frame_time = 0.25
     ctx.accumulator += frame_time
 
-    // 1. Advance Discrete Fixed-Tick Physics
+    // 1. Advance Discrete Fixed-Step Physics (CLOCK_PHYS)
     for ctx.accumulator >= FIXED_DT {
-        coroutine.scheduler_step_ticks(&ctx.sched, 1)
+        coroutine.clock_advance(&ctx.sched, coroutine.CLOCK_PHYS, FIXED_DT, steps = 1)
         ctx.accumulator -= FIXED_DT
     }
 
-    // 2. Advance Variable Delta Visuals & Real-Time UI
-    coroutine.scheduler_step(&ctx.sched, frame_time)
+    // 2. Advance Variable Delta Simulation & Real-Time UI
+    coroutine.clock_advance(&ctx.sched, coroutine.CLOCK_REAL, frame_time)
+    coroutine.clock_advance(&ctx.sched, coroutine.CLOCK_SIM, frame_time)
+    coroutine.scheduler_run(&ctx.sched)
 }
 ```
 

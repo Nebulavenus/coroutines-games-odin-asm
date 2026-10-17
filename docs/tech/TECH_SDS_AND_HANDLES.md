@@ -153,7 +153,7 @@ Wait_Queue :: struct {
 | **Empty Check** | `wait_queue_is_empty(q)` | $O(1)$ | `return q.head == nil`. |
 
 ### 3.4 $O(1)$ In-Place Unlinking in Action
-When a fiber unregisters from a multi-channel select (`chan_select_recv`), times out (`chan_recv_timeout`, `wait_until_timeout`), or is cancelled by a sibling race (`race`, `rush`), it unlinks itself from any wait queue instantly without searching:
+When a fiber unregisters from a multi-channel select (`chan_select_recv`), times out (`chan_recv_timeout`, `with_timeout`), or is cancelled by a sibling race (`race`, `rush`), it unlinks itself from any wait queue instantly without searching:
 
 ```odin
 wait_queue_remove :: proc(q: ^Wait_Queue, f: ^Fiber) -> bool {
@@ -188,23 +188,22 @@ In Odin, uninitialized or `{}` zero-initialized memory is guaranteed to have all
 sig: coroutine.Signal
 coroutine.signal_wait(f, &sig)
 
-// Immediately valid — no mutex_init(&m) required!
-m: coroutine.Fiber_Mutex
-coroutine.mutex_lock(f, &m)
+// Immediately valid — no event_init(&ev) required!
+ev: coroutine.Event(int)
+val, ok := coroutine.event_wait(f, &ev)
 
-// Immediately valid — countdown latch ready on declaration!
-latch := coroutine.Fiber_Latch{count = 3}
-coroutine.latch_wait(f, &latch)
+// Immediately valid from coroutine/sync — no mutex_init(&m) required!
+m: sync.Fiber_Mutex
+sync.mutex_lock(f, &m)
 ```
 
 ### Memory Footprint of Synchronization Primitives & Scopes:
 | Primitive / Container | Internal Fields | Size (64-bit) | Zero-Allocation? | ZII Ready? |
 | :--- | :--- | :---: | :---: | :---: |
-| `Signal` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
+| `Signal` / `Event(T)` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Scope` | `head: ^Fiber, tail: ^Fiber, count: int` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Fiber_Mutex` | `locked: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Fiber_Latch` | `count: int, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Fiber_Semaphore`| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
+| `Fiber_Mutex` (`sync/`) | `locked: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
+| `Fiber_Semaphore` (`sync/`)| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
 
 ### 4.1 Intrusive `Fiber_Scope` Doubly-Linked List (Zero-Allocation Scopes)
 Following the exact same intrusive kernel pattern, `Fiber_Scope` is a 24-byte ZII header with embedded `next_in_scope` and `prev_in_scope` pointers directly inside each `Fiber`:

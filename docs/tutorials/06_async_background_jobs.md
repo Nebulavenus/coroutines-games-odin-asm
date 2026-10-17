@@ -72,7 +72,7 @@ unit_ai_behavior :: proc(f: ^coroutine.Fiber, job: ^Pathfind_Job) {
     // Suspends fiber until background worker completes!
     coroutine.await_async(f, &job.token)
 
-    fmt.Printf("[AI] Path calculated! Found %d waypoints. Resuming unit movement!\n", job.result.count)
+    fmt.printf("[AI] Path calculated! Found %d waypoints. Resuming unit movement!\n", job.result.count)
     for i := 0; i < job.result.count; i += 1 {
         fmt.printf("  Waypoint %d: (%.1f, %.1f)\n", i, job.result.waypoints[i].x, job.result.waypoints[i].y)
     }
@@ -109,4 +109,4 @@ main :: proc() {
 ---
 
 ## Next Steps
-In [Tutorial 7: Stateful Iterators](07_stateful_generators.md), you will learn how to build lazy procedural iterators using `Generator(T)`.
+In [Tutorial 7: Procedural Generators & Streaming Sequences](07_stateful_generators.md), you will learn how to build synchronous procedural iterators and asynchronous streams.

@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import coroutine "../.."
+import sync "../../sync"
 
 assert :: proc(cond: bool, msg: string) {
     if !cond {
@@ -193,17 +194,17 @@ test_csp_channels :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    chan: coroutine.Channel(int)
-    coroutine.chan_init(&chan, 0, context.allocator)
-    defer coroutine.chan_destroy(&chan)
+    chan: sync.Channel(int)
+    sync.chan_init(&chan, 0, context.allocator)
+    defer sync.chan_destroy(&chan)
 
     received_val := -1
 
     // Receiver fiber
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, pair: ^[2]rawptr) {
-        ch := (cast(^coroutine.Channel(int))pair[0])
+        ch := (cast(^sync.Channel(int))pair[0])
         val_ptr := (cast(^int)pair[1])
-        v, ok := coroutine.chan_recv(f, ch)
+        v, ok := sync.chan_recv(f, ch)
         if ok {
             val_ptr^ = v
         }
@@ -213,8 +214,8 @@ test_csp_channels :: proc() {
     assert(received_val == -1, "Receiver should be blocked waiting for sender")
 
     // Sender fiber
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(int)) {
-        coroutine.chan_send(f, ch, 42)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^sync.Channel(int)) {
+        sync.chan_send(f, ch, 42)
     }, &chan)
 
     coroutine.scheduler_step(&sched, 0.016)
@@ -231,19 +232,20 @@ test_multi_domain_clocks :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // Set time scale to 0.5x (slow motion)
-    coroutine.scheduler_set_time_scale(&sched, 0.5)
-
     sim_done := false
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, p: ^bool) {
         coroutine.wait(f, 0.100) // Needs 0.100s of simulated time (0.200s real time)
         p^ = true
-    }, &sim_done)
+    }, &sim_done, clock = coroutine.CLOCK_SIM)
 
-    coroutine.scheduler_step(&sched, 0.100) // dt = 0.100, sim_dt = 0.050 (fiber spawned & sets wake_time = 0.050 + 0.100 = 0.150)
+    coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.100)
+    coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, 0.100 * 0.5)
+    coroutine.scheduler_run(&sched) // dt = 0.100, sim_dt = 0.050 (fiber spawned & sets wake_time = 0.050 + 0.100 = 0.150)
     assert(!sim_done, "Fiber should still be sleeping under 0.5x time scale")
 
-    coroutine.scheduler_step(&sched, 0.210) // dt = 0.210, sim_dt = 0.105 (total sim = 0.155 >= 0.150)
+    coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.210)
+    coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, 0.210 * 0.5)
+    coroutine.scheduler_run(&sched) // dt = 0.210, sim_dt = 0.105 (total sim = 0.155 >= 0.150)
     assert(sim_done, "Fiber must wake up after reaching target simulated time")
     fmt.println("OK")
 }
@@ -354,10 +356,8 @@ test_nested_race_sync_signal_abort :: proc() {
             coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Boss_Sim) {
                 coroutine.sync(f,
                     coroutine.branch(proc(child: ^coroutine.Fiber, s: ^Boss_Sim) {
-                        t: coroutine.Ticker
-                        coroutine.ticker_init(&t, 0.04)
                         for {
-                            coroutine.ticker_wait(child, &t)
+                            coroutine.ticker_wait(child, 0.04)
                             s.attack_a_ticks += 1
                         }
                     }, s, "Attack Loop A"),
@@ -401,7 +401,7 @@ test_nested_race_sync_signal_abort :: proc() {
 
     assert(sim.attack_a_ticks == ticks_a_before, "Attack A must NEVER tick after being aborted")
     assert(sim.attack_b_ticks == ticks_b_before, "Attack B must NEVER tick after being aborted")
-    assert(len(sched.timer_heap) == 0, "Timer heap must be completely clean with 0 leaked nodes")
+    assert(len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) == 0, "Timer heap must be completely clean with 0 leaked nodes")
     fmt.println("OK")
 }
 
@@ -418,10 +418,8 @@ test_ticker_zero_drift_and_abort :: proc() {
 
     ticks := 0
     h := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t_count: ^int) {
-        ticker: coroutine.Ticker
-        coroutine.ticker_init(&ticker, 0.02)
         for {
-            coroutine.ticker_wait(f, &ticker)
+            coroutine.ticker_wait(f, 0.02)
             t_count^ += 1
         }
     }, &ticks, scope = &scope)
@@ -450,7 +448,7 @@ test_ticker_zero_drift_and_abort :: proc() {
         coroutine.scheduler_step(&sched, 0.02)
     }
     assert(ticks == 5, "Ticks must remain frozen at 5 after cancellation")
-    assert(len(sched.timer_heap) == 0, "No leftover timer nodes in heap")
+    assert(len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) == 0, "No leftover timer nodes in heap")
     fmt.println("OK")
 }
 
@@ -481,10 +479,8 @@ test_rapid_signal_emp_fuzzing :: proc() {
                 coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
                     coroutine.sync(f,
                         coroutine.branch(proc(child: ^coroutine.Fiber, s: ^Fuzz_AI) {
-                            t: coroutine.Ticker
-                            coroutine.ticker_init(&t, 0.02)
                             for {
-                                coroutine.ticker_wait(child, &t)
+                                coroutine.ticker_wait(child, 0.02)
                                 s.total_projectiles += 1
                             }
                         }, s, "Barrage Loop"),
@@ -525,7 +521,7 @@ test_rapid_signal_emp_fuzzing :: proc() {
     // Verify fiber pool invariants: all temporary fibers must be recycled!
     stats := coroutine.scheduler_pool_stats(&sched)
     assert(stats.active_fibers == 0, "Zero fibers should remain active after AI finishes")
-    assert(len(sched.timer_heap) == 0, "Zero timer nodes left in heap")
+    assert(len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) == 0, "Zero timer nodes left in heap")
     fmt.println("OK")
 }
 

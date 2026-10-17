@@ -1,6 +1,6 @@
 # Determinism, Netcode & Fixed Ticking (`GUIDE_DETERMINISM.md`)
 
-This guide explains how to leverage the **Discrete Tick Domain** (`wait_ticks`, `scheduler_step_ticks`) to achieve lockstep determinism, input replay recording, and rollback netcode compatibility.
+This guide explains how to leverage the **Discrete Step Domain** (`CLOCK_PHYS`, `wait_steps`, `clock_advance`) to achieve lockstep determinism, input replay recording, and rollback netcode compatibility.
 
 ---
 
@@ -15,19 +15,21 @@ Achieving 100% deterministic simulation across multiple client machines is essen
 
 ---
 
-## 2. Lockstep Determinism via Discrete Ticks
+## 2. Lockstep Determinism via Discrete Steps (`CLOCK_PHYS`)
 
-The coroutine engine eliminates time-based drift by introducing the **Fixed Tick Domain**:
+The coroutine engine eliminates time-based drift by providing the **Fixed Physics / Step Domain (`CLOCK_PHYS`)**:
 
 ```odin
 // Fixed 60 Hz Tick Driver
 FIXED_HZ :: 60
+FIXED_DT :: 1.0 / f32(FIXED_HZ)
 tick_accumulator += dt
 
-for tick_accumulator >= (1.0 / f32(FIXED_HZ)) {
-    coroutine.scheduler_step_ticks(&physics_sched, 1)
-    tick_accumulator -= (1.0 / f32(FIXED_HZ))
+for tick_accumulator >= FIXED_DT {
+    coroutine.clock_advance(&sched, coroutine.CLOCK_PHYS, FIXED_DT, steps = 1)
+    tick_accumulator -= FIXED_DT
 }
+coroutine.scheduler_run(&sched)
 ```
 
 ### Deterministic Physics Coroutine:
@@ -40,8 +42,8 @@ Ball :: struct {
 
 ball_physics_coroutine :: proc(f: ^coroutine.Fiber, ball: ^Ball) {
     for {
-        // Yield for exactly ONE deterministic simulation tick
-        coroutine.wait_ticks(f, 1)
+        // Yield for exactly ONE deterministic simulation step
+        coroutine.wait_steps(f, 1)
 
         // Integer / Fixed-Point Integration (100% identical on every machine)
         ball.pos.x += ball.vel.x
@@ -49,13 +51,16 @@ ball_physics_coroutine :: proc(f: ^coroutine.Fiber, ball: ^Ball) {
         ball.vel.y += 980 // Constant gravity
     }
 }
+
+// Spawn ball coroutine bound to CLOCK_PHYS:
+coroutine.spawn(&sched, ball_physics_coroutine, &ball, clock = coroutine.CLOCK_PHYS)
 ```
 
 ---
 
 ## 3. Replay Recording & Rollback Architecture
 
-Because coroutine scheduling is strictly bound to discrete tick counters:
-1. **Replay Recording:** You only need to record player inputs per integer tick ($T_0, T_1, T_2, \dots$).
+Because coroutine scheduling is strictly bound to discrete step counters:
+1. **Replay Recording:** You only need to record player inputs per integer step ($T_0, T_1, T_2, \dots$).
 2. **Replay Verification:** Replaying the recorded input stream through the engine produces an identical execution history bit-for-bit.
-3. **Rollback Snapshotting:** Checkpointing game state and rolling back $K$ ticks requires stepping the scheduler forward deterministically using `scheduler_step_ticks`.
+3. **Rollback Snapshotting:** Checkpointing game state and rolling back $K$ steps requires stepping the scheduler forward deterministically using `clock_advance(&sched, coroutine.CLOCK_PHYS, FIXED_DT, 1)` + `scheduler_run(&sched)`.

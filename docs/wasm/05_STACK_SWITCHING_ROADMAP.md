@@ -33,7 +33,7 @@ Fiber_Shadow_Stack :: struct {
 ```
 
 When yielding and resuming:
-1. **On Yield (`yield_frame`)**:
+1. **On Yield (`yield`)**:
    ```javascript
    // Read current LLVM stack pointer and store in active fiber
    fiber.saved_shadow_sp = wasmInstance.exports.__stack_pointer.value;

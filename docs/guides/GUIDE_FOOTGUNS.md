@@ -1,8 +1,8 @@
-# The 11 Cooperative Fiber Footguns & Prevention Guide
+# The 13 Cooperative Fiber Footguns & Prevention Guide
 
 > **MANDATORY READING FOR ALL GAMEPLAY AND SYSTEMS ENGINEERS**:
 > Stackful cooperative coroutines provide unmatched clarity for complex gameplay state machines, hierarchical AI, cutscenes, and async pipelines. However, because fibers are **cooperative single-threaded execution contexts**, misuse can cause subtle deadlocks, memory corruption, or frame freezes.
-> This guide details the **11 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
+> This guide details the **13 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
 
 ---
 
@@ -32,7 +32,7 @@ Because fibers are **cooperative** (not preemptive OS threads), a fiber retains 
 // DANGEROUS: Freezes the entire game window permanently!
 boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
     for !boss.is_ready {
-        // Forgot coroutine.yield_frame(f) or coroutine.wait(f, dt)!
+        // Forgot coroutine.yield(f) or coroutine.wait(f, dt)!
     }
 }
 ```
@@ -41,12 +41,12 @@ boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 1. **Debug Watchdog Timer**: In debug builds (`when ODIN_DEBUG`), the scheduler measures the wall-clock execution duration of every fiber slice.
 2. If a single fiber slice exceeds the threshold (`watchdog_max_slice_ms = 100.0`), the engine immediately triggers a descriptive runtime panic naming the runaway fiber:
    ```text
-   [WATCHDOG PANIC] Runaway non-yielding fiber detected! Fiber [#4] 'boss_ai' executed for 103.42 ms without yielding! Did you write an infinite loop without wait() or yield_frame()?
+   [WATCHDOG PANIC] Runaway non-yielding fiber detected! Fiber [#4] 'boss_ai' executed for 103.42 ms without yielding! Did you write an infinite loop without wait() or yield()?
    ```
 3. Configurable via `coroutine.scheduler_set_watchdog(&sched, enabled = true, max_slice_ms = 50.0)`.
 
 ### The Rule
-> **Every `for` loop that spans multiple frames or polls conditions must contain an explicit suspension point: `wait(f, seconds)`, `yield_frame(f)`, `wait_ticks(f, n)`, or `wait_until(f, condition)`.**
+> **Every `for` loop that spans multiple frames or polls conditions must contain an explicit suspension point: `wait(f, seconds)`, `yield(f)`, or `wait_steps(f, count)`.**
 
 ---
 
@@ -137,16 +137,16 @@ wizard_attack :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
 ## Footgun 5: The Deadlocked Mutex / Semaphore (Missing Unlock)
 
 ### The Trap
-Acquiring a lock or permit and returning early without unlocking:
+Acquiring a lock or permit and returning early without unlocking (primitives from `coroutine/sync`):
 
 ```odin
 // DANGEROUS:
-charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
-    coroutine.mutex_lock(f, m)
+charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^sync.Fiber_Mutex) {
+    sync.mutex_lock(f, m)
     if player_is_too_far() {
         return // BUG: Forgot mutex_unlock! Other fibers starved forever!
     }
-    coroutine.mutex_unlock(f.sched, m)
+    sync.mutex_unlock(f.sched, m)
 }
 ```
 
@@ -154,7 +154,7 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 1. **Deadlock-Proof Scoped Locks (`with_mutex` / `with_semaphore`)**:
    ```odin
    // BEST: 100% deadlock-proof! Automatically guarantees unlock on return or abort:
-   coroutine.with_mutex(f, m, proc(f: ^coroutine.Fiber, data: ^Task_Data) {
+   sync.with_mutex(f, m, proc(f: ^coroutine.Fiber, data: ^Task_Data) {
        if player_is_too_far() do return // Safe!
        perform_exclusive_work(data)
    }, data)
@@ -162,9 +162,9 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 2. **Native Odin `defer`**:
    ```odin
    // SAFE: Guaranteed to unlock on return, break, or failure!
-   charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
-       coroutine.mutex_lock(f, m)
-       defer coroutine.mutex_unlock(f.sched, m)
+   charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^sync.Fiber_Mutex) {
+       sync.mutex_lock(f, m)
+       defer sync.mutex_unlock(f.sched, m)
 
        if player_is_too_far() do return
    }
@@ -172,13 +172,13 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^coroutine.Fiber_Mutex) {
 3. **Guaranteed Cancellation Cleanup (`fiber_set_cleanup`)**:
    ```odin
    coroutine.fiber_set_cleanup(f, proc(user_data: rawptr) {
-       m := (^coroutine.Fiber_Mutex)(user_data)
-       coroutine.mutex_unlock(g_sched, m)
+       m := (^sync.Fiber_Mutex)(user_data)
+       sync.mutex_unlock(g_sched, m)
    }, m)
    ```
 
 ### The Rule
-> **Prefer `with_mutex` / `with_semaphore` for all scoped operations, or write `defer mutex_unlock(f.sched, m)` immediately after acquiring a lock.**
+> **Prefer `sync.with_mutex` / `sync.with_semaphore` for all scoped operations, or write `defer sync.mutex_unlock(f.sched, m)` immediately after acquiring a lock.**
 
 ---
 
@@ -189,24 +189,24 @@ A sender fiber terminates without closing a channel, leaving receiver fibers blo
 
 ```odin
 // DANGEROUS:
-producer_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(int)) {
-    coroutine.chan_send(f, ch, 100)
+producer_fiber :: proc(f: ^coroutine.Fiber, ch: ^sync.Channel(int)) {
+    sync.chan_send(f, ch, 100)
     // Exited without closing! Receiver waits forever!
 }
 ```
 
 ### How the Engine Mitigates It
-1. **Auto-Wake on Destruction (`chan_destroy`)**: Calling `chan_destroy` automatically triggers `chan_close`, unblocking all waiting senders and receivers with `ok = false` before deleting memory.
+1. **Auto-Wake on Destruction (`chan_destroy`)**: Calling `sync.chan_destroy` automatically triggers `sync.chan_close`, unblocking all waiting senders and receivers with `ok = false` before deleting memory.
 2. **Channel Deadline Reception (`chan_recv_timeout`)**:
    ```odin
-   val, ok, timed_out := coroutine.chan_recv_timeout(f, &g_channel, timeout_seconds = 2.0)
+   val, ok, timed_out := sync.chan_recv_timeout(f, &g_channel, timeout_seconds = 2.0)
    if timed_out {
        log_warn("Producer hung or disappeared!")
    }
    ```
 
 ### The Rule
-> **Always use `defer chan_close(&ch)` in producer fibers, or use `chan_recv_timeout` when reading from untrusted producers.**
+> **Always use `defer sync.chan_close(&ch)` in producer fibers, or use `sync.chan_recv_timeout` when reading from untrusted producers.**
 
 ---
 
@@ -217,9 +217,9 @@ Allocating memory from `context.temp_allocator` inside Fiber A and passing the p
 
 ```odin
 // DANGEROUS:
-fiber_a :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel([]int)) {
+fiber_a :: proc(f: ^coroutine.Fiber, ch: ^sync.Channel([]int)) {
     data := make([]int, 10, context.temp_allocator) // Allocated in Fiber A's private temp arena!
-    coroutine.chan_send(f, ch, data)
+    sync.chan_send(f, ch, data)
     // Fiber A finishes -> its 4KB temp arena is recycled/wiped! Fiber B reads garbage!
 }
 ```
@@ -228,7 +228,7 @@ fiber_a :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel([]int)) {
 * Each fiber has an **isolated 4KB `temp_arena`**. `context.temp_allocator` points to this private arena.
 
 ### The Rule
-> **Treat `context.temp_allocator` as strictly private to the allocating fiber. Data communicated across fibers via channels must be copied by value (`Channel(T)` / `spawn_val`) or allocated with the general allocator.**
+> **Treat `context.temp_allocator` as strictly private to the allocating fiber. Data communicated across fibers via channels must be copied by value (`sync.Channel(T)` / `spawn_val`) or allocated with the general allocator.**
 
 ---
 
@@ -244,7 +244,8 @@ Attempting to serialize raw suspended fiber stack bytes directly to a disk save 
   3. When loading a save file, entities re-spawn their coroutine from the saved phase checkpoint:
      ```odin
      // On Game Load:
-     coroutine.phase_switch(&boss.director, saved_phase, boss_phase2_fiber, &boss)
+     coroutine.scope_cancel(&sched, &boss.phase_scope)
+     coroutine.spawn(&sched, boss_phase2_fiber, &boss, scope = &boss.phase_scope)
      ```
 
 ### The Rule
@@ -268,23 +269,20 @@ poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
 ```
 
 ### How the Engine Mitigates It
-Use the built-in **`coroutine.Ticker`** (`ticker_init`, `ticker_wait`). The ticker advances target timestamps via absolute interval arithmetic ($t_{\text{target}} += \Delta t$), guaranteeing zero cumulative time drift regardless of frame execution variations.
+Use the built-in fiber-owned **`ticker_wait(f, interval)`**. The ticker advances target timestamps via absolute interval arithmetic ($t_{\text{target}} += \Delta t$), guaranteeing zero cumulative time drift regardless of frame execution variations.
 
 ```odin
 // SAFE & DRIFT-FREE:
 poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
-    ticker: coroutine.Ticker
-    coroutine.ticker_init(&ticker, interval_seconds = 0.5)
-
     for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds
-        coroutine.ticker_wait(f, &ticker)
+        coroutine.ticker_wait(f, interval_seconds = 0.5)
         enemy.hp -= 10.0
     }
 }
 ```
 
 ### The Rule
-> **Never use naive `wait(f, interval)` loops for periodic heartbeats or rhythm-critical game actions. Use `coroutine.Ticker`.**
+> **Never use naive `wait(f, interval)` loops for periodic heartbeats or rhythm-critical game actions. Use `coroutine.ticker_wait(f, interval)`.**
 
 ---
 
@@ -338,7 +336,7 @@ if stored_fiber.status == .Running { // CRASH or corrupted state!
 ## Footgun 12: Inlining Across Fiber Context Switches & Register Allocation Under `-o:speed`
 
 ### The Trap
-When compiling with aggressive whole-program optimization (`-o:speed -use-single-module`), the LLVM compiler inline-expands small utility procedures like `yield_frame` or user loops. 
+When compiling with aggressive whole-program optimization (`-o:speed -use-single-module`), the LLVM compiler inline-expands small utility procedures like `yield` or user loops. 
 Under the x86-64 calling conventions (both Windows x64 and System V AMD64), registers like `%xmm0` through `%xmm5` are **caller-saved (volatile)** scratch registers. 
 
 When a procedure containing floating-point computations (such as tweens, timers, or physics steps) is inlined across a fiber yield point, the compiler may retain intermediate loop counters (e.g. `duration`, `elapsed`, or loop bounds) in volatile floating-point registers. Because fiber context switching switches execution to the scheduler (which uses SSE/AVX registers for other tasks before switching back), those volatile scratch registers are not preserved across the switch! When the fiber resumes, values held in volatile registers are clobbered (often zeroed), causing loop bounds to immediately terminate prematurely.
@@ -347,16 +345,16 @@ Furthermore, in single-module builds where the compiler sees both the caller fra
 
 ```odin
 // DANGEROUS UNDER -o:speed -use-single-module:
-// If yield_frame is #force_inline, the compiler may keep `duration` in volatile %xmm registers across the context switch.
+// If yield is #force_inline, the compiler may keep `duration` in volatile %xmm registers across the context switch.
 for elapsed < duration {
-    yield_frame(f)
+    yield(f)
     elapsed += delta_time(f)
     // On resume, duration in %xmm register is 0.0 -> loop terminates after 1 iteration!
 }
 ```
 
 ### How the Engine Mitigates It
-1. **ABI Boundary Enforcement**: Procedures that invoke `fiber_context_switch` (`wait_frames`, `wait_time`, `yield`, etc.) are intentionally kept as standard non-inlined function boundaries. This forces LLVM's register allocator to spill all active caller-saved registers (`%xmm0-%xmm5`, `%rax`, `%rcx`, etc.) to the fiber stack across the call boundary according to the platform ABI.
+1. **ABI Boundary Enforcement**: Procedures that invoke `fiber_context_switch` (`wait_steps`, `wait`, `yield`, etc.) are intentionally kept as standard non-inlined function boundaries. This forces LLVM's register allocator to spill all active caller-saved registers (`%xmm0-%xmm5`, `%rax`, `%rcx`, etc.) to the fiber stack across the call boundary according to the platform ABI.
 2. **Callee-Saved Hardware Registers Preserved**: The assembly context switch (`fiber_context_switch`) fully preserves all callee-saved registers defined by the platform ABI:
    - **Win64**: `%rbx`, `%rbp`, `%rdi`, `%rsi`, `%r12-%r15`, and `%xmm6-%xmm15` (160 bytes of SIMD state).
    - **System V**: `%rbx`, `%rbp`, `%r12-%r15`.
@@ -374,24 +372,27 @@ for elapsed < duration {
 ### The Mistake
 ```odin
 // DANGEROUS ON WEBASSEMBLY (js_wasm32):
+Attack_Config :: struct { interval: f64, count: int }
+
 boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
-    ticker: coroutine.Ticker // <-- Local struct allocated on shared LLVM shadow stack!
-    coroutine.ticker_init(&ticker, 0.1)
+    cfg: Attack_Config // <-- Local composite struct on shared LLVM shadow stack!
+    cfg.interval = 0.1
+    setup_config(&cfg) // Taking address forces cfg into linear memory shadow stack
     for {
-        coroutine.ticker_wait(f, &ticker) // Passes pointer across yield
-        fire_bullet(boss)
+        coroutine.yield(f) // Interleaved fibers overwrite cfg in linear memory!
+        fire_bullet(boss, &cfg)
     }
 }
 ```
 
 ### What Happens
-WebAssembly uses a **dual-stack model**. Asyncify serializes and restores the **VM Execution Stack** (local primitives `i32`, `f32`), but **does NOT save or partition linear memory** (`memory.buffer`). Local variables whose addresses are taken (`&ticker`) reside on the C/LLVM shadow stack pointed to by `(global $__stack_pointer)`.
+WebAssembly uses a **dual-stack model**. Asyncify serializes and restores the **VM Execution Stack** (local primitives `i32`, `f32`), but **does NOT save or partition linear memory** (`memory.buffer`). Local variables whose addresses are taken (`&cfg`) reside on the C/LLVM shadow stack pointed to by `(global $__stack_pointer)`.
 
-Because all fibers share the single shadow stack, when `boss_ai` sleeps or stuns, other interleaved fibers push their stack frames down from `$__stack_pointer` and **physically overwrite `ticker` in linear memory**. When `boss_ai` wakes, `ticker.interval` has been corrupted (often to `0.0`), triggering a runaway 1-frame busy spin!
+Because all fibers share the single shadow stack, when `boss_ai` sleeps or yields, other interleaved fibers push their stack frames down from `$__stack_pointer` and **physically overwrite `cfg` in linear memory**. When `boss_ai` wakes, `cfg` has been corrupted by another fiber!
 
 ### The Solution
-1. **Use Fiber-Owned Timing**: Use `coroutine.wait_ticker(f, interval)` or `coroutine.ticker_wait(f, interval)`. Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
-2. **Keep Scalar Values in Locals**: Primitive values (`timer: f32`, `ticks: int`) live in Wasm VM registers and are perfectly restored by Asyncify.
+1. **Use Fiber-Owned Timing**: Use `coroutine.ticker_wait(f, interval)` (or `coroutine.wait_ticker(f, interval)`). Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
+2. **Keep Scalar Values in Locals**: Primitive values (`timer: f32`, `ticks: int`, `interval: f64`) live in Wasm VM registers and are perfectly restored by Asyncify.
 3. **Store Composite State in Entities**: Store multi-field cross-yield state in persistent entities (`^Boss`, `^Player`) or inside the fiber's private 4KB arena (`f.temp_arena`).
 4. **Deep Dive**: See [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md) for full architectural analysis and stack-switching roadmap.
 
@@ -406,7 +407,7 @@ Because all fibers share the single shadow stack, when `boss_ai` sleeps or stuns
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    THE GAMEPLAY PROGRAMMER'S CHEAT SHEET                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Always yield inside loops: Use wait(), yield_frame(), or Ticker.        │
+│ 1. Always yield inside loops: Use wait(), yield(), or ticker_wait().        │
 │ 2. Keep stack buffers small: Use dynamic arrays for large data (>1 KB).     │
 │ 3. Pass transient parameters by value: Let the 128B payload buffer copy it. │
 │ 4. Bind fibers to entity scopes: scope_destroy() cancels them on death.     │
@@ -414,7 +415,7 @@ Because all fibers share the single shadow stack, when `boss_ai` sleeps or stuns
 │ 6. Always close producer channels: Write defer chan_close(&ch).             │
 │ 7. Treat temp memory as private: Do not pass temp slices across fibers.     │
 │ 8. Save game state, not stacks: Re-spawn coroutines from phase checkpoints. │
-│ 9. Use Ticker for periodic loops: Eliminates cumulative delta-time drift.   │
+│ 9. Use ticker_wait for periodic loops: Zero-drift timestamp anchor.         │
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
 │ 12. Never #force_inline yield points: Call boundaries preserve registers.   │

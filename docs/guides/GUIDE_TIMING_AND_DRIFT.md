@@ -43,13 +43,10 @@ for {
 
 #### B. The `Ticker` Formula (Self-Correcting Timestamp Anchor)
 
-In a `Ticker` loop:
+In a `ticker_wait` loop:
 ```odin
-ticker: coroutine.Ticker
-coroutine.ticker_init(&ticker, interval_seconds = 0.5)
-
 for {
-    coroutine.ticker_wait(f, &ticker) // Calculates: next_wake += interval
+    coroutine.ticker_wait(f, interval = 0.5) // Calculates: f.ticker_next_wake += interval
     do_heavy_gameplay_work()
 }
 ```
@@ -80,18 +77,13 @@ Ticker Anchor:|──────0.517s────┼──────1.017s�
 │ Mechanism             │ Does It Suffer from Drift? │ Why?                   │
 ├───────────────────────┼────────────────────────────┼────────────────────────┤
 │ Naive wait() loops    │ **YES (Compounds)**        │ Relative to wake time. │
-│ Ticker loops          │ **NO (Zero Drift)**        │ Absolute time anchor.  │
-│ tween()               │ **NO (Self-Clamping)**     │ Clamps to exact end.   │
-│ wait_frames(N)        │ **NO (Exact)**             │ Discrete integer math. │
-│ wait_ticks(N)         │ **NO (Bit-Identical)**     │ Fixed discrete clock.  │
+│ ticker_wait()         │ **NO (Zero Drift)**        │ Absolute time anchor.  │
+│ wait_steps(N)         │ **NO (Exact)**             │ Discrete integer math. │
 └───────────────────────┴────────────────────────────┴────────────────────────┘
 ```
 
-### 1. In `tween` (No Drift)
-`tween` does not drift because it interpolates between fixed endpoints ($t = 0.0 \rightarrow t = 1.0$). If a frame overshoots the duration, `math.clamp(elapsed / duration, 0.0, 1.0)` forces the final evaluated value **exactly to the target value**.
-
-### 2. In `wait_frames` and `wait_ticks` (No Drift)
-Frame waits and tick waits use **pure integer arithmetic** (`current_frame + N`, `sim_ticks + N`). There are zero floating-point rounding errors.
+### 1. In `wait_steps` (No Drift)
+Step waits use **pure integer arithmetic** (`steps + N`). There are zero floating-point rounding errors.
 
 ---
 
@@ -101,10 +93,10 @@ Frame quantization drift is a universal reality in all game engines, and every m
 
 | Engine / Language | What Happens in Naive Loops | How the Engine Solves It |
 | :--- | :--- | :--- |
-| **Unreal Engine (C++)** | Calling `Delay(0.5)` in Blueprint loops **drifts significantly**. | `FTimerManager::SetTimer(..., bLoop = true)` internally does `ExpireTime += Rate` (identical to our `Ticker`). |
+| **Unreal Engine (C++)** | Calling `Delay(0.5)` in Blueprint loops **drifts significantly**. | `FTimerManager::SetTimer(..., bLoop = true)` internally does `ExpireTime += Rate`. |
 | **Unity (C#)** | `while (true) { yield return new WaitForSeconds(0.5f); }` **drifts by seconds**. | Developers must use fixed timestamps (`nextTime += interval`) or `FixedUpdate`. |
 | **SkookumScript** | Calling `_wait(0.5)` in a loop drifted. | Provided a dedicated `_periodic(0.5)` primitive that anchored the timestamp. |
-| **Odin Coroutines (ASM)** | Calling `wait(f, 0.5)` in a loop drifted. | Provided `coroutine.Ticker` + `coroutine.ticker_wait(f, &t)`. |
+| **Odin Coroutines** | Calling `wait(f, 0.5)` in a loop drifted. | Built-in fiber-owned `coroutine.ticker_wait(f, interval)`. |
 
 ---
 
@@ -123,8 +115,8 @@ If `wait()` was automatically anchored to an old historic timestamp, calling it 
 
 Therefore, in systems architecture:
 1. **`wait(f, seconds)`** is for **one-off relative delays** (*"Pause for $X$ seconds from right now"*).
-2. **`Ticker` / `ticker_wait(f, &t)`** is for **periodic recurring intervals** (*"Tick every $X$ seconds on an exact grid"*).
-3. **`wait_ticks(f, N)`** is for **fixed-timestep physics & netcode** (*"Advance exactly $N$ integer ticks"*).
+2. **`ticker_wait(f, interval)`** is for **periodic recurring intervals** (*"Tick every $X$ seconds on an exact grid"*).
+3. **`wait_steps(f, N)`** is for **fixed-timestep physics & netcode** (*"Advance exactly $N$ integer steps"*).
 
 ---
 
@@ -137,13 +129,13 @@ Therefore, in systems architecture:
 │ • One-off actions & animations:  Use wait(f, seconds)                      │
 │   (e.g. Laser telegraph delay, cutscene pause, screen fade).                │
 │                                                                             │
-│ • Periodic loops & recurring ticks: Use Ticker + ticker_wait(f, &ticker)   │
+│ • Periodic loops & recurring ticks: Use ticker_wait(f, interval)            │
 │   (e.g. Damage-over-time poison ticks, weapon fire rates, UI blinkers).     │
 │                                                                             │
-│ • Deterministic physics & netcode: Use wait_ticks(f, tick_count)           │
+│ • Deterministic physics & netcode: Use wait_steps(f, count) on CLOCK_PHYS  │
 │   (e.g. Rollback simulation, replay playback, fixed 60Hz logic).            │
 │                                                                             │
-│ • UI & Pause-Immune timers: Use wait_real(f, seconds) or Ticker(use_real)  │
+│ • UI & Pause-Immune timers: Use wait(f, seconds) on CLOCK_REAL             │
 │   (e.g. Pause menu carousel, notification toasts, network pings).           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

@@ -59,6 +59,11 @@ function Invoke-OdinTest
     Write-Host "Testing coroutine package ($($ExtraArgs -join ' '))..." -ForegroundColor Cyan
     $testArgs = @("test", ".") + $ExtraArgs
     odin @testArgs
+    if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
+
+    Write-Host "Testing coroutine/sync package ($($ExtraArgs -join ' '))..." -ForegroundColor Cyan
+    $syncTestArgs = @("test", "./sync") + $ExtraArgs
+    odin @syncTestArgs
     return $LASTEXITCODE
 }
 

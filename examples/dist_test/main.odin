@@ -9,30 +9,30 @@ main :: proc() {
 	coroutine.scheduler_init(&sched)
 	defer coroutine.scheduler_destroy(&sched)
 
-	ch: coroutine.Channel(int)
-	coroutine.chan_init(&ch, 2)
-	defer coroutine.chan_destroy(&ch)
+	ev: coroutine.Event(int)
+	coroutine.event_init(&ev)
+	defer coroutine.event_destroy(&ev)
 
 	executed := false
 	received_val := 0
 
 	// Producer fiber
-	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch_ptr: ^coroutine.Channel(int)) {
-		coroutine.yield_frame(f)
-		coroutine.chan_send(f, ch_ptr, 42)
-	}, &ch)
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev_ptr: ^coroutine.Event(int)) {
+		coroutine.yield(f)
+		coroutine.event_emit(f.sched, ev_ptr, 42)
+	}, &ev)
 
 	Consumer_Data :: struct {
-		ch: ^coroutine.Channel(int),
+		ev: ^coroutine.Event(int),
 		executed: ^bool,
 		val: ^int,
 	}
 
-	consumer_data := Consumer_Data{&ch, &executed, &received_val}
+	consumer_data := Consumer_Data{&ev, &executed, &received_val}
 
 	// Consumer fiber
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, data: ^Consumer_Data) {
-		v, ok := coroutine.chan_recv(f, data.ch)
+		v, ok := coroutine.event_wait(f, data.ev)
 		if ok {
 			data.val^ = v
 			data.executed^ = true
@@ -45,7 +45,7 @@ main :: proc() {
 	}
 
 	assert(executed, "Consumer fiber did not complete")
-	assert(received_val == 42, "Received unexpected value from channel")
+	assert(received_val == 42, "Received unexpected value from event")
 
 	fmt.printf("[dist_test] SUCCESS: Amalgamated coroutine.odin verified! (received %d)\n", received_val)
 }

@@ -39,8 +39,8 @@ WATCHDOG_ENABLED :: #config(CORO_WATCHDOG_ENABLED, ODIN_DEBUG)
 WATCHDOG_MAX_SLICE_MS :: #config(CORO_WATCHDOG_MAX_SLICE_MS, 100.0)
 
 // --- 3. Clocks & Timers ---
-// Discrete simulation tick frequency (Hz). Default: 1000 Hz = 1 integer tick per ms.
-DEFAULT_TICK_RATE_HZ :: #config(CORO_TICK_RATE_HZ, 1000)
+// Maximum number of independent clock domains per Scheduler instance.
+MAX_CLOCKS :: #config(CORO_MAX_CLOCKS, 8)
 
 // --- 4. Static Capacity Bounds ---
 // Capacity of the historical generational handle ring buffer for completed fibers.

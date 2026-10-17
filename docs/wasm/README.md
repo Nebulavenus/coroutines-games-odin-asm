@@ -48,7 +48,7 @@ docs/wasm/
 
 ### Module Summaries:
 - **[01. Architecture & Asyncify Integration](01_ARCHITECTURE_ASYNCIFY.md)**:
-  Examines how Odin procedures are rewritten by Binaryen Asyncify, why the leaf unwind/rewind protocol (`start_unwind` on yield, `stop_rewind` upon entry in `yield_frame`) is required, and how the browser event loop schedules fibers.
+  Examines how Odin procedures are rewritten by Binaryen Asyncify, why the leaf unwind/rewind protocol (`start_unwind` on yield, `stop_rewind` upon entry in `yield`) is required, and how the browser event loop schedules fibers.
 - **[02. Memory Architecture & Limitations](02_MEMORY_AND_LIMITATIONS.md)**:
   Analyzes the fundamental difference between the WebAssembly VM execution stack and the LLVM shadow stack in linear memory. Explains shadow-stack aliasing across yields, details the Boss EMP post-mortem, and codifies the **3 Golden Rules**.
 - **[03. Browser Game & Canvas Adapter](03_BROWSER_GAME_AND_CANVAS.md)**:

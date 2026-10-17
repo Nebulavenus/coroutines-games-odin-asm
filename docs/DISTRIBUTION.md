@@ -32,7 +32,7 @@ main :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
         fmt.println("Running fiber!")
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
     })
 
     coroutine.scheduler_step(&sched, 0.016)
@@ -85,7 +85,7 @@ main :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
         fmt.println("Running fiber via libs collection!")
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
     })
 
     coroutine.scheduler_step(&sched, 0.016)

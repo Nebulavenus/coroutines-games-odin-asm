@@ -24,6 +24,9 @@ Rather than sharing a single scheduler, games frequently use two dedicated sched
 └─────────────────────────┘   └─────────────────────────┘
 ```
 
+> [!TIP]
+> **Single-Scheduler Alternative**: In lightweight projects, you can achieve world/UI isolation inside a single scheduler using the indexed clock domain architecture (`CLOCK_SIM` for world gameplay, `CLOCK_REAL` for unpaused UI). See [Tutorial 8: Multi-Domain Clocks](../tutorials/08_multi_domain_clocks.md). Use multi-scheduler architectures when full memory pool isolation and independent lifecycle teardown are required.
+
 ---
 
 ## 2. Multi-Scene Lifecycle Management

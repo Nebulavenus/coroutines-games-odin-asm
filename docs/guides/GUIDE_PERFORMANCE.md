@@ -79,14 +79,14 @@ if pct > 80.0 {
 ### Best Practices for Fiber Stack Economy:
 - **Avoid large stack arrays:** Declare buffers > 4KB in your entity struct or allocate them through an arena rather than placing them as local variables on the fiber stack.
 - **Pass structs by pointer or by-value inline payload:** Use `spawn_val` for small structures ($\le 128\text{ bytes}$) and pointer references `spawn_ptr` for larger game state objects.
-- **Keep recursion bounded:** Prefer iterative loops with `yield_frame(f)` or `wait(f, dt)` over deep recursive procedures.
+- **Keep recursion bounded:** Prefer iterative loops with `yield(f)` or `wait(f, dt)` over deep recursive procedures.
 
 ---
 
-## 5. Dual Min-Heap Timer Performance
+## 5. Per-Domain Binary Min-Heap Timer Performance
 
-The engine maintains two binary min-heaps (`timer_heap` for simulation time, `real_timer_heap` for wall-clock time):
-- **$O(1)$ Timer Peek:** Finding the next fiber to wake takes constant time.
+The engine maintains an independent binary min-heap per `Clock_Domain` (`c.timer_heap`):
+- **$O(1)$ Timer Peek:** Finding the next fiber to wake takes constant time ($O(1)$ root check).
 - **$O(\log N)$ Wake Dispatch:** Pushing/popping sleeping fibers scales logarithmically.
 - **$O(\log N)$ Cancellation:** Fiber descriptors cache their heap index (`f.heap_index`), enabling direct element removal without linear $O(N)$ searches.
 
@@ -94,16 +94,16 @@ The engine maintains two binary min-heaps (`timer_heap` for simulation time, `re
 
 ## 6. Scheduler Dispatch Algorithmic Optimizations
 
-The scheduler dispatch loop in `src/coroutine/scheduler.odin` is engineered for zero memory moves:
+The scheduler dispatch loop is engineered for zero memory moves:
 
 ### A. Zero-Shift Ready Queue Cursor
-Instead of calling `pop_front` (which shifts the entire slice in memory via $O(N)$ `memmove`), the scheduler steps through ready fibers using a sequential linear index cursor:
+Instead of calling `pop_front` (which shifts the entire slice in memory via $O(N)$ `memmove`), the scheduler steps through ready fibers using a sequential linear index cursor over `ready_queue`:
 
 ```odin
 // O(N) linear sweep with zero memory moves:
 for i := 0; i < len(sched.ready_queue); i += 1 {
-    f := sched.ready_queue[i]
-    if f == nil || f.status != .Ready do continue
+    handle := sched.ready_queue[i]
+    if !fiber_is_alive(sched, handle) do continue
     // Context switch into fiber...
 }
 clear(&sched.ready_queue) // O(1) length reset, retains backing capacity
@@ -113,23 +113,23 @@ clear(&sched.ready_queue) // O(1) length reset, retains backing capacity
 * **Same-Frame Dispatch:** Fibers unblocked during step execution (via channels, events, or spawns) simply append to `ready_queue` and execute in the same frame tick.
 
 ### B. In-Place Linear Waiter Partitioning
-Waking discrete tick, frame, and condition waiters uses a cache-friendly single-pass linear partition filter:
+Waking discrete step waiters inside each `Clock_Domain` uses a cache-friendly single-pass linear partition filter:
 
 ```odin
 write_idx := 0
-for i := 0; i < len(sched.frame_waiters); i += 1 {
-    f := sched.frame_waiters[i]
-    if f.wake_frame <= sched.clock.frame_count {
-        if f.status == .Sleeping_Frames {
+for i := 0; i < len(c.step_waiters); i += 1 {
+    f := c.step_waiters[i]
+    if f.wake_step <= c.steps {
+        if f.status == .Sleeping_Steps {
             f.status = .Ready
-            append(&sched.ready_queue, f)
+            append(&sched.ready_queue, f.handle)
         }
     } else {
-        sched.frame_waiters[write_idx] = f
+        c.step_waiters[write_idx] = f
         write_idx += 1
     }
 }
-resize(&sched.frame_waiters, write_idx) // O(1) length adjustment
+resize(&c.step_waiters, write_idx) // O(1) length adjustment
 ```
 
 ---
@@ -159,7 +159,7 @@ When planning fiber density for your game:
 - **Result:** $O(1)$ instant lookups for `fiber_is_alive`, `fiber_status`, and `fiber_cancel` with zero search overhead regardless of pool size.
 
 ### B. Doubly-Linked Intrusive Futex Wait Queues
-- Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event(T)`, `Channel(T)`) embed intrusive `next_waiter` and `prev_waiter` pointers inside `Fiber`.
+- Synchronization primitives (`Signal`, `Event(T)`, and `coroutine/sync`'s `Fiber_Mutex`, `Fiber_Semaphore`, `Channel(T)`) embed intrusive `next_waiter` and `prev_waiter` pointers inside `Fiber`.
 - **Zero Allocations:** 100% zero heap memory allocated during synchronization, contention, or broadcasting.
 - **$O(1)$ In-Place Unlinking:** When a fiber times out or is cancelled in multi-channel select (`chan_select_recv`), it unlinks from wait queues in $O(1)$ time without searching.
 

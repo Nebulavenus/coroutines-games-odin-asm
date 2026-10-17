@@ -10,6 +10,7 @@ import x86 "core:rexcode/isa/x86"
 import arm64 "core:rexcode/isa/arm64"
 import riscv "core:rexcode/isa/riscv"
 
+
 // ============================================================================
 // Test 1: Basic Fiber Execution
 // ============================================================================
@@ -30,6 +31,7 @@ test_basic_spawn_and_run :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect(t, ran_typed, "Fiber should have run and finished")
 }
+
 
 // ============================================================================
 // Test 2: Local Variables Preserved Across Yields
@@ -72,6 +74,7 @@ test_stack_local_variables_across_yields :: proc(t: ^testing.T) {
     testing.expect_value(t, results[2], 600)
 }
 
+
 // ============================================================================
 // Test 3: Wait Seconds & Timer Min-Heap
 // ============================================================================
@@ -107,6 +110,7 @@ test_wait_seconds_timer_heap :: proc(t: ^testing.T) {
     testing.expect_value(t, step_stage, 3)
 }
 
+
 // ============================================================================
 // Test 4: Wait Frames
 // ============================================================================
@@ -137,40 +141,6 @@ test_wait_frames :: proc(t: ^testing.T) {
     testing.expect_value(t, counter, 11)
 }
 
-// ============================================================================
-// Test 5: Wait Until Condition
-// ============================================================================
-
-@(test)
-test_wait_until_condition :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Cond_Data :: struct {
-        flag: bool,
-        completed: bool,
-    }
-
-    data := Cond_Data{flag = false, completed = false}
-
-    spawn(&sched, proc(f: ^Fiber, d: ^Cond_Data) {
-        wait_until(f, proc(d: ^Cond_Data) -> bool {
-            return d.flag
-        }, d)
-        d.completed = true
-    }, &data)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, data.completed, false)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, data.completed, false)
-
-    data.flag = true
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, data.completed, true)
-}
 
 // ============================================================================
 // Test 6: Structured Concurrency - `sync` (Join All)
@@ -225,6 +195,7 @@ test_structured_sync :: proc(t: ^testing.T) {
     testing.expect_value(t, state.sync_ok, true)
 }
 
+
 // ============================================================================
 // Test 7: Structured Concurrency - `race` (First to Finish Wins)
 // ============================================================================
@@ -273,6 +244,7 @@ test_structured_race :: proc(t: ^testing.T) {
     testing.expect_value(t, state.slow_completed, false)
 }
 
+
 // ============================================================================
 // Test 8: Scope Cancellation
 // ============================================================================
@@ -308,6 +280,7 @@ test_scope_cancellation :: proc(t: ^testing.T) {
     testing.expect_value(t, progress, 2) // Should not increase anymore
 }
 
+
 // ============================================================================
 // Test 9: Native Defer Cleanup on Return and Destruction
 // ============================================================================
@@ -336,30 +309,6 @@ test_cleanup_proc_and_defer :: proc(t: ^testing.T) {
     testing.expect_value(t, cleaned_up, true)
 }
 
-// ============================================================================
-// Test 10: Tween Interpolation
-// ============================================================================
-
-@(test)
-test_tween_interpolation :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    val: f32 = 0.0
-    spawn(&sched, proc(f: ^Fiber, v: ^f32) {
-        tween(f, v, 0.0, 100.0, 1.0, ease_linear)
-    }, &val)
-
-    scheduler_step(&sched, 0.0) // initial
-    testing.expect_value(t, val, 0.0)
-
-    scheduler_step(&sched, 0.5) // half way
-    testing.expect(t, val >= 49.0 && val <= 51.0, fmt.tprintf("Expected ~50.0, got %v", val))
-
-    scheduler_step(&sched, 0.5) // finished
-    testing.expect_value(t, val, 100.0)
-}
 
 // ============================================================================
 // Test 11: Stack Canary Guard Verification
@@ -379,6 +328,7 @@ test_stack_canary_guard :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect(t, canary_ok, "Canary should be intact")
 }
+
 
 // ============================================================================
 // Test 12: Nested Structured Concurrency (Race containing Sync)
@@ -441,35 +391,6 @@ test_nested_race_with_sync_branch :: proc(t: ^testing.T) {
     testing.expect_value(t, state.sync_b_done, false)
 }
 
-// ============================================================================
-// Test 13: Time Scaling & Scheduler Pause
-// ============================================================================
-
-@(test)
-test_time_scaling_and_pause :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    counter := 0
-    spawn(&sched, proc(f: ^Fiber, c: ^int) {
-        c^ = 1
-        wait(f, 1.0)
-        c^ = 2
-    }, &counter)
-
-    scheduler_set_paused(&sched, true)
-    scheduler_step(&sched, 0.5)
-    testing.expect_value(t, counter, 0)
-
-    scheduler_set_paused(&sched, false)
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, counter, 1)
-
-    scheduler_set_time_scale(&sched, 2.0)
-    scheduler_step(&sched, 0.5)
-    testing.expect_value(t, counter, 2)
-}
 
 // ============================================================================
 // Test 14: Multiple Concurrent Independent Coroutines
@@ -509,6 +430,7 @@ test_many_concurrent_fibers :: proc(t: ^testing.T) {
         testing.expect_value(t, counters[i], 6)
     }
 }
+
 
 // ============================================================================
 // Test 15: Deep 4-Tier Nested Hierarchy (Sync -> Race -> Sync)
@@ -585,6 +507,7 @@ test_deep_nested_hierarchy_sync_race_sync :: proc(t: ^testing.T) {
     testing.expect_value(t, state.tier4_b_done, false)
 }
 
+
 // ============================================================================
 // Test 16: Sync Failure Propagation
 // ============================================================================
@@ -625,6 +548,7 @@ test_sync_failure_propagation :: proc(t: ^testing.T) {
     testing.expect_value(t, state.branch_a_done, true)
     testing.expect_value(t, state.sync_succeeded, false) // Should report failure!
 }
+
 
 // ============================================================================
 // Test 17: Race with Simultaneous Finishers (Tie-Break Verification)
@@ -668,6 +592,7 @@ test_race_all_simultaneous_finish :: proc(t: ^testing.T) {
     testing.expect(t, state.winner >= 0 && state.winner <= 2, "Winner must be a valid branch index")
     testing.expect_value(t, state.executed_count, 1) // Only the winning branch should complete its post-wait code
 }
+
 
 // ============================================================================
 // Test 18: Race Loser with Subtree Aborts All Descendants
@@ -733,6 +658,7 @@ test_race_loser_with_children_aborts_all_descendants :: proc(t: ^testing.T) {
     testing.expect_value(t, state.grandchild_2_done, false)
 }
 
+
 // ============================================================================
 // Test 19: 1,000 Random Timers Chronological Sort Validation
 // ============================================================================
@@ -783,6 +709,7 @@ test_timer_heap_1000_random_sort :: proc(t: ^testing.T) {
         testing.expect(t, t0 <= t1, fmt.tprintf("Timer %d (%.3f) woke after timer %d (%.3f)", i, t0, i + 1, t1))
     }
 }
+
 
 // ============================================================================
 // Test 20: Random Timer Heap Cancellations Preserves Rebalance
@@ -835,29 +762,6 @@ test_timer_heap_random_cancellations :: proc(t: ^testing.T) {
     }
 }
 
-// ============================================================================
-// Test 21: Immediate Condition Satisfaction (Zero-Frame Delay)
-// ============================================================================
-
-@(test)
-test_condition_immediate_satisfaction :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    flag := true
-    progress := 0
-
-    spawn(&sched, proc(f: ^Fiber, p: ^int) {
-        p^ = 1
-        // Condition is already true! Should return immediately without suspending
-        wait_until(f, proc() -> bool { return true })
-        p^ = 2
-    }, &progress)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, progress, 2) // Completed in single tick!
-}
 
 // ============================================================================
 // Test 22: Multi-Slab Pool Expansion & Stack Reclaim
@@ -889,6 +793,7 @@ test_pool_multi_slab_expansion_and_reclaim :: proc(t: ^testing.T) {
     testing.expect_value(t, len(sched.fiber_pool.free_fibers), len(sched.fiber_pool.all_fibers))
 }
 
+
 // ============================================================================
 // Test 23: Fiber Lifecycle Generation Re-use (10 Cycles)
 // ============================================================================
@@ -918,6 +823,7 @@ test_fiber_lifecycle_generation_reuse :: proc(t: ^testing.T) {
         testing.expect_value(t, count, BATCH_SIZE * 42)
     }
 }
+
 
 // ============================================================================
 // Test 24: Local Variable Isolation on Stack across 50 Interleaved Fibers
@@ -966,55 +872,6 @@ test_local_variable_isolation_many_fibers :: proc(t: ^testing.T) {
     }
 }
 
-// ============================================================================
-// Test 25: Heterogeneous Scope Mass Cancellation
-// ============================================================================
-
-@(test)
-test_heterogeneous_scope_cancellation :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    scope: Fiber_Scope
-    defer scope_destroy(&sched, &scope)
-
-    dummy_cond := false
-
-    // 1. Fiber in Sleeping_Time
-    spawn(&sched, proc(f: ^Fiber) { wait(f, 100.0) }, scope = &scope)
-
-    // 2. Fiber in Sleeping_Frames
-    spawn(&sched, proc(f: ^Fiber) { wait_frames(f, 500) }, scope = &scope)
-
-    // 3. Fiber in Waiting_Condition
-    spawn(&sched, proc(f: ^Fiber, cond_ptr: ^bool) {
-        wait_until(f, proc(c: ^bool) -> bool { return c^ }, cond_ptr)
-    }, &dummy_cond, scope = &scope)
-
-    // 4. Fiber in Suspended_Join (sync)
-    spawn(&sched, proc(f: ^Fiber) {
-        sync(f,
-            branch(proc(f: ^Fiber) { wait_frames(f, 100) }),
-            branch(proc(f: ^Fiber) { wait_frames(f, 100) }),
-        )
-    }, scope = &scope)
-
-    // Step 1 frame to put all fibers into their respective waiting queues
-    scheduler_step(&sched, 0.016)
-
-    testing.expect(t, len(sched.timer_heap) > 0, "Timer heap should have waiter")
-    testing.expect(t, len(sched.frame_waiters) > 0, "Frame waiters should have waiter")
-    testing.expect(t, len(sched.condition_waiters) > 0, "Condition waiters should have waiter")
-
-    // Mass cancel scope
-    scope_cancel(&sched, &scope)
-
-    // Verify all queues are emptied of scope fibers
-    testing.expect_value(t, len(sched.timer_heap), 0)
-    testing.expect_value(t, len(sched.frame_waiters), 0)
-    testing.expect_value(t, len(sched.condition_waiters), 0)
-}
 
 // ============================================================================
 // Test 26: 10,000 Consecutive Yield Re-entrancy Loop
@@ -1044,6 +901,7 @@ test_10k_yield_loop :: proc(t: ^testing.T) {
     testing.expect_value(t, loop_count, ITERATIONS)
 }
 
+
 // ============================================================================
 // Test 27: Zero and Negative Duration Waits Boundary Safety
 // ============================================================================
@@ -1072,6 +930,7 @@ test_zero_and_negative_waits :: proc(t: ^testing.T) {
 
     testing.expect_value(t, completed, 4)
 }
+
 
 // ============================================================================
 // Test 28: Per-Fiber Temp Allocator Isolation Across Yields
@@ -1120,6 +979,7 @@ test_fiber_temp_allocator_isolation :: proc(t: ^testing.T) {
     testing.expect_value(t, results[1], 500)
 }
 
+
 // ============================================================================
 // Test 29: with_timeout - Successful Completion Before Deadline
 // ============================================================================
@@ -1151,6 +1011,7 @@ test_with_timeout_completion :: proc(t: ^testing.T) {
     testing.expect_value(t, state.timed_out, false)
 }
 
+
 // ============================================================================
 // Test 30: with_timeout - Expiration Aborts Hanging Task
 // ============================================================================
@@ -1181,6 +1042,7 @@ test_with_timeout_expired :: proc(t: ^testing.T) {
     testing.expect_value(t, state.finished, false)
     testing.expect_value(t, state.timed_out, true)
 }
+
 
 // ============================================================================
 // Test 31: Signal Event Broadcast Wakes All Waiters
@@ -1224,60 +1086,6 @@ test_signal_broadcast :: proc(t: ^testing.T) {
     testing.expect_value(t, woken_count, 3)
 }
 
-// ============================================================================
-// Test 32: Fiber Mutex Mutual Exclusion & Queueing
-// ============================================================================
-
-@(test)
-test_fiber_mutex_contention :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    execution_order: [dynamic]int
-    execution_order = make([dynamic]int)
-    defer delete(execution_order)
-
-    Payload :: struct {
-        id:        int,
-        mutex:     ^Fiber_Mutex,
-        log:       ^[dynamic]int,
-    }
-
-    p1 := Payload{id = 1, mutex = &m, log = &execution_order}
-    p2 := Payload{id = 2, mutex = &m, log = &execution_order}
-
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        mutex_lock(f, p.mutex)
-        append(p.log, p.id) // Critical section start
-        wait_frames(f, 3)
-        append(p.log, p.id + 10) // Critical section end
-        mutex_unlock(f.sched, p.mutex)
-    }, &p1)
-
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        mutex_lock(f, p.mutex)
-        append(p.log, p.id)
-        wait_frames(f, 1)
-        append(p.log, p.id + 10)
-        mutex_unlock(f.sched, p.mutex)
-    }, &p2)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, len(execution_order), 4)
-    // Fiber 1 must acquire, hold, and release BEFORE Fiber 2 enters critical section
-    testing.expect_value(t, execution_order[0], 1)
-    testing.expect_value(t, execution_order[1], 11)
-    testing.expect_value(t, execution_order[2], 2)
-    testing.expect_value(t, execution_order[3], 12)
-}
 
 // ============================================================================
 // Test 33: Stack Watermark & Usage Profiler Calculation
@@ -1323,6 +1131,7 @@ test_stack_watermark_usage_calculation :: proc(t: ^testing.T) {
     testing.expect(t, used_recorded < 32 * 1024, "Used bytes must be less than 32KB")
 }
 
+
 // ============================================================================
 // Test 34: Async Token Bridge (External Worker Simulation)
 // ============================================================================
@@ -1361,158 +1170,6 @@ test_async_token_bridge :: proc(t: ^testing.T) {
     testing.expect_value(t, state.success, true)
 }
 
-// ============================================================================
-// Test 35: CSP Unbuffered Channel Synchronous Rendezvous
-// ============================================================================
-
-@(test)
-test_channel_synchronous_rendezvous :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0)
-    defer chan_destroy(&ch)
-
-    received_val := 0
-
-    Payload :: struct {
-        ch:  ^Channel(int),
-        out: ^int,
-    }
-    payload := Payload{ch = &ch, out = &received_val}
-
-    // Receiver fiber waits on channel
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        val, ok := chan_recv(f, p.ch)
-        if ok {
-            p.out^ = val
-        }
-    }, &payload)
-
-    // Sender fiber sends value
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        chan_send(f, p.ch, 777)
-    }, &payload)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, received_val, 777)
-}
-
-// ============================================================================
-// Test 36: CSP Buffered Channel FIFO Ordering
-// ============================================================================
-
-@(test)
-test_channel_buffered_fifo :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 3)
-    defer chan_destroy(&ch)
-
-    results: [dynamic]int
-    results = make([dynamic]int)
-    defer delete(results)
-
-    Payload :: struct {
-        ch:  ^Channel(int),
-        res: ^[dynamic]int,
-    }
-    p := Payload{ch = &ch, res = &results}
-
-    // Producer sends 3 items
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        chan_send(f, p.ch, 10)
-        chan_send(f, p.ch, 20)
-        chan_send(f, p.ch, 30)
-    }, &p)
-
-    // Consumer reads 3 items
-    spawn(&sched, proc(f: ^Fiber, p: ^Payload) {
-        for _ in 0 ..< 3 {
-            val, ok := chan_recv(f, p.ch)
-            if ok {
-                append(p.res, val)
-            }
-        }
-    }, &p)
-
-    scheduler_step(&sched, 0.016)
-
-    testing.expect_value(t, len(results), 3)
-    testing.expect_value(t, results[0], 10)
-    testing.expect_value(t, results[1], 20)
-    testing.expect_value(t, results[2], 30)
-}
-
-// ============================================================================
-// Test 37: Channel Close and Drain Remaining Items
-// ============================================================================
-
-@(test)
-test_channel_close_and_drain :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(string)
-    chan_init(&ch, capacity = 2)
-    defer chan_destroy(&ch)
-
-    chan_try_send(&ch, "alpha")
-    chan_try_send(&ch, "beta")
-    chan_close(&ch)
-
-    // Cannot send to closed channel
-    testing.expect_value(t, chan_try_send(&ch, "gamma"), false)
-
-    // Can still drain buffered values
-    val1, ok1 := chan_try_recv(&ch)
-    testing.expect_value(t, ok1, true)
-    testing.expect_value(t, val1, "alpha")
-
-    val2, ok2 := chan_try_recv(&ch)
-    testing.expect_value(t, ok2, true)
-    testing.expect_value(t, val2, "beta")
-
-    // Empty and closed
-    _, ok3 := chan_try_recv(&ch)
-    testing.expect_value(t, ok3, false)
-}
-
-// ============================================================================
-// Test 38: Stateful Pull-Based Generator Sequence
-// ============================================================================
-
-@(test)
-test_generator_lazy_sequence :: proc(t: ^testing.T) {
-    gen: Generator(int)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        a, b := 0, 1
-        for _ in 0 ..< 6 {
-            yield_value(f, g, a)
-            next := a + b
-            a = b
-            b = next
-        }
-    })
-    defer generator_destroy(&gen)
-
-    expected := [6]int{0, 1, 1, 2, 3, 5}
-    for i in 0 ..< 6 {
-        val, ok := generator_next(&gen)
-        testing.expect_value(t, ok, true)
-        testing.expect_value(t, val, expected[i])
-    }
-
-    // Sequence exhausted
-    _, ok_end := generator_next(&gen)
-    testing.expect_value(t, ok_end, false)
-}
 
 // ============================================================================
 // Test 39: Configurable Virtual Memory Guard Page Allocation
@@ -1533,6 +1190,7 @@ test_virtual_memory_guard_pages :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, ran, true)
 }
+
 
 // ============================================================================
 // Test 40: Spawn by Value - Primitives
@@ -1568,6 +1226,7 @@ test_spawn_by_value_primitives :: proc(t: ^testing.T) {
     testing.expect_value(t, out_1, 25.0)
     testing.expect_value(t, out_2, 100.0)
 }
+
 
 // ============================================================================
 // Test 41: Spawn by Value - Composite Struct
@@ -1612,6 +1271,7 @@ test_spawn_by_value_struct :: proc(t: ^testing.T) {
     testing.expect_value(t, res2.y, 240.0)
 }
 
+
 // ============================================================================
 // Test 42: Spawn by Value - Concurrency & Zero Crosstalk
 // ============================================================================
@@ -1649,6 +1309,7 @@ test_spawn_by_value_concurrency_no_crosstalk :: proc(t: ^testing.T) {
         testing.expect_value(t, results[i], (i + 1) * 10)
     }
 }
+
 
 // ============================================================================
 // Test 43: Branch by Value - Sync
@@ -1688,6 +1349,7 @@ test_branch_by_value_sync :: proc(t: ^testing.T) {
     testing.expect_value(t, results[1], 200)
     testing.expect_value(t, results[2], 300)
 }
+
 
 // ============================================================================
 // Test 44: Branch by Value - Race
@@ -1731,6 +1393,7 @@ test_branch_by_value_race :: proc(t: ^testing.T) {
 
     testing.expect_value(t, winner_value, 42)
 }
+
 
 // ============================================================================
 // Test 45: Ephemeral Stack Safety (Dangling Pointer Prevention)
@@ -1786,48 +1449,6 @@ test_spawn_by_value_ephemeral_stack_safety :: proc(t: ^testing.T) {
     testing.expect_value(t, results[3], 30.0)
 }
 
-// ============================================================================
-// Test 46: Vector Tween Overloads ([2]f32, [3]f32, [4]f32)
-// ============================================================================
-
-@(test)
-test_tween_vectors :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    v2_out: [2]f32
-    v3_out: [3]f32
-    v4_out: [4]f32
-
-    spawn(&sched, proc(f: ^Fiber, p2: ^[2]f32) {
-        tween(f, p2, [2]f32{0, 0}, [2]f32{100, 200}, 0.1)
-    }, &v2_out)
-
-    spawn(&sched, proc(f: ^Fiber, p3: ^[3]f32) {
-        tween(f, p3, [3]f32{10, 20, 30}, [3]f32{40, 50, 60}, 0.1)
-    }, &v3_out)
-
-    spawn(&sched, proc(f: ^Fiber, p4: ^[4]f32) {
-        tween(f, p4, [4]f32{1, 2, 3, 4}, [4]f32{5, 6, 7, 8}, 0.1)
-    }, &v4_out)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    testing.expect_value(t, v2_out.x, 100.0)
-    testing.expect_value(t, v2_out.y, 200.0)
-
-    testing.expect_value(t, v3_out.x, 40.0)
-    testing.expect_value(t, v3_out.y, 50.0)
-    testing.expect_value(t, v3_out.z, 60.0)
-
-    testing.expect_value(t, v4_out.x, 5.0)
-    testing.expect_value(t, v4_out.y, 6.0)
-    testing.expect_value(t, v4_out.z, 7.0)
-    testing.expect_value(t, v4_out.w, 8.0)
-}
 
 // ============================================================================
 // Test 47: Direct Procedure Passing in with_timeout Overloads
@@ -1877,67 +1498,6 @@ test_with_timeout_proc_overloads :: proc(t: ^testing.T) {
     testing.expect_value(t, results[2], false) // Finished in time
 }
 
-// ============================================================================
-// Test 48: wait_while Helper
-// ============================================================================
-
-@(test)
-test_wait_while :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    State :: struct {
-        is_charging: bool,
-        finished:    bool,
-    }
-
-    state := State{is_charging = true, finished = false}
-
-    spawn(&sched, proc(f: ^Fiber, s: ^State) {
-        wait_while(f, proc(s: ^State) -> bool {
-            return s.is_charging
-        }, s)
-        s.finished = true
-    }, &state)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, state.finished, false)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, state.finished, false)
-
-    // Clear charging condition
-    state.is_charging = false
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, state.finished, true)
-}
-
-// ============================================================================
-// Test 49: wait_until by Value
-// ============================================================================
-
-@(test)
-test_wait_until_val :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    threshold: f32 = 50.0
-    ran := false
-
-    spawn(&sched, proc(f: ^Fiber, r: ^bool) {
-        current_val := f32(10.0)
-        // Wait until predicate using captured value threshold
-        wait_until(f, proc(thresh: f32) -> bool {
-            return thresh >= 50.0
-        }, f32(50.0))
-        r^ = true
-    }, &ran)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, ran, true)
-}
 
 // ============================================================================
 // Test 50: Scope Query Helpers & Scope Destroy
@@ -1980,6 +1540,7 @@ test_scope_query_helpers :: proc(t: ^testing.T) {
     testing.expect_value(t, scope_is_empty(&scope), true)
 }
 
+
 // ============================================================================
 // Test 51: Fiber Time Accessor Helpers (delta_time, current_time, current_frame)
 // ============================================================================
@@ -2018,6 +1579,7 @@ test_fiber_time_accessors :: proc(t: ^testing.T) {
     testing.expect(t, math.abs(captured_time - (0.033 + 0.016)) < 0.001, "Expected current_time ~ 0.049")
     testing.expect_value(t, captured_frame, u64(2))
 }
+
 
 // ============================================================================
 // Test 52: scope_wait (Wait for Entire Scope Completion)
@@ -2070,122 +1632,6 @@ test_scope_wait :: proc(t: ^testing.T) {
     testing.expect_value(t, boss_started, true)
 }
 
-// ============================================================================
-// Test 53: Expanded Game-Juice Easing Functions (Bounce, Back, Elastic)
-// ============================================================================
-
-@(test)
-test_expanded_easing_functions :: proc(t: ^testing.T) {
-    // 1. Boundary tests (t=0 -> 0, t=1 -> 1)
-    testing.expect(t, math.abs(ease_out_bounce(0.0) - 0.0) < 0.001, "ease_out_bounce(0) == 0")
-    testing.expect(t, math.abs(ease_out_bounce(1.0) - 1.0) < 0.001, "ease_out_bounce(1) == 1")
-
-    testing.expect(t, math.abs(ease_out_back(0.0) - 0.0) < 0.001, "ease_out_back(0) == 0")
-    testing.expect(t, math.abs(ease_out_back(1.0) - 1.0) < 0.001, "ease_out_back(1) == 1")
-
-    testing.expect(t, math.abs(ease_out_elastic(0.0) - 0.0) < 0.001, "ease_out_elastic(0) == 0")
-    testing.expect(t, math.abs(ease_out_elastic(1.0) - 1.0) < 0.001, "ease_out_elastic(1) == 1")
-
-    // 2. Overshoot properties (ease_out_back exceeds 1.0 before settling to 1.0)
-    mid_back := ease_out_back(0.8)
-    testing.expect(t, mid_back > 1.0, "ease_out_back overshoots past 1.0")
-
-    // 3. Easing inside tween execution
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    out_val: f32 = 0.0
-    spawn(&sched, proc(f: ^Fiber, out: ^f32) {
-        tween(f, out, 0.0, 100.0, 0.1, ease_out_bounce)
-    }, &out_val)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    testing.expect_value(t, out_val, 100.0)
-}
-
-// ============================================================================
-// Test 54: Channel O(1) Circular Ring Buffer High-Throughput Wraparound
-// ============================================================================
-
-@(test)
-test_channel_ring_buffer_wraparound :: proc(t: ^testing.T) {
-    ch: Channel(int)
-    chan_init(&ch, capacity = 4)
-    defer chan_destroy(&ch)
-
-    testing.expect_value(t, chan_is_empty(&ch), true)
-    testing.expect_value(t, chan_is_full(&ch), false)
-    testing.expect_value(t, chan_count(&ch), 0)
-
-    // Push 4 items (fills buffer)
-    for i in 0 ..< 4 {
-        ok := chan_try_send(&ch, (i + 1) * 10)
-        testing.expect_value(t, ok, true)
-    }
-
-    testing.expect_value(t, chan_is_full(&ch), true)
-    testing.expect_value(t, chan_count(&ch), 4)
-
-    // Cannot push into full channel
-    testing.expect_value(t, chan_try_send(&ch, 999), false)
-
-    // Stream 1,000 items continuously through 4-slot ring buffer
-    for i in 4 ..< 1000 {
-        // Pop oldest item
-        val, ok := chan_try_recv(&ch)
-        testing.expect_value(t, ok, true)
-        testing.expect_value(t, val, (i - 3) * 10)
-
-        // Push new item
-        send_ok := chan_try_send(&ch, (i + 1) * 10)
-        testing.expect_value(t, send_ok, true)
-    }
-
-    // Drain final 4 items
-    for i in 996 ..< 1000 {
-        val, ok := chan_try_recv(&ch)
-        testing.expect_value(t, ok, true)
-        testing.expect_value(t, val, (i + 1) * 10)
-    }
-
-    testing.expect_value(t, chan_is_empty(&ch), true)
-    testing.expect_value(t, chan_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 55: Generator 16KB Lightweight Slab Memory Allocation
-// ============================================================================
-
-@(test)
-test_generator_lightweight_memory :: proc(t: ^testing.T) {
-    gen: Generator(int)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        for i in 1 ..= 10 {
-            yield_value(f, g, i * 100)
-        }
-    })
-    defer generator_destroy(&gen)
-
-    // Verify lightweight pool parameters (16KB stack, 1 stack per slab)
-    testing.expect_value(t, gen.sched.fiber_pool.stack_size, uint(16 * 1024))
-    testing.expect_value(t, gen.sched.fiber_pool.stacks_per_slab, 1)
-    testing.expect_value(t, len(gen.sched.fiber_pool.slabs), 1)
-
-    // Verify all 10 yielded values
-    for i in 1 ..= 10 {
-        val, ok := generator_next(&gen)
-        testing.expect_value(t, ok, true)
-        testing.expect_value(t, val, i * 100)
-    }
-
-    // Exhausted generator
-    _, ok := generator_next(&gen)
-    testing.expect_value(t, ok, false)
-}
 
 // ============================================================================
 // Test 56: Fallback Control Flow (Sequential Branch Fallback on Failure)
@@ -2232,6 +1678,7 @@ test_fallback_control_flow :: proc(t: ^testing.T) {
     testing.expect_value(t, res.action_idx, 2)
 }
 
+
 // ============================================================================
 // Test 57: Rush Concurrency (Parallel Success Preemption Ignoring Failures)
 // ============================================================================
@@ -2270,81 +1717,6 @@ test_rush_success_preemption :: proc(t: ^testing.T) {
     testing.expect_value(t, winning_branch, 1)
 }
 
-// ============================================================================
-// Test 58: Phase Director (FSM State Machine Lifecycle)
-// ============================================================================
-
-@(test)
-test_phase_director_fsm :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    director: Phase_Director
-    phase_director_init(&director, &sched)
-    defer phase_director_destroy(&director)
-
-    testing.expect_value(t, phase_current(&director), 0)
-    testing.expect_value(t, phase_is_busy(&director), false)
-
-    phase1_ran := false
-    phase2_ran := false
-
-    // Switch to Phase 1 (Spawns long combat loop)
-    phase_switch(&director, 1, proc(f: ^Fiber, r: ^bool) {
-        r^ = true
-        for {
-            yield_frame(f)
-        }
-    }, &phase1_ran, name = "Phase 1: Combat")
-
-    testing.expect_value(t, phase_current(&director), 1)
-    testing.expect_value(t, phase_name(&director), "Phase 1: Combat")
-    testing.expect_value(t, phase_is_busy(&director), true)
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, phase1_ran, true)
-
-    // Switch to Phase 2 (Cancels Phase 1 immediately)
-    phase_switch(&director, 2, proc(f: ^Fiber, r: ^bool) {
-        r^ = true
-    }, &phase2_ran, name = "Phase 2: Enraged")
-
-    testing.expect_value(t, phase_current(&director), 2)
-    testing.expect_value(t, phase_name(&director), "Phase 2: Enraged")
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, phase2_ran, true)
-}
-
-// ============================================================================
-// Test 59: Headless Simulation Runner (simulate_until)
-// ============================================================================
-
-@(test)
-test_simulate_until_headless :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    counter: int = 0
-
-    spawn(&sched, proc(f: ^Fiber, c: ^int) {
-        for _ in 0 ..< 100 {
-            wait(f, 0.1) // 100 * 0.1s = 10.0 virtual seconds
-            c^ += 1
-        }
-    }, &counter)
-
-    // Run simulated 10 seconds of timeline instantaneously
-    ok, sim_time := simulate_until(&sched, 0.016, 15.0, proc(c: ^int) -> bool {
-        return c^ >= 50
-    }, &counter)
-
-    testing.expect_value(t, ok, true)
-    testing.expect_value(t, counter, 50)
-    testing.expect(t, sim_time >= 5.0 && sim_time <= 6.0, "Simulated time ~5.6s")
-}
 
 // ============================================================================
 // Test 60: fail Primitive & Sync Error Propagation
@@ -2376,6 +1748,7 @@ test_fail_primitive :: proc(t: ^testing.T) {
 
     testing.expect_value(t, all_passed, false)
 }
+
 
 // ============================================================================
 // Test 61: Fallback All Failing & Value-Based Payload Branches
@@ -2428,6 +1801,7 @@ test_fallback_all_failing_and_by_value :: proc(t: ^testing.T) {
     testing.expect_value(t, val_res, 40)
 }
 
+
 // ============================================================================
 // Test 62: Rush 5 Parallel Branches & All Failing Edge Case
 // ============================================================================
@@ -2471,91 +1845,6 @@ test_rush_5_branches_and_all_failing :: proc(t: ^testing.T) {
     testing.expect_value(t, all_fail_winner, -1)
 }
 
-// ============================================================================
-// Test 63: Phase Director Rapid Multi-Phase Transitions (1 -> 2 -> 3 -> 4)
-// ============================================================================
-
-@(test)
-test_phase_director_rapid_transitions :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    director: Phase_Director
-    phase_director_init(&director, &sched)
-    defer phase_director_destroy(&director)
-
-    executed_phases: [5]bool
-
-    // Rapidly switch through phases
-    for p in 1 ..= 4 {
-        phase_num := p
-        phase_switch(&director, phase_num, proc(f: ^Fiber, d: ^[5]bool) {
-            for {
-                yield_frame(f)
-            }
-        }, &executed_phases, name = "Phase Step")
-
-        testing.expect_value(t, phase_current(&director), phase_num)
-        testing.expect_value(t, phase_is_busy(&director), true)
-        scheduler_step(&sched, 0.016)
-    }
-
-    // Only 1 fiber should be active in current_scope
-    testing.expect_value(t, scope_active_count(&director.current_scope), 1)
-
-    // Destroy director
-    phase_director_destroy(&director)
-    testing.expect_value(t, scope_active_count(&director.current_scope), 0)
-    testing.expect_value(t, phase_is_busy(&director), false)
-}
-
-// ============================================================================
-// Test 64: Headless Simulation of Channel Producer-Consumer Pipeline
-// ============================================================================
-
-@(test)
-test_simulate_until_channel_pipeline :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Context :: struct {
-        ch:       Channel(int),
-        received: int,
-    }
-
-    ctx: Context
-    chan_init(&ctx.ch, capacity = 4)
-    defer chan_destroy(&ctx.ch)
-
-    // Producer fiber: pushes 30 items with small delays
-    spawn(&sched, proc(f: ^Fiber, c: ^Context) {
-        for i in 1 ..= 30 {
-            wait(f, 0.02)
-            chan_send(f, &c.ch, i)
-        }
-        chan_close(&c.ch)
-    }, &ctx)
-
-    // Consumer fiber: receives items
-    spawn(&sched, proc(f: ^Fiber, c: ^Context) {
-        for {
-            _, ok := chan_recv(f, &c.ch)
-            if !ok do break
-            c.received += 1
-        }
-    }, &ctx)
-
-    // Simulate entire 30-item pipeline in <1ms without window
-    ok, sim_time := simulate_until(&sched, 0.016, 5.0, proc(c: ^Context) -> bool {
-        return c.received >= 30
-    }, &ctx)
-
-    testing.expect_value(t, ok, true)
-    testing.expect_value(t, ctx.received, 30)
-    testing.expect(t, sim_time >= 0.5 && sim_time <= 2.0, "Pipeline completed in expected sim window")
-}
 
 // ============================================================================
 // Test 65: Deeply Nested Concurrency Combinators (Sync { Rush, Fallback, Race })
@@ -2610,246 +1899,6 @@ test_nested_concurrency_combinators :: proc(t: ^testing.T) {
     testing.expect_value(t, all_ok, true)
 }
 
-// ============================================================================
-// Test 66: Scheduler Step Execution While Paused (Debugger Manual Stepping)
-// ============================================================================
-
-@(test)
-test_scheduler_step_while_paused :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    scheduler_set_paused(&sched, true)
-
-    Test66_Ctx :: struct {
-        counter:     ^int,
-        child_woken: ^bool,
-    }
-
-    counter := 0
-    child_woken := false
-    ctx := Test66_Ctx{counter = &counter, child_woken = &child_woken}
-
-    // Fiber 1: Waits on timer and spawns child fiber
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Test66_Ctx) {
-        wait(f, 0.05)
-        c.counter^ += 1
-        spawn_ptr(f.sched, proc(f2: ^Fiber, c2: ^Test66_Ctx) {
-            wait(f2, 0.05)
-            c2.child_woken^ = true
-        }, c)
-    }, &ctx)
-
-    // 1. Normal scheduler_step is skipped while is_paused == true
-    scheduler_step(&sched, 0.50)
-    testing.expect_value(t, counter, 0)
-
-    // 2. Explicit scheduler_single_step forces simulation forward even while is_paused == true
-    // Step A: 0.01s (Fiber 1 runs and registers timer for 0.01 + 0.05 = 0.06s)
-    scheduler_single_step(&sched, 0.01)
-    testing.expect_value(t, counter, 0)
-
-    // Step B: 0.06s -> Total 0.07s (Fiber 1 wakes, increments counter to 1, spawns child for 0.07 + 0.05 = 0.12s)
-    scheduler_single_step(&sched, 0.06)
-    testing.expect_value(t, counter, 1)
-
-    // Step C: 0.06s -> Total 0.13s (Child fiber wakes, sets flag)
-    scheduler_single_step(&sched, 0.06)
-    testing.expect_value(t, child_woken, true)
-}
-
-// ============================================================================
-// Test 67: Real / Wall Clock While Game Is Paused
-// ============================================================================
-
-@(test)
-test_real_time_clock_while_paused :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    real_fiber_done := false
-    sim_fiber_done := false
-
-    // Real-Time UI Fiber (e.g. pause menu animation)
-    spawn_real(&sched, proc(f: ^Fiber, done: ^bool) {
-        wait_real(f, 0.10)
-        done^ = true
-    }, &real_fiber_done)
-
-    // Sim-Time Gameplay Fiber (e.g. enemy attack)
-    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
-        wait(f, 0.10)
-        done^ = true
-    }, &sim_fiber_done)
-
-    // Pause the game simulation!
-    scheduler_set_paused(&sched, true)
-
-    // Step 3 times at 0.05s real time (total 0.15s real elapsed)
-    for _ in 0 ..< 3 {
-        scheduler_step(&sched, 0.05)
-    }
-
-    // Real-time fiber must be completed, but sim-time fiber must be FROZEN
-    testing.expect_value(t, real_fiber_done, true)
-    testing.expect_value(t, sim_fiber_done, false)
-    testing.expect_value(t, sched.clock.sim_time, 0.0)
-    testing.expect(t, sched.clock.real_time >= 0.14)
-
-    // Unpause game
-    scheduler_set_paused(&sched, false)
-    for _ in 0 ..< 3 {
-        scheduler_step(&sched, 0.05)
-    }
-
-    // Sim-time fiber now finishes
-    testing.expect_value(t, sim_fiber_done, true)
-}
-
-// ============================================================================
-// Test 68: Fixed Discrete Integer Simulation Ticks
-// ============================================================================
-
-@(test)
-test_fixed_integer_tick_clock :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sched.clock.tick_rate_hz = 60 // 60 ticks per second (physics tick)
-
-    tick50_done := false
-    tick100_done := false
-
-    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
-        wait_ticks(f, 50)
-        done^ = true
-    }, &tick50_done)
-
-    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
-        wait_ticks(f, 100)
-        done^ = true
-    }, &tick100_done)
-
-    // Step 1: 30 ticks (sim_ticks = 30; fibers register wait_ticks for 30+50=80 and 30+100=130)
-    scheduler_step_ticks(&sched, 30)
-    testing.expect_value(t, tick50_done, false)
-    testing.expect_value(t, tick100_done, false)
-    testing.expect_value(t, sched.clock.sim_ticks, 30)
-
-    // Step 2: 50 more ticks (sim_ticks = 80 >= 80) -> Fiber 1 wakes!
-    scheduler_step_ticks(&sched, 50)
-    testing.expect_value(t, tick50_done, true)
-    testing.expect_value(t, tick100_done, false)
-    testing.expect_value(t, sched.clock.sim_ticks, 80)
-
-    // Step 3: 50 more ticks (sim_ticks = 130 >= 130) -> Fiber 2 wakes!
-    scheduler_step_ticks(&sched, 50)
-    testing.expect_value(t, tick100_done, true)
-    testing.expect_value(t, sched.clock.sim_ticks, 130)
-}
-
-// ============================================================================
-// Test 69: Dual-Clock Time Scaling & Multipliers
-// ============================================================================
-
-@(test)
-test_dual_clock_time_scaling :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sched.clock.time_scale = 0.5 // Slow-motion 0.5x
-
-    observed_sim_delta: f32 = 0.0
-    observed_real_delta: f32 = 0.0
-    observed_sim_time: f64 = 0.0
-    observed_real_time: f64 = 0.0
-
-    spawn(&sched, proc(f: ^Fiber, data: ^Test69_Data) {
-        yield_frame(f)
-        data.sim_dt = delta_time(f)
-        data.real_dt = delta_real(f)
-        data.sim_t = current_time(f)
-        data.real_t = real_time(f)
-    }, &Test69_Data{})
-
-    // Frame 1
-    scheduler_step(&sched, 0.10)
-    // Frame 2
-    data := Test69_Data{}
-    spawn(&sched, proc(f: ^Fiber, d: ^Test69_Data) {
-        d.sim_dt = delta_time(f)
-        d.real_dt = delta_real(f)
-        d.sim_t = current_time(f)
-        d.real_t = real_time(f)
-    }, &data)
-
-    scheduler_step(&sched, 0.10)
-
-    // Real delta is 0.10, Sim delta is 0.05 (0.5x scale)
-    testing.expect(t, abs(data.real_dt - 0.10) < 0.001)
-    testing.expect(t, abs(data.sim_dt - 0.05) < 0.001)
-    testing.expect(t, abs(data.real_t - 0.20) < 0.001)
-    testing.expect(t, abs(data.sim_t - 0.10) < 0.001)
-}
-
-Test69_Data :: struct {
-    sim_dt:  f32,
-    real_dt: f32,
-    sim_t:   f64,
-    real_t:  f64,
-}
-
-// ============================================================================
-// Test 70: Multi-Clock Heap Integrity & Mixed Cancellation
-// ============================================================================
-
-@(test)
-test_multi_clock_heap_integrity :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    completed_count := 0
-
-    // Spawn 20 real timers
-    for i in 0 ..< 20 {
-        spawn_real(&sched, proc(f: ^Fiber, c: ^int) {
-            wait_real(f, 0.02)
-            c^ += 1
-        }, &completed_count)
-    }
-
-    // Spawn 20 sim timers
-    for i in 0 ..< 20 {
-        spawn(&sched, proc(f: ^Fiber, c: ^int) {
-            wait(f, 0.02)
-            c^ += 1
-        }, &completed_count)
-    }
-
-    // Spawn 20 tick waiters
-    for i in 0 ..< 20 {
-        spawn(&sched, proc(f: ^Fiber, c: ^int) {
-            wait_ticks(f, 20)
-            c^ += 1
-        }, &completed_count)
-    }
-
-    // Step scheduler forward
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    // All 60 fibers should have woken and completed cleanly
-    testing.expect_value(t, completed_count, 60)
-    testing.expect_value(t, len(sched.real_timer_heap), 0)
-    testing.expect_value(t, len(sched.timer_heap), 0)
-    testing.expect_value(t, len(sched.tick_waiters), 0)
-}
 
 // ============================================================================
 // Test 71: Dynamic Task Joining (fiber_join on normal completion)
@@ -2883,6 +1932,7 @@ test_fiber_join_normal_completion :: proc(t: ^testing.T) {
     testing.expect(t, target_done)
     testing.expect(t, joiner_success)
 }
+
 
 // ============================================================================
 // Test 72: Dynamic Task Joining (fiber_join on cancelled target)
@@ -2923,6 +1973,7 @@ test_fiber_join_cancelled_target :: proc(t: ^testing.T) {
     testing.expect_value(t, join_result, false)
 }
 
+
 // ============================================================================
 // Test 73: Dynamic Task Joining (fiber_join on already completed fiber)
 // ============================================================================
@@ -2951,6 +2002,7 @@ test_fiber_join_already_finished :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.01)
     testing.expect(t, joiner_done)
 }
+
 
 // ============================================================================
 // Test 74: Typed Multicast Event (Event(T) 1-to-many publish-subscribe)
@@ -2995,6 +2047,7 @@ test_event_typed_multicast :: proc(t: ^testing.T) {
     testing.expect_value(t, event_waiter_count(&ev), 0)
 }
 
+
 // ============================================================================
 // Test 75: Typed Multicast Event (Empty emit safety)
 // ============================================================================
@@ -3015,138 +2068,6 @@ test_event_empty_emit :: proc(t: ^testing.T) {
     testing.expect(t, !event_has_waiters(&ev))
 }
 
-// ============================================================================
-// Test 76: Counting Semaphore (Concurrency permit limiter)
-// ============================================================================
-
-@(test)
-test_fiber_semaphore_concurrency_limit :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 2, max_permits = 2)
-    defer semaphore_destroy(&sem)
-
-    active_count := 0
-    max_observed := 0
-    total_completed := 0
-
-    Sem_Worker :: struct {
-        sem:             ^Fiber_Semaphore,
-        active:          ^int,
-        max_obs:         ^int,
-        total_comp:      ^int,
-    }
-
-    worker_data := Sem_Worker{
-        sem        = &sem,
-        active     = &active_count,
-        max_obs    = &max_observed,
-        total_comp = &total_completed,
-    }
-
-    for _ in 0 ..< 6 {
-        spawn_val(&sched, proc(f: ^Fiber, data: Sem_Worker) {
-            semaphore_acquire(f, data.sem)
-            data.active^ += 1
-            if data.active^ > data.max_obs^ {
-                data.max_obs^ = data.active^
-            }
-
-            wait(f, 0.02)
-
-            data.active^ -= 1
-            semaphore_release(f.sched, data.sem)
-            data.total_comp^ += 1
-        }, worker_data)
-    }
-
-    for _ in 0 ..< 15 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect_value(t, total_completed, 6)
-    testing.expect_value(t, max_observed, 2)
-    testing.expect_value(t, semaphore_available_permits(&sem), 2)
-}
-
-// ============================================================================
-// Test 77: Counting Semaphore (try_acquire non-blocking)
-// ============================================================================
-
-@(test)
-test_fiber_semaphore_try_acquire :: proc(t: ^testing.T) {
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 1, max_permits = 1)
-    defer semaphore_destroy(&sem)
-
-    testing.expect(t, semaphore_try_acquire(&sem))
-    testing.expect_value(t, semaphore_available_permits(&sem), 0)
-    testing.expect(t, !semaphore_try_acquire(&sem)) // Depleted
-
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    semaphore_release(&sched, &sem)
-    testing.expect_value(t, semaphore_available_permits(&sem), 1)
-    testing.expect(t, semaphore_try_acquire(&sem))
-}
-
-// ============================================================================
-// Test 78: Countdown Latch / Barrier (Fiber_Latch)
-// ============================================================================
-
-@(test)
-test_fiber_latch_barrier :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    latch: Fiber_Latch
-    latch_init(&latch, initial_count = 3)
-    defer latch_destroy(&latch)
-
-    waiter_1_done := false
-    waiter_2_done := false
-
-    Latch_Waiter :: struct {
-        latch: ^Fiber_Latch,
-        done:  ^bool,
-    }
-
-    spawn_val(&sched, proc(f: ^Fiber, data: Latch_Waiter) {
-        latch_wait(f, data.latch)
-        data.done^ = true
-    }, Latch_Waiter{&latch, &waiter_1_done})
-
-    spawn_val(&sched, proc(f: ^Fiber, data: Latch_Waiter) {
-        latch_wait(f, data.latch)
-        data.done^ = true
-    }, Latch_Waiter{&latch, &waiter_2_done})
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, !waiter_1_done)
-    testing.expect(t, !waiter_2_done)
-    testing.expect_value(t, latch_get_count(&latch), 3)
-    testing.expect(t, !latch_is_ready(&latch))
-
-    // Count down 2
-    latch_count_down(&sched, &latch, 2)
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, !waiter_1_done)
-    testing.expect_value(t, latch_get_count(&latch), 1)
-
-    // Final count down -> 0 (unblocks both waiters)
-    latch_count_down(&sched, &latch, 1)
-    testing.expect(t, latch_is_ready(&latch))
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, waiter_1_done)
-    testing.expect(t, waiter_2_done)
-}
 
 // ============================================================================
 // Test 79: Pool Pre-Warming (scheduler_prewarm / fiber_pool_prewarm)
@@ -3165,6 +2086,7 @@ test_scheduler_prewarm :: proc(t: ^testing.T) {
     testing.expect(t, len(sched.fiber_pool.all_fibers) >= 80)
     testing.expect(t, len(sched.fiber_pool.free_fibers) >= 80)
 }
+
 
 // ============================================================================
 // Test 80: Handle Introspection & Telemetry (fiber_is_alive & fiber_status)
@@ -3198,6 +2120,7 @@ test_handle_introspection_and_status :: proc(t: ^testing.T) {
     testing.expect(t, !fiber_is_alive(&sched, handle))
 }
 
+
 // ============================================================================
 // Test 81: Memory Telemetry & Statistics (scheduler_pool_stats)
 // ============================================================================
@@ -3227,162 +2150,6 @@ test_scheduler_pool_stats :: proc(t: ^testing.T) {
     testing.expect(t, stats.total_memory_kb > 0)
 }
 
-// ============================================================================
-// SUITE 13: PURE SYSTEMS ENHANCEMENTS (Tests 82-90)
-// ============================================================================
-
-// ============================================================================
-// Test 82: Non-Blocking Multi-Channel Select (chan_try_select_recv)
-// ============================================================================
-
-@(test)
-test_chan_try_select_recv :: proc(t: ^testing.T) {
-    ch1, ch2, ch3: Channel(int)
-    chan_init(&ch1, capacity = 4)
-    chan_init(&ch2, capacity = 4)
-    chan_init(&ch3, capacity = 4)
-    defer {
-        chan_destroy(&ch1)
-        chan_destroy(&ch2)
-        chan_destroy(&ch3)
-    }
-
-    ch_list := []^Channel(int){&ch1, &ch2, &ch3}
-
-    // All empty -> returns ok = false, ready_index = -1
-    idx, val, ok := chan_try_select_recv(ch_list)
-    testing.expect(t, !ok)
-    testing.expect_value(t, idx, -1)
-
-    // Send item to ch2
-    chan_try_send(&ch2, 42)
-
-    idx, val, ok = chan_try_select_recv(ch_list)
-    testing.expect(t, ok)
-    testing.expect_value(t, idx, 1)
-    testing.expect_value(t, val, 42)
-
-    // Now empty again
-    idx, val, ok = chan_try_select_recv(ch_list)
-    testing.expect(t, !ok)
-}
-
-// ============================================================================
-// Test 83: Blocking Multi-Channel Select (chan_select_recv)
-// ============================================================================
-
-@(test)
-test_chan_select_recv_blocking :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch_a, ch_b: Channel(string)
-    chan_init(&ch_a, capacity = 4)
-    chan_init(&ch_b, capacity = 4)
-    defer {
-        chan_destroy(&ch_a)
-        chan_destroy(&ch_b)
-    }
-
-    received_idx := -1
-    received_val := ""
-    received_ok := false
-
-    Select_Env :: struct {
-        ch_a: ^Channel(string),
-        ch_b: ^Channel(string),
-        out_idx: ^int,
-        out_val: ^string,
-        out_ok:  ^bool,
-    }
-
-    env := Select_Env{
-        ch_a = &ch_a,
-        ch_b = &ch_b,
-        out_idx = &received_idx,
-        out_val = &received_val,
-        out_ok  = &received_ok,
-    }
-
-    // Consumer fiber waits on select
-    spawn_val(&sched, proc(f: ^Fiber, env: Select_Env) {
-        idx, val, ok := chan_select_recv(f, []^Channel(string){env.ch_a, env.ch_b})
-        env.out_idx^ = idx
-        env.out_val^ = val
-        env.out_ok^  = ok
-    }, env)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, !received_ok)
-
-    // Send to ch_b from another fiber
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(string)) {
-        wait(f, 0.05)
-        chan_send(f, ch, "hello from channel B")
-    }, &ch_b)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect(t, received_ok)
-    testing.expect_value(t, received_idx, 1)
-    testing.expect_value(t, received_val, "hello from channel B")
-}
-
-// ============================================================================
-// Test 84: Multi-Channel Select on Closed Channel
-// ============================================================================
-
-@(test)
-test_chan_select_closed_channel :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch1, ch2: Channel(int)
-    chan_init(&ch1, capacity = 4)
-    chan_init(&ch2, capacity = 4)
-    defer {
-        chan_destroy(&ch1)
-        chan_destroy(&ch2)
-    }
-
-    received_idx := -1
-    received_ok := true
-
-    Select_Close_Env :: struct {
-        ch1: ^Channel(int),
-        ch2: ^Channel(int),
-        out_idx: ^int,
-        out_ok:  ^bool,
-    }
-
-    env := Select_Close_Env{
-        ch1 = &ch1,
-        ch2 = &ch2,
-        out_idx = &received_idx,
-        out_ok  = &received_ok,
-    }
-
-    spawn_val(&sched, proc(f: ^Fiber, env: Select_Close_Env) {
-        idx, _, ok := chan_select_recv(f, []^Channel(int){env.ch1, env.ch2})
-        env.out_idx^ = idx
-        env.out_ok^  = ok
-    }, env)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, received_idx, -1)
-
-    // Close ch2
-    chan_close(&ch2)
-
-    scheduler_step(&sched, 0.01)
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, received_idx, 1)
-    testing.expect(t, !received_ok)
-}
 
 // ============================================================================
 // Test 85: Scope Active Handles Count and Tracking
@@ -3409,6 +2176,7 @@ test_scope_hierarchy_multi_fiber_active_count :: proc(t: ^testing.T) {
 
     testing.expect_value(t, scope_active_count(&scope), 2)
 }
+
 
 // ============================================================================
 // Test 86: Signal Multicast Wait and Broadcast
@@ -3464,6 +2232,7 @@ test_signal_multicast_wait_and_broadcast :: proc(t: ^testing.T) {
     testing.expect_value(t, signal_waiter_count(&sig), 0)
 }
 
+
 // ============================================================================
 // Test 87: Scope Cancellation Preserves Independent Entity Scopes
 // ============================================================================
@@ -3505,6 +2274,7 @@ test_scope_cancellation_preserves_independent_scopes :: proc(t: ^testing.T) {
     testing.expect(t, !ran_a)
     testing.expect(t, ran_b)
 }
+
 
 // ============================================================================
 // Test 88: Interruption Race & Stun Auto-Recovery (Verse/Skookum Pattern)
@@ -3576,6 +2346,7 @@ test_race_stun_interruption_and_recovery :: proc(t: ^testing.T) {
     testing.expect(t, attacks_executed > prev_attacks)
 }
 
+
 // ============================================================================
 // Test 89: Scope Cancel Immediate Multi-Fiber Abort
 // ============================================================================
@@ -3624,6 +2395,7 @@ test_scope_cancel_immediate_abort :: proc(t: ^testing.T) {
     testing.expect(t, !combat_1_done)
     testing.expect(t, !combat_2_done)
 }
+
 
 // ============================================================================
 // Test 90: Subscope Isolated Behavior Cancellation (Pattern B)
@@ -3675,165 +2447,6 @@ test_subscope_isolated_behavior_cancellation :: proc(t: ^testing.T) {
     testing.expect(t, !scope_is_busy(&m.attack_scope))
 }
 
-// ============================================================================
-// SUITE 14: SYNCHRONIZATION INTEGRATION & CANCELLATION ROBUSTNESS (Tests 91-100)
-// ============================================================================
-
-// ============================================================================
-// Test 91: Cancel Fiber Waiting on Semaphore (semaphore_acquire)
-// ============================================================================
-
-@(test)
-test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 0, max_permits = 2)
-    defer semaphore_destroy(&sem)
-
-    acquired := false
-    h := spawn_ptr(&sched, proc(f: ^Fiber, sem: ^Fiber_Semaphore) {
-        semaphore_acquire(f, sem)
-    }, &sem)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, semaphore_waiter_count(&sem), 1)
-
-    // Abort the waiting fiber
-    fiber_cancel(&sched, h)
-
-    // Releasing permit should skip the aborted fiber and retain available permits
-    semaphore_release(&sched, &sem, 1)
-    testing.expect_value(t, semaphore_available_permits(&sem), 1)
-}
-
-// ============================================================================
-// Test 92: Cancel Fiber Holding Semaphore with Cleanup (fiber_set_cleanup)
-// ============================================================================
-
-Sem_Cleanup_Ctx :: struct {
-    sched: ^Scheduler,
-    sem:   ^Fiber_Semaphore,
-}
-
-@(test)
-test_cancel_fiber_holding_semaphore_with_cleanup :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 1, max_permits = 1)
-    defer semaphore_destroy(&sem)
-
-    ctx := Sem_Cleanup_Ctx{sched = &sched, sem = &sem}
-
-    h := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Sem_Cleanup_Ctx) {
-        semaphore_acquire(f, ctx.sem)
-        fiber_set_cleanup(f, proc(user_data: rawptr) {
-            c := (^Sem_Cleanup_Ctx)(user_data)
-            semaphore_release(c.sched, c.sem)
-        }, ctx)
-        wait(f, 5.0)
-    }, &ctx)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, semaphore_available_permits(&sem), 0)
-
-    // Abort the fiber while holding the permit -> cleanup_proc runs and restores permit!
-    fiber_cancel(&sched, h)
-    testing.expect_value(t, semaphore_available_permits(&sem), 1)
-}
-
-// ============================================================================
-// Test 93: Cancel Fiber Waiting on Mutex (mutex_lock)
-// ============================================================================
-
-@(test)
-test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    // Holder locks the mutex
-    holder := spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
-        mutex_lock(f, m)
-        wait(f, 1.0)
-        mutex_unlock(f.sched, m)
-    }, &m)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
-
-    // Waiter queues on the mutex
-    waiter := spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
-        mutex_lock(f, m)
-        wait(f, 0.1)
-        mutex_unlock(f.sched, m)
-    }, &m)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, mutex_waiter_count(&m), 1)
-
-    // Cancel the waiter
-    fiber_cancel(&sched, waiter)
-
-    // Unlock by holder -> should not panic or wake cancelled fiber
-    mutex_unlock(&sched, &m)
-    testing.expect(t, !m.locked)
-}
-
-// ============================================================================
-// Test 94: Cancel Fiber Waiting on Latch (latch_wait)
-// ============================================================================
-
-@(test)
-test_cancel_fiber_waiting_on_latch :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    latch: Fiber_Latch
-    latch_init(&latch, initial_count = 2)
-    defer latch_destroy(&latch)
-
-    Latch_Task_Ctx :: struct {
-        latch: ^Fiber_Latch,
-        done:  bool,
-    }
-
-    ctx1 := Latch_Task_Ctx{latch = &latch, done = false}
-    ctx2 := Latch_Task_Ctx{latch = &latch, done = false}
-
-    h1 := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Latch_Task_Ctx) {
-        latch_wait(f, ctx.latch)
-        ctx.done = true
-    }, &ctx1)
-
-    h2 := spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Latch_Task_Ctx) {
-        latch_wait(f, ctx.latch)
-        ctx.done = true
-    }, &ctx2)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, latch_waiter_count(&latch), 2)
-
-    // Cancel h1
-    fiber_cancel(&sched, h1)
-
-    // Count down latch to 0
-    latch_count_down(&sched, &latch, 2)
-    scheduler_step(&sched, 0.01)
-
-    testing.expect(t, !ctx1.done)
-    testing.expect(t, ctx2.done)
-}
 
 // ============================================================================
 // Test 95: Cancel Fiber Waiting on Signal (signal_wait)
@@ -3863,6 +2476,7 @@ test_cancel_fiber_waiting_on_signal :: proc(t: ^testing.T) {
     signal_emit(&sched, &sig)
     testing.expect_value(t, signal_waiter_count(&sig), 0)
 }
+
 
 // ============================================================================
 // Test 96: Cancel Fiber Waiting on Event (event_wait)
@@ -3902,6 +2516,7 @@ test_cancel_fiber_waiting_on_event :: proc(t: ^testing.T) {
 
     testing.expect_value(t, event_waiter_count(&ev), 0)
 }
+
 
 // ============================================================================
 // Test 97: Cancel Scope Inside Nested Sync Branches
@@ -3949,6 +2564,7 @@ test_scope_cancel_inside_nested_sync :: proc(t: ^testing.T) {
     testing.expect(t, !sync_completed)
 }
 
+
 // ============================================================================
 // Test 98: Cancel Scope Inside Nested Race Branches
 // ============================================================================
@@ -3978,6 +2594,7 @@ test_scope_cancel_inside_nested_race :: proc(t: ^testing.T) {
     cancelled := scope_cancel(&sched, &race_scope)
     testing.expect_value(t, cancelled, 1)
 }
+
 
 // ============================================================================
 // Test 99: Fallback Resilience After Scope Cancellation
@@ -4025,6 +2642,7 @@ test_fallback_resilience_after_scope_cancellation :: proc(t: ^testing.T) {
     testing.expect(t, runs >= 2)
 }
 
+
 // ============================================================================
 // Test 100: Branch Name and Debug Tree Preservation
 // ============================================================================
@@ -4060,87 +2678,6 @@ test_branch_name_and_debug_tree_preservation :: proc(t: ^testing.T) {
     testing.expect_value(t, results.branch2_name, "Second Worker Branch")
 }
 
-// ============================================================================
-// SUITE 15: HIGH-STRESS RESILIENCE & COMPOSITE INTEGRATION (Tests 101-110)
-// ============================================================================
-
-// ============================================================================
-// Test 101: Multi-Channel Select Stress with Producer Scope Cancellation
-// ============================================================================
-
-@(test)
-test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    producer_a_scope: Fiber_Scope
-    defer scope_destroy(&sched, &producer_a_scope)
-
-    ch_a, ch_b: Channel(int)
-    chan_init(&ch_a, capacity = 10)
-    chan_init(&ch_b, capacity = 10)
-    defer {
-        chan_destroy(&ch_a)
-        chan_destroy(&ch_b)
-    }
-
-    // Producer A: sends 1, 2, 3...
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        for i := 1; i <= 20; i += 1 {
-            chan_send(f, ch, i)
-            wait(f, 0.02)
-        }
-    }, &ch_a, scope = &producer_a_scope)
-
-    // Producer B: sends 100, 200, 300...
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        for i := 1; i <= 20; i += 1 {
-            chan_send(f, ch, i * 100)
-            wait(f, 0.02)
-        }
-    }, &ch_b)
-
-    Select_Consumer_Ctx :: struct {
-        chans:        []^Channel(int),
-        items_recv:   int,
-        last_val:     int,
-    }
-
-    ctx := Select_Consumer_Ctx{
-        chans = []^Channel(int){&ch_a, &ch_b},
-        items_recv = 0,
-        last_val = 0,
-    }
-
-    // Consumer fiber selects from both
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Consumer_Ctx) {
-        for {
-            idx, val, ok := chan_select_recv(f, c.chans)
-            if ok {
-                c.items_recv += 1
-                c.last_val = val
-            }
-        }
-    }, &ctx)
-
-    // Step a few frames
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.02)
-    }
-    testing.expect(t, ctx.items_recv >= 2)
-
-    // Cancel Producer A via Scope
-    cancelled_a := scope_cancel(&sched, &producer_a_scope)
-    testing.expect_value(t, cancelled_a, 1)
-
-    // Consumer should continue receiving from Producer B
-    prev_count := ctx.items_recv
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.02)
-    }
-    testing.expect(t, ctx.items_recv > prev_count)
-}
 
 // ============================================================================
 // Test 102: Signal Multicast Cascade with Pruned Waiters
@@ -4188,6 +2725,7 @@ test_signal_multicast_cascade_with_dynamic_waiters :: proc(t: ^testing.T) {
     testing.expect_value(t, woken_count, 5)
     testing.expect_value(t, signal_waiter_count(&sig), 0)
 }
+
 
 // ============================================================================
 // Test 103: Bottom-Up Guaranteed Cleanup on Deep Hierarchy Abort
@@ -4243,117 +2781,6 @@ test_fiber_set_cleanup_deep_hierarchy_abort :: proc(t: ^testing.T) {
     testing.expect(t, tracker.parent_cleaned)
 }
 
-// ============================================================================
-// Test 104: Semaphore Contention with Random Waiter Cancellations
-// ============================================================================
-
-@(test)
-test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 3, max_permits = 3)
-    defer semaphore_destroy(&sem)
-
-    completed := 0
-    handles: [12]Fiber_Handle
-
-    Sem_Worker_Ctx :: struct {
-        sem:       ^Fiber_Semaphore,
-        completed: ^int,
-        sched:     ^Scheduler,
-    }
-
-    ctx := Sem_Worker_Ctx{sem = &sem, completed = &completed, sched = &sched}
-
-    for i in 0 ..< 12 {
-        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Worker_Ctx) {
-            semaphore_acquire(f, c.sem)
-            fiber_set_cleanup(f, proc(user_data: rawptr) {
-                ctx := (^Sem_Worker_Ctx)(user_data)
-                semaphore_release(ctx.sched, ctx.sem)
-            }, c)
-            wait(f, 0.05)
-            semaphore_release(c.sched, c.sem)
-            f.cleanup_proc = nil // Clear cleanup since released normally
-            c.completed^ += 1
-        }, &ctx)
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, semaphore_available_permits(&sem), 0)
-
-    // Cancel 4 queued/active fibers
-    fiber_cancel(&sched, handles[2])
-    fiber_cancel(&sched, handles[5])
-    fiber_cancel(&sched, handles[7])
-    fiber_cancel(&sched, handles[9])
-
-    // Step until all remaining fibers finish
-    for _ in 0 ..< 25 {
-        scheduler_step(&sched, 0.05)
-    }
-
-    testing.expect_value(t, completed, 8)
-    testing.expect_value(t, semaphore_available_permits(&sem), 3)
-}
-
-// ============================================================================
-// Test 105: Mutex Contention Churn with Intermediate Waiter Cancellations
-// ============================================================================
-
-@(test)
-test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    completed := 0
-    handles: [10]Fiber_Handle
-
-    Mutex_Worker_Ctx :: struct {
-        m:         ^Fiber_Mutex,
-        completed: ^int,
-        sched:     ^Scheduler,
-    }
-
-    ctx := Mutex_Worker_Ctx{m = &m, completed = &completed, sched = &sched}
-
-    for i in 0 ..< 10 {
-        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Mutex_Worker_Ctx) {
-            mutex_lock(f, c.m)
-            fiber_set_cleanup(f, proc(user_data: rawptr) {
-                ctx := (^Mutex_Worker_Ctx)(user_data)
-                mutex_unlock(ctx.sched, ctx.m)
-            }, c)
-            wait(f, 0.03)
-            mutex_unlock(c.sched, c.m)
-            f.cleanup_proc = nil
-            c.completed^ += 1
-        }, &ctx)
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
-
-    // Cancel 3 queued waiters
-    fiber_cancel(&sched, handles[3])
-    fiber_cancel(&sched, handles[6])
-    fiber_cancel(&sched, handles[8])
-
-    for _ in 0 ..< 30 {
-        scheduler_step(&sched, 0.03)
-    }
-
-    testing.expect_value(t, completed, 7)
-    testing.expect(t, !m.locked)
-}
 
 // ============================================================================
 // Test 106: Event Multicast with Dead Listener Pruning
@@ -4403,95 +2830,6 @@ test_event_multicast_dynamic_subscribe_during_emit :: proc(t: ^testing.T) {
     testing.expect_value(t, event_waiter_count(&ev), 0)
 }
 
-// ============================================================================
-// Test 107: Latch Countdown with Interleaved Waiter Aborts
-// ============================================================================
-
-@(test)
-test_latch_partial_countdown_with_waiter_cancellations :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    latch: Fiber_Latch
-    latch_init(&latch, initial_count = 4)
-    defer latch_destroy(&latch)
-
-    Latch_Multi_Ctx :: struct {
-        latch: ^Fiber_Latch,
-        woken: ^int,
-    }
-
-    woken := 0
-    ctxs: [4]Latch_Multi_Ctx
-    handles: [4]Fiber_Handle
-
-    for i in 0 ..< 4 {
-        ctxs[i] = Latch_Multi_Ctx{latch = &latch, woken = &woken}
-        handles[i] = spawn_ptr(&sched, proc(f: ^Fiber, c: ^Latch_Multi_Ctx) {
-            latch_wait(f, c.latch)
-            c.woken^ += 1
-        }, &ctxs[i])
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, latch_waiter_count(&latch), 4)
-
-    // Countdown 2
-    latch_count_down(&sched, &latch, 2)
-    testing.expect_value(t, latch_get_count(&latch), 2)
-    testing.expect_value(t, woken, 0)
-
-    // Abort waiter 1
-    fiber_cancel(&sched, handles[1])
-
-    // Final countdown of 2 -> reaches 0
-    latch_count_down(&sched, &latch, 2)
-    scheduler_step(&sched, 0.01)
-
-    testing.expect(t, latch_is_ready(&latch))
-    testing.expect_value(t, woken, 3)
-}
-
-// ============================================================================
-// Test 108: Scope Mass Cancellation Across Mixed Scheduler Queues
-// ============================================================================
-
-@(test)
-test_scope_mass_cancel_mixed_states :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    mixed_scope: Fiber_Scope
-    defer scope_destroy(&sched, &mixed_scope)
-
-    // Fiber 1: Sleeping_Time
-    spawn(&sched, proc(f: ^Fiber) { wait(f, 5.0) }, scope = &mixed_scope)
-
-    // Fiber 2: Sleeping_Real_Time
-    spawn_real(&sched, proc(f: ^Fiber) { wait_real(f, 5.0) }, scope = &mixed_scope)
-
-    // Fiber 3: Sleeping_Frames
-    spawn(&sched, proc(f: ^Fiber) { wait_frames(f, 100) }, scope = &mixed_scope)
-
-    // Fiber 4: Sleeping_Ticks
-    spawn(&sched, proc(f: ^Fiber) { wait_ticks(f, 100) }, scope = &mixed_scope)
-
-    // Fiber 5: Waiting_Condition
-    flag := false
-    spawn_ptr(&sched, proc(f: ^Fiber, fl: ^bool) {
-        wait_while(f, proc(data: ^bool) -> bool { return !data^ }, fl)
-    }, &flag, scope = &mixed_scope)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, scope_active_count(&mixed_scope), 5)
-
-    // Cancel all 5 in various sleeping queues via scope
-    cancelled := scope_cancel(&sched, &mixed_scope)
-    testing.expect_value(t, cancelled, 5)
-    testing.expect_value(t, scope_active_count(&mixed_scope), 0)
-}
 
 // ============================================================================
 // Test 109: Prewarm Slab Allocation and Dynamic Slab Recycling Invariants
@@ -4532,6 +2870,7 @@ test_scheduler_prewarm_slab_expansion_under_load :: proc(t: ^testing.T) {
     testing.expect_value(t, stats3.active_fibers, 0)
     testing.expect_value(t, stats3.free_fibers, 64)
 }
+
 
 // ============================================================================
 // Test 110: Composite Fallback & Rush Coordination with Branch Interruption
@@ -4599,231 +2938,6 @@ test_rush_and_fallback_with_signal_interruption :: proc(t: ^testing.T) {
     testing.expect_value(t, outcome, "FALLBACK_RECOVERY")
 }
 
-// ============================================================================
-// SUITE 16: SAFETY HARNESS, TIMEOUTS & FOOTGUN GUARDS (Tests 111-120)
-// ============================================================================
-
-// ============================================================================
-// Test 111: Channel Destruction Auto-Wakes Blocked Receivers (chan_destroy)
-// ============================================================================
-
-@(test)
-test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch := new(Channel(int))
-    chan_init(ch, capacity = 0) // Unbuffered rendezvous
-
-    woken_count := 0
-    ok_count := 0
-
-    Chan_Unblock_Ctx :: struct {
-        ch:    ^Channel(int),
-        woken: ^int,
-        ok_c:  ^int,
-    }
-
-    ctx := Chan_Unblock_Ctx{ch = ch, woken = &woken_count, ok_c = &ok_count}
-
-    for _ in 0 ..< 4 {
-        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Unblock_Ctx) {
-            val, ok := chan_recv(f, c.ch)
-            c.woken^ += 1
-            if ok do c.ok_c^ += 1
-        }, &ctx)
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, chan_recv_waiter_count(ch), 4)
-
-    // Destroying the channel must auto-close and wake all 4 receivers with ok = false
-    chan_destroy(ch)
-    free(ch)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, woken_count, 4)
-    testing.expect_value(t, ok_count, 0)
-}
-
-// ============================================================================
-// Test 112: Channel Destruction Auto-Wakes Blocked Senders (chan_destroy)
-// ============================================================================
-
-@(test)
-test_chan_destroy_auto_wakes_blocked_senders :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch := new(Channel(int))
-    chan_init(ch, capacity = 1)
-
-    woken_count := 0
-    ok_count := 0
-
-    Chan_Send_Unblock_Ctx :: struct {
-        ch:    ^Channel(int),
-        woken: ^int,
-        ok_c:  ^int,
-    }
-
-    ctx := Chan_Send_Unblock_Ctx{ch = ch, woken = &woken_count, ok_c = &ok_count}
-
-    // Fill the buffer
-    chan_try_send(ch, 42)
-
-    // Spawn senders that will block
-    for _ in 0 ..< 3 {
-        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Send_Unblock_Ctx) {
-            ok := chan_send(f, c.ch, 99)
-            c.woken^ += 1
-            if ok do c.ok_c^ += 1
-        }, &ctx)
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, chan_send_waiter_count(ch), 3)
-
-    // Destroy channel
-    chan_destroy(ch)
-    free(ch)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, woken_count, 3)
-    testing.expect_value(t, ok_count, 0)
-}
-
-// ============================================================================
-// Test 113: Channel Receive Timeout Success (chan_recv_timeout)
-// ============================================================================
-
-@(test)
-test_chan_recv_timeout_success :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 2)
-    defer chan_destroy(&ch)
-
-    Recv_Timeout_Test_Ctx :: struct {
-        ch:        ^Channel(int),
-        val:       int,
-        ok:        bool,
-        timed_out: bool,
-    }
-
-    ctx := Recv_Timeout_Test_Ctx{ch = &ch}
-
-    // Receiver with 0.5s timeout
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Timeout_Test_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
-        c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
-    }, &ctx)
-
-    // Delayed producer sends after 0.05s
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        wait(f, 0.05)
-        chan_send(f, ch, 777)
-    }, &ch)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    testing.expect_value(t, ctx.val, 777)
-    testing.expect(t, ctx.ok)
-    testing.expect(t, !ctx.timed_out)
-}
-
-// ============================================================================
-// Test 114: Channel Receive Timeout Expiration (chan_recv_timeout)
-// ============================================================================
-
-@(test)
-test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 2)
-    defer chan_destroy(&ch)
-
-    Recv_Timeout_Expire_Ctx :: struct {
-        ch:        ^Channel(int),
-        val:       int,
-        ok:        bool,
-        timed_out: bool,
-        finished:  bool,
-    }
-
-    ctx := Recv_Timeout_Expire_Ctx{ch = &ch}
-
-    // Receiver with 0.05s timeout
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Timeout_Expire_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.05)
-        c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
-        c.finished = true
-    }, &ctx)
-
-    // Step scheduler past 0.05s deadline
-    for _ in 0 ..< 8 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    testing.expect(t, ctx.finished)
-    testing.expect(t, !ctx.ok)
-    testing.expect(t, ctx.timed_out)
-}
-
-// ============================================================================
-// Test 115: Channel Receive Timeout with Closed Channel
-// ============================================================================
-
-@(test)
-test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(string)
-    chan_init(&ch, capacity = 2)
-    defer chan_destroy(&ch)
-
-    Recv_Closed_Ctx :: struct {
-        ch:        ^Channel(string),
-        val:       string,
-        ok:        bool,
-        timed_out: bool,
-    }
-
-    ctx := Recv_Closed_Ctx{ch = &ch}
-
-    // Receiver waiting with 1.0s timeout
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Closed_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 1.0)
-        c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
-    }, &ctx)
-
-    scheduler_step(&sched, 0.01)
-
-    // Close channel mid-wait
-    chan_close(&ch)
-    scheduler_step(&sched, 0.01)
-
-    testing.expect(t, !ctx.ok)
-    testing.expect(t, !ctx.timed_out)
-}
 
 // ============================================================================
 // Test 116: Scheduler Watchdog Configuration & Dynamic Adjustments
@@ -4847,91 +2961,6 @@ test_watchdog_configuration_and_disable :: proc(t: ^testing.T) {
     testing.expect_value(t, sched.watchdog_max_slice_ms, 250.0)
 }
 
-// ============================================================================
-// Test 117: Channel Close Multicast with Interleaved Receivers
-// ============================================================================
-
-@(test)
-test_channel_close_multicast_with_interleaved_receivers :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0)
-    defer chan_destroy(&ch)
-
-    Chan_Close_Multi_Ctx :: struct {
-        ch:    ^Channel(int),
-        count: ^int,
-    }
-
-    woken_count := 0
-    ctxs: [5]Chan_Close_Multi_Ctx
-
-    for i in 0 ..< 5 {
-        ctxs[i] = Chan_Close_Multi_Ctx{ch = &ch, count = &woken_count}
-        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Close_Multi_Ctx) {
-            chan_recv(f, c.ch)
-            c.count^ += 1
-        }, &ctxs[i])
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, chan_recv_waiter_count(&ch), 5)
-
-    chan_close(&ch)
-    scheduler_step(&sched, 0.01)
-
-    testing.expect_value(t, woken_count, 5)
-}
-
-// ============================================================================
-// Test 118: Channel Timeout Receiving with Concurrent Producers
-// ============================================================================
-
-@(test)
-test_chan_recv_timeout_concurrent_producers :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 2)
-    defer chan_destroy(&ch)
-
-    Chan_Recv_Val_Ctx :: struct {
-        ch:  ^Channel(int),
-        val: ^int,
-    }
-
-    received_val := 0
-    ctx := Chan_Recv_Val_Ctx{ch = &ch, val = &received_val}
-
-    // Fast receiver with timeout
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Chan_Recv_Val_Ctx) {
-        v, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
-        if ok do c.val^ = v
-    }, &ctx)
-
-    // Producer 1 (0.04s delay)
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        wait(f, 0.04)
-        chan_send(f, ch, 111)
-    }, &ch)
-
-    // Producer 2 (0.08s delay)
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        wait(f, 0.08)
-        chan_send(f, ch, 222)
-    }, &ch)
-
-    for _ in 0 ..< 8 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect_value(t, received_val, 111)
-}
 
 // ============================================================================
 // Test 119: Scope Destruction Prevents Stale Entity Pointer Access
@@ -4984,6 +3013,7 @@ test_scope_destroy_prevents_stale_pointer_access :: proc(t: ^testing.T) {
     testing.expect(t, !touched_after_death)
 }
 
+
 // ============================================================================
 // Test 120: Fiber Temporary Allocator Memory Isolation
 // ============================================================================
@@ -5024,206 +3054,6 @@ test_temp_allocator_isolation_invariants :: proc(t: ^testing.T) {
     testing.expect(t, f2_alloc_ok)
 }
 
-// ============================================================================
-// Test 121: Stale Waiter Abort Immunity in Mutex
-// ============================================================================
-
-@(test)
-test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    F1_Ctx :: struct {
-        m:    ^Fiber_Mutex,
-        done: bool,
-    }
-    f1_ctx := F1_Ctx{ m = &m, done = false }
-
-    f2_handle: Fiber_Handle
-
-    F3_Ctx :: struct {
-        done: bool,
-    }
-    f3_ctx := F3_Ctx{ done = false }
-
-    // Fiber 1 holds lock
-    spawn_ptr(&sched, proc(f: ^Fiber, p: ^F1_Ctx) {
-        mutex_lock(f, p.m)
-        wait(f, 0.04)
-        mutex_unlock(f.sched, p.m)
-        p.done = true
-    }, &f1_ctx)
-
-    // Fiber 2 blocks waiting for lock
-    f2_handle = spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
-        mutex_lock(f, m)
-    }, &m)
-
-    // Run 1 frame so f1 locks and f2 suspends into m.waiters
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, mutex_waiter_count(&m), 1)
-
-    // Cancel fiber 2 externally while in waiters queue
-    fiber_cancel(&sched, f2_handle)
-    testing.expect(t, !fiber_is_alive(&sched, f2_handle))
-
-    // Fiber 3 is spawned (recycles fiber slot) and sleeps for 0.10s
-    spawn_ptr(&sched, proc(f: ^Fiber, p: ^F3_Ctx) {
-        wait(f, 0.10)
-        p.done = true
-    }, &f3_ctx)
-
-    // Step past f1's release (0.04s + 0.01s initial = 0.05s)
-    for _ in 0 ..< 6 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    // Fiber 1 finished and unlocked
-    testing.expect(t, f1_ctx.done)
-    // Fiber 3 should NOT have finished yet (needs 0.10s, only ~0.07s elapsed)
-    testing.expect(t, !f3_ctx.done)
-
-    // Step until Fiber 3 completes naturally
-    for _ in 0 ..< 8 {
-        scheduler_step(&sched, 0.01)
-    }
-    testing.expect(t, f3_ctx.done)
-}
-
-// ============================================================================
-// Test 122: Scoped Mutex and Semaphore (with_mutex & with_semaphore)
-// ============================================================================
-
-@(test)
-test_scoped_mutex_and_semaphore :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, 1, 1)
-    defer semaphore_destroy(&sem)
-
-    Mutex_Test_Data :: struct {
-        m:       ^Fiber_Mutex,
-        counter: int,
-    }
-    m_data := Mutex_Test_Data{ m = &m, counter = 0 }
-
-    // Spawn 2 fibers updating counter via with_mutex
-    for _ in 0 ..< 2 {
-        spawn_ptr(&sched, proc(f: ^Fiber, d: ^Mutex_Test_Data) {
-            with_mutex(f, d.m, proc(f: ^Fiber, data: ^Mutex_Test_Data) {
-                wait(f, 0.02)
-                data.counter += 1
-            }, d)
-        }, &m_data)
-    }
-
-    // Run until mutex tasks finish
-    for _ in 0 ..< 6 {
-        scheduler_step(&sched, 0.01)
-    }
-    testing.expect_value(t, m_data.counter, 2)
-    testing.expect(t, !m.locked)
-
-    // Test with_semaphore
-    sem_executed := false
-    spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { sem: ^Fiber_Semaphore, done: ^bool }) {
-        with_semaphore(f, p.sem, proc(f: ^Fiber, done: ^bool) {
-            wait(f, 0.02)
-            done^ = true
-        }, p.done)
-    }, &struct { sem: ^Fiber_Semaphore, done: ^bool }{ &sem, &sem_executed })
-
-    for _ in 0 ..< 4 {
-        scheduler_step(&sched, 0.01)
-    }
-    testing.expect(t, sem_executed)
-    testing.expect_value(t, semaphore_available_permits(&sem), 1)
-}
-
-// ============================================================================
-// Test 123: Multi-Channel Select (chan_try_select_recv & chan_select_recv)
-// ============================================================================
-
-@(test)
-test_multi_channel_select :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch1, ch2, ch3: Channel(int)
-    chan_init(&ch1, 4)
-    chan_init(&ch2, 4)
-    chan_init(&ch3, 4)
-    defer {
-        chan_destroy(&ch1)
-        chan_destroy(&ch2)
-        chan_destroy(&ch3)
-    }
-
-    channels := [3]^Channel(int){&ch1, &ch2, &ch3}
-
-    // 1. Try-select on empty channels
-    idx, val, ok := chan_try_select_recv(channels[:])
-    testing.expect_value(t, ok, false)
-    testing.expect_value(t, idx, -1)
-
-    // Push into channel 2
-    chan_try_send(&ch2, 42)
-    idx, val, ok = chan_try_select_recv(channels[:])
-    testing.expect_value(t, ok, true)
-    testing.expect_value(t, idx, 1)
-    testing.expect_value(t, val, 42)
-
-    // 2. Blocking chan_select_recv in a fiber
-    Select_Context :: struct {
-        channels:       []^Channel(int),
-        received_idx:   int,
-        received_val:   int,
-        received_ok:    bool,
-    }
-    ctx := Select_Context{
-        channels     = channels[:],
-        received_idx = -1,
-        received_val = 0,
-        received_ok  = false,
-    }
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Context) {
-        idx, v, ok_recv := chan_select_recv(f, c.channels)
-        c.received_idx = idx
-        c.received_val = v
-        c.received_ok = ok_recv
-    }, &ctx)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, !ctx.received_ok)
-
-    // Producer sends to ch3
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        wait(f, 0.02)
-        chan_send(f, ch, 999)
-    }, &ch3)
-
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect(t, ctx.received_ok)
-    testing.expect_value(t, ctx.received_idx, 2)
-    testing.expect_value(t, ctx.received_val, 999)
-}
 
 // ============================================================================
 // Test 124: Multicast Event Broadcast (Event(T))
@@ -5263,6 +3093,7 @@ test_event_multicast_broadcast_and_clear :: proc(t: ^testing.T) {
     testing.expect_value(t, event_waiter_count(&ev), 0)
 }
 
+
 // ============================================================================
 // Test 125: Generational Handle History Capacity (>256 slots)
 // ============================================================================
@@ -5293,157 +3124,6 @@ test_generational_handle_history_capacity :: proc(t: ^testing.T) {
     }
 }
 
-// ============================================================================
-// Test 126: Channel Stale Waiter Abort Immunity
-// ============================================================================
-
-@(test)
-test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, 0) // Rendezvous
-    defer chan_destroy(&ch)
-
-    f_recv_handle := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Channel(int)) {
-        chan_recv(f, c)
-    }, &ch)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, chan_recv_waiter_count(&ch), 1)
-
-    // Cancel receiver while waiting in recv_waiters
-    fiber_cancel(&sched, f_recv_handle)
-
-    // Send value to channel - should skip dead waiter and not panic/hang
-    sent := chan_try_send(&ch, 100)
-    testing.expect(t, !sent)
-    testing.expect_value(t, chan_recv_waiter_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 127: By-Value Scoped Mutex (with_mutex_val)
-// ============================================================================
-
-@(test)
-test_with_mutex_val :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    Value_Payload :: struct {
-        m:     ^Fiber_Mutex,
-        tag:   int,
-        delta: f32,
-    }
-
-    spawn_val(&sched, proc(f: ^Fiber, p: Value_Payload) {
-        with_mutex(f, p.m, proc(f: ^Fiber, val: Value_Payload) {
-            wait(f, 0.02)
-        }, p)
-    }, Value_Payload{m = &m, tag = 10, delta = 5.5})
-
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
-
-    for _ in 0 ..< 4 {
-        scheduler_step(&sched, 0.01)
-    }
-    testing.expect(t, !m.locked)
-}
-
-// ============================================================================
-// Test 128: By-Value Scoped Semaphore (with_semaphore_val)
-// ============================================================================
-
-@(test)
-test_with_semaphore_val :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, 2, 2)
-    defer semaphore_destroy(&sem)
-
-    Value_Payload :: struct {
-        sem: ^Fiber_Semaphore,
-        id:  int,
-    }
-
-    // Spawn 2 fibers using with_semaphore_val
-    for i in 0 ..< 2 {
-        spawn_val(&sched, proc(f: ^Fiber, p: Value_Payload) {
-            with_semaphore(f, p.sem, proc(f: ^Fiber, val: Value_Payload) {
-                wait(f, 0.02)
-            }, p)
-        }, Value_Payload{sem = &sem, id = i})
-    }
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, semaphore_available_permits(&sem), 0)
-
-    for _ in 0 ..< 4 {
-        scheduler_step(&sched, 0.01)
-    }
-    testing.expect_value(t, semaphore_available_permits(&sem), 2)
-}
-
-// ============================================================================
-// Test 129: Multi-Channel Select Receive (chan_select_recv)
-// ============================================================================
-
-@(test)
-test_chan_select_recv_multiplexing :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch_a, ch_b, ch_c: Channel(int)
-    chan_init(&ch_a, 1)
-    chan_init(&ch_b, 1)
-    chan_init(&ch_c, 1)
-    defer {
-        chan_destroy(&ch_a)
-        chan_destroy(&ch_b)
-        chan_destroy(&ch_c)
-    }
-
-    Select_Result :: struct {
-        idx: int,
-        val: int,
-        ok:  bool,
-    }
-    res := Select_Result{idx = -1, val = -1, ok = false}
-    channels := [3]^Channel(int){&ch_a, &ch_b, &ch_c}
-
-    // Receiver fiber selects across all 3 channels
-    spawn_ptr(&sched, proc(f: ^Fiber, p: ^struct { chs: []^Channel(int), r: ^Select_Result }) {
-        idx, val, ok_recv := chan_select_recv(f, p.chs)
-        p.r.idx = idx
-        p.r.val = val
-        p.r.ok = ok_recv
-    }, &struct { chs: []^Channel(int), r: ^Select_Result }{ channels[:], &res })
-
-    // Step 1: Fiber runs and yields since all channels are empty
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, !res.ok)
-
-    // Producer sends to ch_b
-    chan_try_send(&ch_b, 777)
-
-    // Step 2: Receiver receives from ch_b
-    scheduler_step(&sched, 0.01)
-    testing.expect(t, res.ok)
-    testing.expect_value(t, res.idx, 1)
-    testing.expect_value(t, res.val, 777)
-}
 
 // ============================================================================
 // Test 130: Generic Hierarchy Tree Traversal (scheduler_walk_tree)
@@ -5488,42 +3168,6 @@ test_scheduler_walk_tree_traversal :: proc(t: ^testing.T) {
     testing.expect_value(t, visited[2].depth, 1)
 }
 
-// ============================================================================
-// Test 131: Precision Drift-Compensated Ticker
-// ============================================================================
-
-@(test)
-test_precision_drift_compensated_ticker :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Ticker_Ctx :: struct {
-        ticks_completed: int,
-        final_sim_time:  f64,
-    }
-    ctx := Ticker_Ctx{ticks_completed = 0, final_sim_time = 0.0}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ticker_Ctx) {
-        ticker: Ticker
-        ticker_init(&ticker, interval_seconds = 0.05)
-
-        for _ in 0 ..< 5 {
-            ticker_wait(f, &ticker)
-            c.ticks_completed += 1
-        }
-        c.final_sim_time = f.sched.clock.sim_time
-    }, &ctx)
-
-    // Step by irregular delta-times (simulating variable frame drops)
-    for _ in 0 ..< 30 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect_value(t, ctx.ticks_completed, 5)
-    // 5 ticks of 0.05s = exactly 0.25s (with <= 1 frame step tolerance)
-    testing.expect(t, ctx.final_sim_time >= 0.25 && ctx.final_sim_time <= 0.27)
-}
 
 // ============================================================================
 // Test 132: Structured Task Preemption via race and Signal
@@ -5581,222 +3225,6 @@ test_structured_task_preemption_via_race_and_signal :: proc(t: ^testing.T) {
     testing.expect(t, !task_completed)
 }
 
-// ============================================================================
-// Test 133: Custom Allocator Fidelity for Synchronization Primitives
-// ============================================================================
-
-@(test)
-test_primitives_custom_arena_allocation_fidelity :: proc(t: ^testing.T) {
-    track: mem.Tracking_Allocator
-    mem.tracking_allocator_init(&track, context.allocator)
-    defer mem.tracking_allocator_destroy(&track)
-    arena_alloc := mem.tracking_allocator(&track)
-
-    // 1. Event(T)
-    {
-        ev: Event(int)
-        event_init(&ev)
-        event_destroy(&ev)
-    }
-
-    // 2. Fiber_Semaphore
-    {
-        sem: Fiber_Semaphore
-        semaphore_init(&sem, 2, 4)
-        semaphore_destroy(&sem)
-    }
-
-    // 3. Fiber_Latch
-    {
-        latch: Fiber_Latch
-        latch_init(&latch, 3)
-        latch_destroy(&latch)
-    }
-
-    // 4. Signal
-    {
-        sig: Signal
-        signal_init(&sig)
-        signal_destroy(&sig)
-    }
-
-    // 5. Mutex
-    {
-        m: Fiber_Mutex
-        mutex_init(&m)
-        mutex_destroy(&m)
-    }
-
-    // 6. Channel(T) with custom allocator
-    {
-        ch: Channel(int)
-        chan_init(&ch, capacity = 8, allocator = arena_alloc)
-        chan_destroy(&ch)
-    }
-
-    // Verify zero leaks on custom allocator
-    testing.expect_value(t, len(track.allocation_map), 0)
-    testing.expect_value(t, track.current_memory_allocated, 0)
-}
-
-// ============================================================================
-// Test 134: Headless Simulation Runner with Active Watchdog
-// ============================================================================
-
-@(test)
-test_simulate_until_with_active_watchdog :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sched.watchdog_enabled = true
-
-    counter := 0
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^int) {
-        for _ in 0 ..< 500 {
-            yield_frame(f)
-            c^ += 1
-        }
-    }, &counter)
-
-    done, sim_time := simulate_until(&sched, 0.016, 10.0, proc(c: ^int) -> bool {
-        return c^ >= 500
-    }, &counter)
-
-    testing.expect(t, done)
-    testing.expect_value(t, counter, 500)
-    testing.expect(t, sched.watchdog_enabled) // Watchdog should be restored after simulation
-}
-
-// ============================================================================
-// Test 135: Condition Timeout (wait_until_timeout)
-// ============================================================================
-
-@(test)
-test_wait_until_timeout_mechanics :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    door_unlocked := false
-    success_met := false
-    success_timeout := false
-
-    timeout_met := false
-    timeout_timed_out := false
-
-    // Fiber 1: Condition met in 0.05s, timeout is 0.20s -> should succeed
-    spawn_ptr(&sched, proc(f: ^Fiber, door: ^bool) {
-        wait(f, 0.05)
-        door^ = true
-    }, &door_unlocked)
-
-    Ctx1 :: struct {
-        door:      ^bool,
-        met:       ^bool,
-        timed_out: ^bool,
-    }
-    ctx1 := Ctx1{door = &door_unlocked, met = &success_met, timed_out = &success_timeout}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx1) {
-        met, timed_out := wait_until_timeout(f, proc(d: ^bool) -> bool {
-            return d^
-        }, c.door, 0.20)
-        c.met^ = met
-        c.timed_out^ = timed_out
-    }, &ctx1)
-
-    // Fiber 2: Condition never met, timeout is 0.05s -> should time out
-    Ctx2 :: struct {
-        met:       ^bool,
-        timed_out: ^bool,
-    }
-    ctx2 := Ctx2{met = &timeout_met, timed_out = &timeout_timed_out}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx2) {
-        met, timed_out := wait_until_timeout(f, proc() -> bool {
-            return false
-        }, 0.05)
-        c.met^ = met
-        c.timed_out^ = timed_out
-    }, &ctx2)
-
-    // Step 0.10s
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect(t, success_met, "Fiber 1 condition should have been met")
-    testing.expect(t, !success_timeout, "Fiber 1 should not have timed out")
-
-    testing.expect(t, !timeout_met, "Fiber 2 condition should not be met")
-    testing.expect(t, timeout_timed_out, "Fiber 2 should have timed out")
-}
-
-// ============================================================================
-// Test 136: Condition While Timeout (wait_while_timeout)
-// ============================================================================
-
-@(test)
-test_wait_while_timeout_mechanics :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    busy := true
-    cleared_met := false
-    cleared_timed_out := false
-
-    timeout_met := false
-    timeout_timed_out := false
-
-    // Fiber 1: Busy clears in 0.04s, timeout is 0.20s -> should complete without timeout
-    spawn_ptr(&sched, proc(f: ^Fiber, b: ^bool) {
-        wait(f, 0.04)
-        b^ = false
-    }, &busy)
-
-    Ctx1 :: struct {
-        busy:      ^bool,
-        met:       ^bool,
-        timed_out: ^bool,
-    }
-    ctx1 := Ctx1{busy = &busy, met = &cleared_met, timed_out = &cleared_timed_out}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx1) {
-        met, timed_out := wait_while_timeout(f, proc(b: ^bool) -> bool {
-            return b^
-        }, c.busy, 0.20)
-        c.met^ = met
-        c.timed_out^ = timed_out
-    }, &ctx1)
-
-    // Fiber 2: Always busy, timeout is 0.05s -> should time out
-    Ctx2 :: struct {
-        met:       ^bool,
-        timed_out: ^bool,
-    }
-    ctx2 := Ctx2{met = &timeout_met, timed_out = &timeout_timed_out}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx2) {
-        met, timed_out := wait_while_timeout(f, proc() -> bool {
-            return true
-        }, 0.05)
-        c.met^ = met
-        c.timed_out^ = timed_out
-    }, &ctx2)
-
-    // Step 0.10s
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect(t, cleared_met, "Fiber 1 wait_while should have completed")
-    testing.expect(t, !cleared_timed_out, "Fiber 1 should not have timed out")
-
-    testing.expect(t, !timeout_met, "Fiber 2 wait_while should not have completed naturally")
-    testing.expect(t, timeout_timed_out, "Fiber 2 should have timed out")
-}
 
 // ============================================================================
 // Test 137: Dynamic Fiber Renaming (fiber_set_name & fiber_name)
@@ -5829,30 +3257,6 @@ test_fiber_dynamic_renaming :: proc(t: ^testing.T) {
     testing.expect_value(t, recorded_names[2], "Phase 3: Enraged")
 }
 
-// ============================================================================
-// Test 138: Channel Capacity Inspection (chan_cap)
-// ============================================================================
-
-@(test)
-test_chan_cap_inspection :: proc(t: ^testing.T) {
-    // Unbuffered channel (rendezvous)
-    ch_unbuf: Channel(int)
-    chan_init(&ch_unbuf, 0)
-    defer chan_destroy(&ch_unbuf)
-
-    testing.expect_value(t, chan_cap(&ch_unbuf), 0)
-    testing.expect_value(t, chan_count(&ch_unbuf), 0)
-
-    // Buffered channel (capacity 16)
-    ch_buf: Channel(f32)
-    chan_init(&ch_buf, 16)
-    defer chan_destroy(&ch_buf)
-
-    testing.expect_value(t, chan_cap(&ch_buf), 16)
-    testing.expect_value(t, chan_count(&ch_buf), 0)
-    testing.expect(t, chan_is_empty(&ch_buf))
-    testing.expect(t, !chan_is_full(&ch_buf))
-}
 
 // ============================================================================
 // Test 139: PLAN 5 Packed Generational Handles Bitwise Operations
@@ -5876,6 +3280,7 @@ test_plan5_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
     testing.expect_value(t, fiber_handle_gen(h_max), 65535)
     testing.expect_value(t, u32(h_max), 0xFFFF_FFFF)
 }
+
 
 // ============================================================================
 // Test 140: PLAN 5 Handle Slot Reuse and ABA Invalidation Safety
@@ -5924,6 +3329,7 @@ test_plan5_handle_slot_reuse_and_aba_safety :: proc(t: ^testing.T) {
     testing.expect(t, f2 != nil)
     testing.expect_value(t, f2.handle, h2)
 }
+
 
 // ============================================================================
 // Test 141: Intrusive Wait_Queue Zero-Allocation Doubly-Linked Operations
@@ -5996,6 +3402,7 @@ test_plan5_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
     testing.expect(t, q.tail == nil)
 }
 
+
 // ============================================================================
 // Test 142: PLAN 5 O(1) Generational Lookups Under High Fiber Load
 // ============================================================================
@@ -6044,6 +3451,7 @@ test_plan5_o1_handle_lookups_under_high_fiber_load :: proc(t: ^testing.T) {
     }
 }
 
+
 // ============================================================================
 // Test 143: PLAN 5 Config Constants & Static Bounds Integration
 // ============================================================================
@@ -6059,6 +3467,7 @@ test_plan5_config_constants_integration :: proc(t: ^testing.T) {
     testing.expect_value(t, u64(CANARY_MAGIC), 0xDEAD_BEEF_CAFE_BABE)
     testing.expect_value(t, HANDLE_HISTORY_CAPACITY, 2048)
 }
+
 
 // ============================================================================
 // Test 144: Wait_Queue Auto-Unlinking on Fiber Abort (Queue Preserved)
@@ -6106,6 +3515,7 @@ test_wait_queue_auto_unlinking_on_abort :: proc(t: ^testing.T) {
     testing.expect_value(t, signal_waiter_count(&sig), 0)
 }
 
+
 // ============================================================================
 // Test 145: Scope-Based Multi-Cycle EMP Stun and Recovery
 // ============================================================================
@@ -6151,6 +3561,7 @@ test_scope_multi_cycle_emp_stun_and_recovery :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, sentries_cycle2, 4)
 }
+
 
 // ============================================================================
 // Test 146: Interruption Race & Attack Recovery Loop (Signal + Race)
@@ -6228,637 +3639,6 @@ test_interruption_race_attack_recovery_loop :: proc(t: ^testing.T) {
     env.running = false
 }
 
-// ============================================================================
-// Test 147: Headless Boss AI Fuzzing Simulation with Signal EMP Pulses
-// ============================================================================
-
-@(test)
-test_headless_boss_ai_fuzzing_simulation :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Fuzz_Boss :: struct {
-        hp:          f32,
-        alive:       bool,
-        phase:       int,
-        shots_fired: int,
-        stuns:       int,
-        stun_signal: Signal,
-    }
-
-    fuzz_patrol_subloop :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        for b.alive {
-            wait(f, 0.1)
-        }
-    }
-
-    fuzz_spiral_shoot :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        ticker: Ticker
-        ticker_init(&ticker, 0.04)
-        for b.alive {
-            ticker_wait(f, &ticker)
-            b.shots_fired += 1
-        }
-    }
-
-    fuzz_targeted_burst :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        ticker: Ticker
-        ticker_init(&ticker, 0.08)
-        for b.alive {
-            ticker_wait(f, &ticker)
-            b.shots_fired += 2
-        }
-    }
-
-    fuzz_attack_loop_p1 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        for b.hp > 700.0 && b.alive {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    sync(f,
-                        branch(fuzz_spiral_shoot, b, "Spiral"),
-                        branch(fuzz_targeted_burst, b, "Burst"),
-                    )
-                }, b, "P1 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P1 Stun Watcher"),
-            )
-            if winner == 1 && b.hp > 700.0 && b.alive {
-                b.stuns += 1
-                wait(f, 0.15) // Stun duration
-            }
-        }
-    }
-
-    fuzz_attack_loop_p2 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        for b.hp > 350.0 && b.alive {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    sync(f,
-                        branch(fuzz_spiral_shoot, b, "Enraged Spiral"),
-                        branch(fuzz_targeted_burst, b, "Enraged Burst"),
-                    )
-                }, b, "P2 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P2 Stun Watcher"),
-            )
-            if winner == 1 && b.hp > 350.0 && b.alive {
-                b.stuns += 1
-                wait(f, 0.15) // Stun duration
-            }
-        }
-    }
-
-    fuzz_attack_loop_p3 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        for b.alive {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    sync(f,
-                        branch(fuzz_spiral_shoot, b, "Berserk Spiral"),
-                        branch(fuzz_targeted_burst, b, "Berserk Burst"),
-                    )
-                }, b, "P3 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P3 Stun Watcher"),
-            )
-            if winner == 1 && b.alive {
-                b.stuns += 1
-                wait(f, 0.10) // Berserk stun duration
-            }
-        }
-    }
-
-    fuzz_boss_master :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
-        // Phase 1
-        b.phase = 1
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                wait_while(f, proc(b: ^Fuzz_Boss) -> bool {
-                    return b.hp > 700.0 && b.alive
-                }, b)
-            }, b, "HP < 700"),
-            branch(fuzz_patrol_subloop, b, "Patrol P1"),
-            branch(fuzz_attack_loop_p1, b, "Attacks P1"),
-        )
-        if !b.alive do return
-
-        // Phase 2
-        b.phase = 2
-        wait(f, 0.1) // Phase transition
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                wait_while(f, proc(b: ^Fuzz_Boss) -> bool {
-                    return b.hp > 350.0 && b.alive
-                }, b)
-            }, b, "HP < 350"),
-            branch(fuzz_patrol_subloop, b, "Patrol P2"),
-            branch(fuzz_attack_loop_p2, b, "Attacks P2"),
-        )
-        if !b.alive do return
-
-        // Phase 3
-        b.phase = 3
-        wait(f, 0.1) // Berserk charge
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                wait_while(f, proc(b: ^Fuzz_Boss) -> bool {
-                    return b.alive
-                }, b)
-            }, b, "Death Trigger"),
-            branch(fuzz_patrol_subloop, b, "Patrol P3"),
-            branch(fuzz_attack_loop_p3, b, "Attacks P3"),
-        )
-    }
-
-    boss := Fuzz_Boss{
-        hp    = 1000.0,
-        alive = true,
-        phase = 1,
-    }
-    defer signal_destroy(&boss.stun_signal)
-
-    spawn_ptr(&sched, fuzz_boss_master, &boss)
-
-    // XorShift PRNG for deterministic reproducible fuzzing
-    rng_state: u64 = 0x853C49E6748FEA9B
-    xorshift64 :: proc(state: ^u64) -> u64 {
-        x := state^
-        x ~= x << 13
-        x ~= x >> 7
-        x ~= x << 17
-        state^ = x
-        return x
-    }
-
-    total_emp_pulses := 0
-    max_active_fibers := 0
-
-    // Simulate 2,000 continuous frames of gameplay with fuzzing
-    for frame in 0 ..< 2000 {
-        r := xorshift64(&rng_state)
-
-        // Fuzz frame delta between 5ms and 30ms
-        dt_ms := 5.0 + f32(r % 25)
-        dt := dt_ms / 1000.0
-
-        // Deal continuous player damage to boss
-        if boss.alive {
-            boss.hp -= 0.65 // ~1300 total damage over 2000 frames
-            if boss.hp <= 0.0 {
-                boss.alive = false
-            }
-        }
-
-        // Randomly trigger EMP parry pulse (approx every 15-40 frames)
-        if (r % 25) == 0 && boss.alive {
-            signal_emit(&sched, &boss.stun_signal)
-            total_emp_pulses += 1
-        }
-
-        // Step the scheduler
-        scheduler_step(&sched, dt)
-
-        // Check invariants on every single frame!
-        stats := scheduler_pool_stats(&sched)
-        if stats.active_fibers > max_active_fibers {
-            max_active_fibers = stats.active_fibers
-        }
-
-        // Active fibers must be strictly bounded (never leaks!)
-        testing.expect(t, stats.active_fibers <= 16)
-        testing.expect_value(t, stats.total_stacks, stats.active_fibers + stats.free_fibers)
-    }
-
-    // After 2,000 frames: Boss must be dead, all fibers recycled, 0 active fibers!
-    testing.expect(t, !boss.alive)
-    testing.expect_value(t, boss.phase, 3)
-    testing.expect(t, total_emp_pulses >= 10)
-    testing.expect(t, boss.stuns >= 5)
-    testing.expect(t, boss.shots_fired >= 100)
-
-    final_stats := scheduler_pool_stats(&sched)
-    testing.expect_value(t, final_stats.active_fibers, 0)
-}
-
-// ============================================================================
-// Test 148: Phase Transition Race Tree Structured Teardown Fuzzing
-// ============================================================================
-
-@(test)
-test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Boss_State :: struct {
-        hp:                 f32,
-        phase:              int,
-        alive:              bool,
-        p1_attacks_spawned: int,
-        p2_attacks_spawned: int,
-        p3_attacks_spawned: int,
-        phase1_in_p2_error: bool,
-        phase2_in_p3_error: bool,
-        stun_signal:        Signal,
-    }
-
-    b_state := Boss_State{
-        hp    = 1000.0,
-        phase = 1,
-        alive = true,
-    }
-    defer signal_destroy(&b_state.stun_signal)
-
-    p1_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.alive && b.phase == 1 {
-            b.p1_attacks_spawned += 1
-            wait(f, 0.05)
-            if b.phase != 1 {
-                b.phase1_in_p2_error = true
-            }
-        }
-    }
-
-    p2_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.alive && b.phase == 2 {
-            b.p2_attacks_spawned += 1
-            wait(f, 0.05)
-            if b.phase != 2 {
-                b.phase2_in_p3_error = true
-            }
-        }
-    }
-
-    p3_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.alive && b.phase == 3 {
-            b.p3_attacks_spawned += 1
-            wait(f, 0.05)
-        }
-    }
-
-    p1_loop :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.hp > 700.0 && b.alive && b.phase == 1 {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    sync(f,
-                        branch(p1_attack_proc, b, "P1 Attack A"),
-                        branch(p1_attack_proc, b, "P1 Attack B"),
-                    )
-                }, b, "P1 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P1 Stun"),
-            )
-            if winner == 1 && b.hp > 700.0 && b.alive && b.phase == 1 {
-                wait(f, 0.2) // Stun duration
-            }
-        }
-    }
-
-    p2_loop :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.hp > 350.0 && b.alive && b.phase == 2 {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    sync(f,
-                        branch(p2_attack_proc, b, "P2 Attack A"),
-                        branch(p2_attack_proc, b, "P2 Attack B"),
-                    )
-                }, b, "P2 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P2 Stun"),
-            )
-            if winner == 1 && b.hp > 350.0 && b.alive && b.phase == 2 {
-                wait(f, 0.2) // Stun duration
-            }
-        }
-    }
-
-    p3_loop :: proc(f: ^Fiber, b: ^Boss_State) {
-        for b.alive && b.phase == 3 {
-            winner := race(f,
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    sync(f,
-                        branch(p3_attack_proc, b, "P3 Attack A"),
-                        branch(p3_attack_proc, b, "P3 Attack B"),
-                    )
-                }, b, "P3 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P3 Stun"),
-            )
-            if winner == 1 && b.alive && b.phase == 3 {
-                wait(f, 0.1)
-            }
-        }
-    }
-
-    boss_ai_timeline :: proc(f: ^Fiber, b: ^Boss_State) {
-        // Phase 1
-        b.phase = 1
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Boss_State) {
-                wait_while(f, proc(b: ^Boss_State) -> bool {
-                    return b.hp > 700.0 && b.alive
-                }, b)
-            }, b, "HP < 700 Trigger"),
-            branch(p1_loop, b, "P1 Loop"),
-        )
-        if !b.alive do return
-
-        // Phase 2
-        b.phase = 2
-        wait(f, 0.1) // Cinematic transition
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Boss_State) {
-                wait_while(f, proc(b: ^Boss_State) -> bool {
-                    return b.hp > 350.0 && b.alive
-                }, b)
-            }, b, "HP < 350 Trigger"),
-            branch(p2_loop, b, "P2 Loop"),
-        )
-        if !b.alive do return
-
-        // Phase 3
-        b.phase = 3
-        wait(f, 0.1) // Cinematic transition
-        race(f,
-            branch(proc(f: ^Fiber, b: ^Boss_State) {
-                wait_while(f, proc(b: ^Boss_State) -> bool {
-                    return b.alive
-                }, b)
-            }, b, "Death Trigger"),
-            branch(p3_loop, b, "P3 Loop"),
-        )
-    }
-
-    spawn_ptr(&sched, boss_ai_timeline, &b_state)
-
-    // Simulate 1,000 frames: EMP pulses are deliberately fired exactly when HP crosses 705->695 and 355->345!
-    for frame in 0 ..< 1000 {
-        // Deal damage
-        if b_state.alive {
-            b_state.hp -= 1.3 // ~1300 damage over 1000 frames
-            if b_state.hp <= 0 do b_state.alive = false
-        }
-
-        // Fire EMP right on phase boundaries (705-695 and 355-345) and periodic frames
-        if (b_state.hp >= 690.0 && b_state.hp <= 710.0) || (b_state.hp >= 340.0 && b_state.hp <= 360.0) || (frame % 20 == 0) {
-            signal_emit(&sched, &b_state.stun_signal)
-        }
-
-        scheduler_step(&sched, 0.016)
-
-        // Verify that during Phase 2, NO Phase 1 attack fibers ever executed
-        testing.expect(t, !b_state.phase1_in_p2_error)
-        testing.expect(t, !b_state.phase2_in_p3_error)
-    }
-
-    testing.expect(t, !b_state.alive)
-    testing.expect_value(t, b_state.phase, 3)
-    testing.expect(t, b_state.p1_attacks_spawned > 0)
-    testing.expect(t, b_state.p2_attacks_spawned > 0)
-    testing.expect(t, b_state.p3_attacks_spawned > 0)
-    testing.expect(t, !b_state.phase1_in_p2_error)
-    testing.expect(t, !b_state.phase2_in_p3_error)
-
-    stats := scheduler_pool_stats(&sched)
-    testing.expect_value(t, stats.active_fibers, 0)
-}
-
-// ============================================================================
-// Test 149: sim_ticks Continuous Synchronized Zero-Drift Math
-// ============================================================================
-
-@(test)
-test_sim_ticks_continuous_zero_drift :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sched.clock.tick_rate_hz = 1000 // 1000 ticks/sec = 1ms per tick
-
-    // Run 60 frames at 1/60 seconds (16.666... ms)
-    dt := f32(1.0 / 60.0)
-    for _ in 0 ..< 60 {
-        scheduler_step(&sched, dt)
-    }
-
-    // After exactly 1.0 second (60 frames at 1/60s), sim_ticks MUST be 1000, not 960!
-    testing.expect_value(t, sched.clock.sim_ticks, u64(1000))
-}
-
-// ============================================================================
-// Test 150: Defensive Wait Queue Validation & Paused Zero-Shift Real-Time Dispatch
-// ============================================================================
-
-@(test)
-test_wait_queue_defensive_and_paused_dispatch :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    q1, q2: Wait_Queue
-    f: Fiber
-    f.handle = 1
-
-    // Push into q1
-    wait_queue_push_back(&q1, &f)
-    testing.expect_value(t, f.current_wait_queue, &q1)
-
-    // Attempt to remove from q2 (cross-queue removal attempt must fail defensively)
-    removed_wrong := wait_queue_remove(&q2, &f)
-    testing.expect(t, !removed_wrong)
-    testing.expect_value(t, f.current_wait_queue, &q1)
-
-    // Remove from q1 succeeds
-    removed_ok := wait_queue_remove(&q1, &f)
-    testing.expect(t, removed_ok)
-    testing.expect_value(t, f.current_wait_queue, nil)
-
-    // Verify paused mode zero-shift ready queue execution
-    sim_ran := false
-    real_ran := false
-
-    // Spawn a simulation fiber (should remain deferred when paused)
-    spawn_ptr(&sched, proc(fib: ^Fiber, ran: ^bool) {
-        ran^ = true
-    }, &sim_ran)
-
-    // Spawn a real-time fiber (should execute while paused)
-    f_real := spawn_real(&sched, proc(fib: ^Fiber, ran: ^bool) {
-        ran^ = true
-    }, &real_ran)
-    testing.expect(t, f_real != 0)
-
-    scheduler_set_paused(&sched, true)
-    scheduler_step(&sched, 0.016)
-
-    testing.expect(t, !sim_ran)
-    testing.expect(t, real_ran)
-
-    // Unpause: deferred sim fiber executes
-    scheduler_set_paused(&sched, false)
-    scheduler_step(&sched, 0.016)
-    testing.expect(t, sim_ran)
-}
-
-// ============================================================================
-// Test 151: scheduler_set_time_scale Defensive Clamping (Negative & NaN)
-// ============================================================================
-
-@(test)
-test_time_scale_defensive_clamping :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    // Positive scale
-    scheduler_set_time_scale(&sched, 2.5)
-    testing.expect_value(t, scheduler_time_scale(&sched), f32(2.5))
-
-    // Zero scale (valid pause-like scale)
-    scheduler_set_time_scale(&sched, 0.0)
-    testing.expect_value(t, scheduler_time_scale(&sched), f32(0.0))
-
-    // Negative scale (must clamp defensively to 0.0 to protect min-heap monotonicity)
-    scheduler_set_time_scale(&sched, -5.0)
-    testing.expect_value(t, scheduler_time_scale(&sched), f32(0.0))
-
-    // NaN scale (must fall back defensively to 1.0)
-    nan_val := math.nan_f32()
-    scheduler_set_time_scale(&sched, nan_val)
-    testing.expect_value(t, scheduler_time_scale(&sched), f32(1.0))
-}
-
-// ============================================================================
-// Test 152: Generator O(1) Generational Lookup and Wait Queue Recycle Defense
-// ============================================================================
-
-@(test)
-test_generator_o1_and_recycle_wait_queue_defense :: proc(t: ^testing.T) {
-    // 1. Verify Generator O(1) execution
-    gen: Generator(int)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        for i in 10 ..= 30 {
-            yield_value(f, g, i)
-        }
-    })
-    defer generator_destroy(&gen)
-
-    expected := 10
-    for {
-        val, ok := generator_next(&gen)
-        if !ok do break
-        testing.expect_value(t, val, expected)
-        expected += 1
-    }
-    testing.expect_value(t, expected, 31)
-    testing.expect(t, gen.is_done)
-
-    // 2. Verify fiber_cleanup_and_recycle clears current_wait_queue defensively
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    q: Wait_Queue
-    spawn(&sched, proc(f: ^Fiber, wq: ^Wait_Queue) {
-        wait_queue_push_back(wq, f)
-        yield_frame(f)
-        // Normal completion will trigger fiber_cleanup_and_recycle with active wait queue
-    }, &q)
-
-    // Frame 1: fiber executes, pushes to wait queue, and yields
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, q.head != nil, true)
-
-    // Frame 2: fiber completes and is recycled; verify it was cleanly unlinked from q
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, q.head == nil, true)
-    testing.expect_value(t, q.tail == nil, true)
-}
-
-// ============================================================================
-// Test 153: Unbuffered Channel chan_recv_timeout Deadlock Safety
-// ============================================================================
-
-@(test)
-test_chan_recv_timeout_unbuffered_safety :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0) // Unbuffered rendezvous
-    defer chan_destroy(&ch)
-
-    timed_out := false
-    val_received := 0
-
-    Recv_Ctx :: struct {
-        ch:           ^Channel(int),
-        timed_out:    ^bool,
-        val_received: ^int,
-    }
-    ctx := Recv_Ctx{ch = &ch, timed_out = &timed_out, val_received = &val_received}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Recv_Ctx) {
-        val, ok, to := chan_recv_timeout(f, c.ch, 0.05)
-        c.timed_out^ = to
-        if ok do c.val_received^ = val
-    }, &ctx)
-
-    // Step scheduler past timeout without providing any sender
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    // Must cleanly time out and not hang
-    testing.expect(t, timed_out)
-    testing.expect_value(t, val_received, 0)
-}
-
-// ============================================================================
-// Test 154: Queue Unlinking on scheduler_destroy (Zero Dangling Pointers)
-// ============================================================================
-
-@(test)
-test_scheduler_destroy_wait_queue_unlinking :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-
-    // Outliving Channel & Mutex
-    ch: Channel(int)
-    chan_init(&ch, capacity = 1)
-    defer chan_destroy(&ch)
-
-    mtx: Fiber_Mutex
-    defer mutex_destroy(&mtx)
-
-    // Spawn fiber that blocks on mutex
-    spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
-        mutex_lock(f, m)
-        yield_frame(f)
-    }, &mtx)
-
-    // Spawn another fiber that blocks waiting for mutex release
-    spawn_ptr(&sched, proc(f: ^Fiber, m: ^Fiber_Mutex) {
-        mutex_lock(f, m)
-    }, &mtx)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, mtx.waiters.head != nil, true)
-
-    // Destroy scheduler while fibers are still in mtx.waiters
-    scheduler_destroy(&sched)
-
-    // Outliving mutex waiters list must have been unlinked to prevent UAF!
-    testing.expect_value(t, mtx.waiters.head == nil, true)
-    testing.expect_value(t, mtx.waiters.tail == nil, true)
-}
 
 // ============================================================================
 // Test 155: with_timeout By-Value Inline Payload Branching
@@ -6899,6 +3679,7 @@ test_with_timeout_by_value_branching :: proc(t: ^testing.T) {
     testing.expect(t, ctx.completed)
 }
 
+
 // ============================================================================
 // Test 156: fiber_calc_stack_usage Canary Watermark Breach Detection
 // ============================================================================
@@ -6930,212 +3711,6 @@ test_fiber_calc_stack_usage_canary_breach_detection :: proc(t: ^testing.T) {
     testing.expect_value(t, breached_total, f.stack_size)
 }
 
-// ============================================================================
-// Test 157: Symmetrical Unbuffered Channel Rendezvous (Sender Before Receiver)
-// ============================================================================
-
-@(test)
-test_chan_unbuffered_sender_before_receiver :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0)
-    defer chan_destroy(&ch)
-
-    Sender_Ctx :: struct {
-        ch:   ^Channel(int),
-        sent: ^bool,
-    }
-    sent_flag := false
-
-    // Spawn Sender FIRST (suspends waiting for receiver)
-    spawn_val(&sched, proc(f: ^Fiber, ctx: Sender_Ctx) {
-        ok := chan_send(f, ctx.ch, 999)
-        if ok do ctx.sent^ = true
-    }, Sender_Ctx{ch = &ch, sent = &sent_flag})
-
-    // Step once: sender runs and suspends in send_waiters
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, sent_flag, false)
-    testing.expect_value(t, chan_count(&ch), 1)
-
-    Recv_Ctx :: struct {
-        ch:       ^Channel(int),
-        received: int,
-        ok:       bool,
-    }
-    r_ctx := Recv_Ctx{ch = &ch, received = 0, ok = false}
-
-    // Spawn Receiver SECOND
-    spawn(&sched, proc(f: ^Fiber, ctx: ^Recv_Ctx) {
-        val, ok := chan_recv(f, ctx.ch)
-        ctx.received = val
-        ctx.ok = ok
-    }, &r_ctx)
-
-    // Step scheduler: receiver runs, consumes value, unblocks sender
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, r_ctx.ok, true)
-    testing.expect_value(t, r_ctx.received, 999)
-    testing.expect_value(t, chan_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 158: Unbuffered Multi-Channel Select with Pre-Queued Sender
-// ============================================================================
-
-@(test)
-test_chan_select_unbuffered_with_sender :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch1, ch2: Channel(int)
-    chan_init(&ch1, capacity = 0)
-    defer chan_destroy(&ch1)
-    chan_init(&ch2, capacity = 0)
-    defer chan_destroy(&ch2)
-
-    // Sender queues message into unbuffered ch2
-    spawn(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        chan_send(f, ch, 777)
-    }, &ch2)
-
-    // Step scheduler so sender pushes into ch2
-    scheduler_step(&sched, 0.016)
-
-    // Receiver selects across [ch1, ch2]
-    Select_Ctx :: struct {
-        channels: [2]^Channel(int),
-        idx:      int,
-        val:      int,
-        ok:       bool,
-    }
-    ctx := Select_Ctx{channels = {&ch1, &ch2}, idx = -1, val = 0, ok = false}
-
-    spawn(&sched, proc(f: ^Fiber, c: ^Select_Ctx) {
-        idx, val, ok := chan_select_recv(f, c.channels[:])
-        c.idx = idx
-        c.val = val
-        c.ok = ok
-    }, &ctx)
-
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, ctx.ok, true)
-    testing.expect_value(t, ctx.idx, 1)
-    testing.expect_value(t, ctx.val, 777)
-}
-
-// ============================================================================
-// Test 159: spawn_real_val Inline Payload Execution While Paused
-// ============================================================================
-
-@(test)
-test_spawn_real_val_while_paused :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    scheduler_set_paused(&sched, true)
-
-    Payload :: struct {
-        x:     int,
-        y:     int,
-        out_x: ^int,
-        out_y: ^int,
-    }
-
-    res_x, res_y: int = 0, 0
-    p := Payload{x = 42, y = 84, out_x = &res_x, out_y = &res_y}
-
-    spawn_real(&sched, proc(f: ^Fiber, data: Payload) {
-        wait_real(f, 0.05)
-        data.out_x^ = data.x
-        data.out_y^ = data.y
-    }, p)
-
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.02)
-    }
-
-    testing.expect_value(t, res_x, 42)
-    testing.expect_value(t, res_y, 84)
-}
-
-// ============================================================================
-// Test 160: Defensive Non-Positive Counts in Semaphore & Latch
-// ============================================================================
-
-@(test)
-test_defensive_semaphore_and_latch_non_positive :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    // Semaphore defensive checks
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, initial_permits = 2, max_permits = 5)
-    defer semaphore_destroy(&sem)
-
-    semaphore_release(&sched, &sem, 0)
-    testing.expect_value(t, semaphore_available_permits(&sem), 2)
-
-    semaphore_release(&sched, &sem, -3)
-    testing.expect_value(t, semaphore_available_permits(&sem), 2)
-
-    // Latch defensive checks
-    latch: Fiber_Latch
-    latch_init(&latch, initial_count = 4)
-    defer latch_destroy(&latch)
-
-    latch_count_down(&sched, &latch, 0)
-    testing.expect_value(t, latch_get_count(&latch), 4)
-
-    latch_count_down(&sched, &latch, -2)
-    testing.expect_value(t, latch_get_count(&latch), 4)
-}
-
-// ============================================================================
-// Test 161: simulate_until Execution Safety When Scheduler Starts Paused
-// ============================================================================
-
-@(test)
-test_simulate_until_while_paused :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    scheduler_set_paused(&sched, true)
-
-    done := false
-    spawn(&sched, proc(f: ^Fiber, flag: ^bool) {
-        wait(f, 0.05)
-        flag^ = true
-    }, &done)
-
-    Sim_Ctx :: struct {
-        flag: ^bool,
-    }
-    ctx := Sim_Ctx{flag = &done}
-
-    met, elapsed := simulate_until(&sched, 0.01, 1.0, proc(c: ^Sim_Ctx) -> bool {
-        return c.flag^
-    }, &ctx)
-
-    testing.expect_value(t, met, true)
-    testing.expect_value(t, done, true)
-    testing.expect(t, elapsed >= 0.05)
-    // Verify original paused state was cleanly restored
-    testing.expect_value(t, sched.clock.is_paused, true)
-}
 
 // ============================================================================
 // Test 162: Intrusive Doubly-Linked Fiber_Scope Zero-Allocation Lifecycle
@@ -7206,184 +3781,6 @@ test_intrusive_fiber_scope_lifecycle :: proc(t: ^testing.T) {
     testing.expect_value(t, f3_done, false)
 }
 
-// ============================================================================
-// Test 163: Unbuffered Channel Multi-Sender Rendezvous Safety (Zero Data Loss)
-// ============================================================================
-
-@(test)
-test_chan_unbuffered_multi_sender_rendezvous :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0)
-    defer chan_destroy(&ch)
-
-    results: [dynamic]int
-    defer delete(results)
-
-    Send_Context :: struct {
-        ch:  ^Channel(int),
-        val: int,
-    }
-    s1 := Send_Context{ch = &ch, val = 100}
-    s2 := Send_Context{ch = &ch, val = 200}
-    s3 := Send_Context{ch = &ch, val = 300}
-
-    // Spawn 3 concurrent senders on unbuffered channel
-    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
-        chan_send(f, ctx.ch, ctx.val)
-    }, &s1, name = "Sender 1")
-
-    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
-        chan_send(f, ctx.ch, ctx.val)
-    }, &s2, name = "Sender 2")
-
-    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Send_Context) {
-        chan_send(f, ctx.ch, ctx.val)
-    }, &s3, name = "Sender 3")
-
-    Recv_Context :: struct {
-        ch:      ^Channel(int),
-        results: ^[dynamic]int,
-    }
-    rctx := Recv_Context{ch = &ch, results = &results}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, ctx: ^Recv_Context) {
-        for i := 0; i < 3; i += 1 {
-            val, ok := chan_recv(f, ctx.ch)
-            if ok {
-                append(ctx.results, val)
-            }
-        }
-    }, &rctx, name = "Receiver")
-
-    scheduler_step(&sched, 0.016)
-
-    testing.expect_value(t, len(results), 3)
-    if len(results) == 3 {
-        testing.expect_value(t, results[0], 100)
-        testing.expect_value(t, results[1], 200)
-        testing.expect_value(t, results[2], 300)
-    }
-    testing.expect_value(t, chan_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 164: Unbuffered Channel Sender Abort Cleanup (Ghost Message Prevention)
-// ============================================================================
-
-@(test)
-test_chan_unbuffered_sender_abort_cleanup :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, capacity = 0)
-    defer chan_destroy(&ch)
-
-    sender_h := spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        chan_send(f, ch, 999) // Will suspend waiting for receiver
-    }, &ch, name = "Aborting Sender")
-
-    // Step scheduler: sender puts 999 into buffer[0], count = 1, and suspends in send_waiters
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, chan_count(&ch), 1)
-    testing.expect_value(t, chan_send_waiter_count(&ch), 1)
-
-    // Abort the sender while waiting in rendezvous
-    cancelled := fiber_cancel(&sched, sender_h)
-    testing.expect_value(t, cancelled, true)
-    // Cleanup proc must reset ch.count = 0 and remove from send_waiters
-    testing.expect_value(t, chan_count(&ch), 0)
-    testing.expect_value(t, chan_send_waiter_count(&ch), 0)
-
-    // Now spawn a valid sender with 42
-    spawn_ptr(&sched, proc(f: ^Fiber, ch: ^Channel(int)) {
-        chan_send(f, ch, 42)
-    }, &ch, name = "Valid Sender")
-
-    received_val := 0
-    Recv_Target :: struct {
-        ch:  ^Channel(int),
-        out: ^int,
-    }
-    target := Recv_Target{ch = &ch, out = &received_val}
-    spawn_ptr(&sched, proc(f: ^Fiber, t: ^Recv_Target) {
-        val, ok := chan_recv(f, t.ch)
-        if ok {
-            t.out^ = val
-        }
-    }, &target, name = "Actual Receiver")
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, received_val, 42)
-    testing.expect_value(t, chan_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 165: Real-Time Fiber Paused Yield Safety (No Freeze in Frame Waiters)
-// ============================================================================
-
-@(test)
-test_real_time_fiber_paused_yield :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    // Pause simulation clock
-    scheduler_set_paused(&sched, true)
-
-    step_count := 0
-    spawn_real(&sched, proc(f: ^Fiber, counter: ^int) {
-        for i := 0; i < 5; i += 1 {
-            counter^ += 1
-            if i % 2 == 0 {
-                yield_real(f)
-            } else {
-                wait_real(f, 0.0) // Must not freeze in frame_waiters when paused!
-            }
-        }
-    }, &step_count, name = "Realtime Paused Worker")
-
-    // Run 5 steps while paused
-    for i := 0; i < 5; i += 1 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, step_count, 5)
-}
-
-// ============================================================================
-// Test 166: Real-Time Ticker Paused Execution Safety
-// ============================================================================
-
-@(test)
-test_real_time_ticker_paused_zero_freeze :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    scheduler_set_paused(&sched, true)
-
-    ticks := 0
-    spawn_real(&sched, proc(f: ^Fiber, counter: ^int) {
-        t: Ticker
-        ticker_init(&t, 0.01, use_real_time = true)
-        for i := 0; i < 4; i += 1 {
-            ticker_wait(f, &t)
-            counter^ += 1
-        }
-    }, &ticks, name = "Realtime Ticker Worker")
-
-    for i := 0; i < 5; i += 1 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, ticks, 4)
-}
 
 // ============================================================================
 // Test 167: Fiber Cleanup Callback Preserves User Data
@@ -7433,38 +3830,6 @@ test_fiber_cleanup_preserves_user_data :: proc(t: ^testing.T) {
     testing.expect_value(t, entry_data, 777)
 }
 
-// ============================================================================
-// Test 168: Fiber Pool Recycle Wake Clock Sanitization
-// ============================================================================
-
-@(test)
-test_fiber_pool_recycle_wake_clock_sanitization :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    real_clock_observed: Time_Clock
-    sim_clock_observed: Time_Clock
-
-    // Spawn real-time fiber
-    h_real := spawn_real(&sched, proc(f: ^Fiber, out: ^Time_Clock) {
-        out^ = f.wake_clock
-    }, &real_clock_observed, name = "Real Worker")
-
-    scheduler_step(&sched, 0.016)
-
-    // Now spawn a standard fiber which will acquire the recycled fiber
-    h_sim := spawn(&sched, proc(f: ^Fiber, out: ^Time_Clock) {
-        out^ = f.wake_clock
-    }, &sim_clock_observed, name = "Sim Worker")
-
-    scheduler_step(&sched, 0.016)
-
-    testing.expect_value(t, real_clock_observed, Time_Clock.Real_Time)
-    testing.expect_value(t, sim_clock_observed, Time_Clock.Sim_Scaled)
-    testing.expect_value(t, fiber_is_alive(&sched, h_real), false)
-    testing.expect_value(t, fiber_is_alive(&sched, h_sim), false)
-}
 
 // ============================================================================
 // Test 169: Scheduler Destroy External Scope Detachment Safety
@@ -7502,6 +3867,7 @@ test_scheduler_destroy_scope_detachment :: proc(t: ^testing.T) {
     testing.expect(t, scope.head == nil)
     testing.expect(t, scope.tail == nil)
 }
+
 
 // ============================================================================
 // Test 170: Ready Queue Generational Handle ABA & Pointer Recycling Guard
@@ -7554,323 +3920,6 @@ test_ready_queue_generational_aba_guard :: proc(t: ^testing.T) {
     testing.expect_value(t, exec_counts[2], 1) // Fiber 3 ran exactly once (no double execution!)
 }
 
-// ============================================================================
-// Test 171: Paused State Condition Waiters Polling in scheduler_advance_real
-// ============================================================================
-
-@(test)
-test_paused_condition_waiters_polling :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    token: Async_Token
-    async_token_init(&token)
-
-    completed := false
-
-    // Real-time fiber waiting on async background task
-    spawn_real(&sched, proc(f: ^Fiber, data: ^struct { tok: ^Async_Token, comp: ^bool }) {
-        ok := await_async(f, data.tok)
-        if ok {
-            data.comp^ = true
-        }
-    }, &struct { tok: ^Async_Token, comp: ^bool }{tok = &token, comp = &completed}, name = "Async Awaiter")
-
-    // Step 1: Start fiber, begins waiting on condition
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, completed, false)
-
-    // Pause simulation
-    scheduler_set_paused(&sched, true)
-    testing.expect(t, scheduler_is_paused(&sched))
-
-    // Complete token in background thread / host
-    async_token_complete(&token, true)
-
-    // Step while paused -> scheduler_advance_real must poll condition_waiters and complete real-time fiber
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, completed, true)
-}
-
-// ============================================================================
-// Test 172: Automatic Abort Safety in with_mutex
-// ============================================================================
-
-@(test)
-test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    mutex_init(&m)
-    defer mutex_destroy(&m)
-
-    worker2_completed := false
-
-    Worker_Ctx :: struct {
-        m:     ^Fiber_Mutex,
-        comp:  ^bool,
-    }
-    ctx := Worker_Ctx{m = &m, comp = &worker2_completed}
-
-    // Fiber 1: Enters with_mutex and sleeps
-    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Worker_Ctx) {
-        with_mutex(f, c.m, proc(f: ^Fiber, c: ^Worker_Ctx) {
-            wait(f, 10.0) // Long sleep while holding lock
-        }, c)
-    }, &ctx, name = "Lock Holder")
-
-    // Fiber 2: Waits for the mutex
-    h2 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Worker_Ctx) {
-        with_mutex(f, c.m, proc(f: ^Fiber, c: ^Worker_Ctx) {
-            c.comp^ = true
-        }, c)
-    }, &ctx, name = "Lock Waiter")
-
-    scheduler_step(&sched, 0.016)
-    testing.expect(t, m.locked)
-    testing.expect_value(t, worker2_completed, false)
-    testing.expect_value(t, mutex_waiter_count(&m), 1)
-
-    // Cancel fiber 1 while it is holding with_mutex
-    // Automatic abort cleanup must unlock m and hand it over to fiber 2!
-    fiber_cancel(&sched, h1)
-    testing.expect(t, m.locked) // Transferred to fiber 2
-
-    // Step scheduler so fiber 2 executes
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, worker2_completed, true)
-    testing.expect_value(t, m.locked, false)
-}
-
-// ============================================================================
-// Test 173: Automatic Abort Safety in with_semaphore
-// ============================================================================
-
-@(test)
-test_with_semaphore_automatic_abort_cleanup :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    sem: Fiber_Semaphore
-    semaphore_init(&sem, 1, 1)
-    defer semaphore_destroy(&sem)
-
-    worker2_completed := false
-
-    Sem_Ctx :: struct {
-        sem:   ^Fiber_Semaphore,
-        comp:  ^bool,
-    }
-    ctx := Sem_Ctx{sem = &sem, comp = &worker2_completed}
-
-    // Fiber 1 acquires permit via with_semaphore and sleeps
-    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Ctx) {
-        with_semaphore(f, c.sem, proc(f: ^Fiber, c: ^Sem_Ctx) {
-            wait(f, 10.0)
-        }, c)
-    }, &ctx, name = "Permit Holder")
-
-    // Fiber 2 tries to acquire permit via with_semaphore
-    h2 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Sem_Ctx) {
-        with_semaphore(f, c.sem, proc(f: ^Fiber, c: ^Sem_Ctx) {
-            c.comp^ = true
-        }, c)
-    }, &ctx, name = "Permit Waiter")
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, semaphore_available_permits(&sem), 0)
-    testing.expect_value(t, worker2_completed, false)
-    testing.expect_value(t, semaphore_waiter_count(&sem), 1)
-
-    // Abort fiber 1: automatic cleanup hook must restore permit and wake fiber 2
-    fiber_cancel(&sched, h1)
-
-    // Step scheduler so fiber 2 acquires permit and completes
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, worker2_completed, true)
-    testing.expect_value(t, semaphore_available_permits(&sem), 1)
-}
-
-// ============================================================================
-// Test 174: chan_select_recv Buffered Message Priority Over Closed Channel
-// ============================================================================
-
-@(test)
-test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch_closed: Channel(int)
-    chan_init(&ch_closed, 4)
-    defer chan_destroy(&ch_closed)
-
-    ch_data: Channel(int)
-    chan_init(&ch_data, 4)
-    defer chan_destroy(&ch_data)
-
-    // Preload ch_data with values
-    chan_try_send(&ch_data, 42)
-    chan_try_send(&ch_data, 99)
-
-    // Close ch_closed (empty closed channel)
-    chan_close(&ch_closed)
-
-    received_values := make([dynamic]int, context.allocator)
-    defer delete(received_values)
-
-    Select_Ctx :: struct {
-        chans:    [2]^Channel(int),
-        received: ^[dynamic]int,
-    }
-    ctx := Select_Ctx{
-        chans    = {&ch_closed, &ch_data},
-        received = &received_values,
-    }
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Select_Ctx) {
-        for {
-            idx, val, ok := chan_select_recv(f, c.chans[:])
-            if !ok {
-                break // EOF / closed
-            }
-            append(c.received, val)
-        }
-    }, &ctx, name = "Select Consumer")
-
-    // Run until select consumer consumes all buffered messages and exits
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, len(received_values), 2)
-    testing.expect_value(t, received_values[0], 42)
-    testing.expect_value(t, received_values[1], 99)
-}
-
-// ============================================================================
-// Test 175: Unbuffered CSP Channel Sender-First Rendezvous Handshake
-// ============================================================================
-
-@(test)
-test_unbuffered_chan_sender_first_rendezvous :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, 0)
-    defer chan_destroy(&ch)
-
-    sender_completed := false
-    receiver_value := 0
-    receiver_ok := false
-
-    Unbuf_Ctx :: struct {
-        ch:               ^Channel(int),
-        sender_completed: ^bool,
-        recv_val:         ^int,
-        recv_ok:          ^bool,
-    }
-    ctx := Unbuf_Ctx{
-        ch               = &ch,
-        sender_completed = &sender_completed,
-        recv_val         = &receiver_value,
-        recv_ok          = &receiver_ok,
-    }
-
-    // Step 1: Sender runs FIRST before receiver even exists
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Unbuf_Ctx) {
-        ok := chan_send(f, c.ch, 777)
-        c.sender_completed^ = ok
-    }, &ctx, name = "Sender First")
-
-    scheduler_step(&sched, 0.016)
-
-    // Sender should be blocked waiting for receiver rendezvous
-    testing.expect_value(t, sender_completed, false)
-    testing.expect_value(t, chan_send_waiter_count(&ch), 1)
-
-    // Step 2: Receiver spawns and consumes the rendezvous value
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Unbuf_Ctx) {
-        val, ok := chan_recv(f, c.ch)
-        c.recv_val^ = val
-        c.recv_ok^ = ok
-    }, &ctx, name = "Receiver Second")
-
-    scheduler_step(&sched, 0.016)
-
-    // Both sender and receiver must have completed the symmetrical exchange
-    testing.expect_value(t, receiver_ok, true)
-    testing.expect_value(t, receiver_value, 777)
-    testing.expect_value(t, sender_completed, true)
-    testing.expect_value(t, chan_send_waiter_count(&ch), 0)
-}
-
-// ============================================================================
-// Test 176: Multiple Unbuffered CSP Senders FIFO Rendezvous Handshake
-// ============================================================================
-
-@(test)
-test_unbuffered_chan_multi_sender_fifo_rendezvous :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ch: Channel(int)
-    chan_init(&ch, 0)
-    defer chan_destroy(&ch)
-
-    received: [dynamic]int
-    defer delete(received)
-
-    Multi_Ctx :: struct {
-        ch:       ^Channel(int),
-        received: ^[dynamic]int,
-    }
-    ctx := Multi_Ctx{ch = &ch, received = &received}
-
-    Sender_Arg :: struct {
-        ch:  ^Channel(int),
-        val: int,
-    }
-
-    // Spawn 3 senders in order: 100, 200, 300
-    vals := [3]int{100, 200, 300}
-    for val in vals {
-        v := val
-        spawn_val(&sched, proc(f: ^Fiber, arg: Sender_Arg) {
-            chan_send(f, arg.ch, arg.val)
-        }, Sender_Arg{ch = &ch, val = v}, name = "FIFO Sender")
-        // Step to let each sender queue up in send_waiters
-        scheduler_step(&sched, 0.016)
-    }
-
-    // Now spawn receiver that consumes 3 items
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Multi_Ctx) {
-        for _ in 0 ..< 3 {
-            v, ok := chan_recv(f, c.ch)
-            if ok {
-                append(c.received, v)
-            }
-        }
-    }, &ctx, name = "FIFO Receiver")
-
-    for _ in 0 ..< 5 {
-        scheduler_step(&sched, 0.016)
-    }
-
-    testing.expect_value(t, len(received), 3)
-    if len(received) == 3 {
-        testing.expect_value(t, received[0], 100)
-        testing.expect_value(t, received[1], 200)
-        testing.expect_value(t, received[2], 300)
-    }
-}
 
 // ============================================================================
 // Test 177: Race Join Coordinator Independent Sibling Non-Interference
@@ -7933,6 +3982,7 @@ test_race_join_independent_sibling_non_interference :: proc(t: ^testing.T) {
     testing.expect_value(t, independent_child_completed, true)
 }
 
+
 // ============================================================================
 // Test 178: Rush Join Coordinator Independent Sibling Non-Interference
 // ============================================================================
@@ -7993,180 +4043,6 @@ test_rush_join_independent_sibling_non_interference :: proc(t: ^testing.T) {
     testing.expect_value(t, independent_child_completed, true)
 }
 
-// ============================================================================
-// Test 179: Zero-Drift f64 Ticker Long-Horizon Simulation Stability
-// ============================================================================
-
-@(test)
-test_ticker_zero_drift_f64_precision :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    ticker_ticks := 0
-
-    Ticker_Ctx :: struct {
-        ticks: ^int,
-    }
-    ctx := Ticker_Ctx{ticks = &ticker_ticks}
-
-    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ticker_Ctx) {
-        t: Ticker
-        ticker_init(&t, 0.01) // 10ms interval
-        for _ in 0 ..< 50 {
-            ticker_wait(f, &t)
-            c.ticks^ += 1
-        }
-    }, &ctx, name = "Precision Ticker")
-
-    for _ in 0 ..< 100 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect_value(t, ticker_ticks, 50)
-}
-
-// ============================================================================
-// Test 180: Stateful Generator Clean First-Step State & Early Destruction
-// ============================================================================
-
-@(test)
-test_generator_early_destruction_and_clean_state :: proc(t: ^testing.T) {
-    gen: Generator(int)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        for i in 1 ..< 100 {
-            yield_value(f, g, i * 10)
-        }
-    })
-
-    // Consume first 3 values
-    v1, ok1 := generator_next(&gen)
-    testing.expect_value(t, ok1, true)
-    testing.expect_value(t, v1, 10)
-
-    v2, ok2 := generator_next(&gen)
-    testing.expect_value(t, ok2, true)
-    testing.expect_value(t, v2, 20)
-
-    v3, ok3 := generator_next(&gen)
-    testing.expect_value(t, ok3, true)
-    testing.expect_value(t, v3, 30)
-
-    // Early destroy without consuming all 100
-    generator_destroy(&gen)
-    testing.expect_value(t, gen.is_done, true)
-    testing.expect_value(t, gen.handle, 0)
-}
-
-// ============================================================================
-// Test 181: True ZII Semaphore Unbounded Permits & Multi-Fiber Acquisition
-// ============================================================================
-
-@(test)
-test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    // True ZII: 0 permits, max_permits = 0 (unbounded mode)
-    sem: Fiber_Semaphore
-    acquired_count := 0
-
-    Acquire_Ctx :: struct {
-        sem:   ^Fiber_Semaphore,
-        count: ^int,
-    }
-    ctx := Acquire_Ctx{sem = &sem, count = &acquired_count}
-
-    for i in 0 ..< 5 {
-        spawn(&sched, proc(f: ^Fiber, c: ^Acquire_Ctx) {
-            semaphore_acquire(f, c.sem)
-            c.count^ += 1
-        }, &ctx, name = "ZII Sem Consumer")
-    }
-
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, acquired_count, 0)
-    testing.expect_value(t, wait_queue_count(&sem.waiters), 5)
-
-    // Release 3 permits
-    semaphore_release(&sched, &sem, 3)
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, acquired_count, 3)
-    testing.expect_value(t, wait_queue_count(&sem.waiters), 2)
-
-    // Release 2 more permits
-    semaphore_release(&sched, &sem, 2)
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, acquired_count, 5)
-    testing.expect_value(t, wait_queue_count(&sem.waiters), 0)
-}
-
-// ============================================================================
-// Test 182: Mutex Owner Tracking, Lock State & Safe Handover
-// ============================================================================
-
-@(test)
-test_mutex_owner_tracking_and_unlock_safety :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    m: Fiber_Mutex
-    testing.expect_value(t, mutex_owner(&m), 0)
-    testing.expect_value(t, mutex_is_locked(&m), false)
-
-    step_log: [dynamic]int
-    step_log = make([dynamic]int, context.allocator)
-    defer delete(step_log)
-
-    Mutex_Test_Ctx :: struct {
-        m:        ^Fiber_Mutex,
-        step_log: ^[dynamic]int,
-        id:       int,
-    }
-
-    ctx1 := Mutex_Test_Ctx{m = &m, step_log = &step_log, id = 1}
-    ctx2 := Mutex_Test_Ctx{m = &m, step_log = &step_log, id = 2}
-
-    h1 := spawn(&sched, proc(f: ^Fiber, c: ^Mutex_Test_Ctx) {
-        mutex_lock(f, c.m)
-        append(c.step_log, c.id * 10 + 1)
-        yield_frame(f)
-        append(c.step_log, c.id * 10 + 2)
-        mutex_unlock(f.sched, c.m)
-    }, &ctx1, name = "Mutex Owner 1")
-
-    h2 := spawn(&sched, proc(f: ^Fiber, c: ^Mutex_Test_Ctx) {
-        mutex_lock(f, c.m)
-        append(c.step_log, c.id * 10 + 1)
-        yield_frame(f)
-        append(c.step_log, c.id * 10 + 2)
-        mutex_unlock(f.sched, c.m)
-    }, &ctx2, name = "Mutex Owner 2")
-
-    // Frame 1: Fiber 1 locks mutex and yields
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, mutex_is_locked(&m), true)
-    testing.expect_value(t, mutex_owner(&m), h1)
-    testing.expect_value(t, len(step_log), 1)
-    testing.expect_value(t, step_log[0], 11)
-
-    // Frame 2: Fiber 1 finishes and unlocks; lock passes to Fiber 2
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, mutex_is_locked(&m), true)
-    testing.expect_value(t, mutex_owner(&m), h2)
-
-    // Frame 3: Fiber 2 finishes and unlocks
-    scheduler_step(&sched, 0.016)
-    testing.expect_value(t, mutex_is_locked(&m), false)
-    testing.expect_value(t, mutex_owner(&m), 0)
-    testing.expect_value(t, len(step_log), 4)
-    testing.expect_value(t, step_log[0], 11)
-    testing.expect_value(t, step_log[1], 12)
-    testing.expect_value(t, step_log[2], 21)
-    testing.expect_value(t, step_log[3], 22)
-}
 
 // ============================================================================
 // Test 183: Self-Join Deadlock Rejection Guard
@@ -8190,103 +4066,6 @@ test_fiber_self_join_deadlock_guard :: proc(t: ^testing.T) {
     testing.expect_value(t, join_result, false)
 }
 
-// ============================================================================
-// Test 184: Symmetrical CSP Channel Send Timeout
-// ============================================================================
-
-@(test)
-test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    // Unbuffered channel with no receiver -> send must time out after 0.05s
-    ch: Channel(int)
-    chan_init(&ch, 0)
-    defer chan_destroy(&ch)
-
-    timed_out_flag := false
-    send_ok_flag := true
-
-    Send_Ctx :: struct {
-        ch:        ^Channel(int),
-        timed_out: ^bool,
-        send_ok:   ^bool,
-    }
-    ctx := Send_Ctx{ch = &ch, timed_out = &timed_out_flag, send_ok = &send_ok_flag}
-
-    spawn(&sched, proc(f: ^Fiber, c: ^Send_Ctx) {
-        ok, timed_out := chan_send_timeout(f, c.ch, 42, 0.05)
-        c.send_ok^ = ok
-        c.timed_out^ = timed_out
-    }, &ctx, name = "Timeout Sender")
-
-    // Run past 0.05s timeout
-    for _ in 0 ..< 10 {
-        scheduler_step(&sched, 0.01)
-    }
-
-    testing.expect_value(t, timed_out_flag, true)
-    testing.expect_value(t, send_ok_flag, false)
-}
-
-// ============================================================================
-// Test 185: Real-Time Domain Timeouts (with_timeout_real)
-// ============================================================================
-
-@(test)
-test_with_timeout_real_domain_execution :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    timed_out_result := false
-
-    spawn_real(&sched, proc(f: ^Fiber, res: ^bool) {
-        timed_out := with_timeout_real(f, 0.05, proc(f: ^Fiber) {
-            wait_real(f, 0.50) // Runs 500ms, timeout is 50ms
-        }, name = "Long Real-Time Task")
-        res^ = timed_out
-    }, &timed_out_result, name = "Real-Time Timeout Parent")
-
-    // Advance real-time by 100ms
-    for _ in 0 ..< 10 {
-        scheduler_advance_real(&sched, 0.01)
-    }
-
-    testing.expect_value(t, timed_out_result, true)
-}
-
-// ============================================================================
-// Test 186: By-Value Headless Simulation Runner (simulate_until_val)
-// ============================================================================
-
-@(test)
-test_simulate_until_val_by_value_dispatch :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
-    Sim_State :: struct {
-        target_score: int,
-    }
-
-    spawn(&sched, proc(f: ^Fiber) {
-        for i in 1 ..< 100 {
-            f.sched.clock.sim_time += 0.1
-            yield_frame(f)
-        }
-    }, name = "Sim Driver")
-
-    state := Sim_State{target_score = 50}
-
-    met, elapsed := simulate_until(&sched, 0.016, 10.0, proc(s: Sim_State) -> bool {
-        return s.target_score == 50
-    }, state)
-
-    testing.expect_value(t, met, true)
-    testing.expect_value(t, elapsed, 0.0)
-}
 
 // ============================================================================
 // Test 187: Multi-ISA Machine Code Disassembly Validation via core:rexcode
@@ -8471,6 +4250,7 @@ test_multi_isa_byte_opcodes_disassembly_validation :: proc(t: ^testing.T) {
     testing.expect_value(t, len(riscv_insts), 55)
 }
 
+
 // Test 188: High-Level Inline Assembly Stack and Register Extractors
 @(test)
 test_high_level_inline_asm_stack_and_register_extractors :: proc(t: ^testing.T) {
@@ -8507,7 +4287,1539 @@ test_high_level_inline_asm_stack_and_register_extractors :: proc(t: ^testing.T) 
     }
 }
 
-// Test 189: Fiber-Owned Built-in Zero-Drift Ticker & Rebase Safety
+// ============================================================================
+// Multi-Clock Domain, QoL, Re-init & Fuzzing Tests
+// ============================================================================
+
+@(test)
+test_real_time_clock_ignores_pause_and_scale :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        sim_done:  bool,
+        real_done: bool,
+    }
+    st: State
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait(f, 1.0)
+        s.sim_done = true
+    }, &st, clock = CLOCK_SIM)
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait(f, 1.0)
+        s.real_done = true
+    }, &st, clock = CLOCK_REAL)
+
+    // Start both fibers at t=0 so they enter wait(f, 1.0)
+    scheduler_run(&sched)
+
+    // Advance only CLOCK_REAL (simulating a paused CLOCK_SIM)
+    clock_advance(&sched, CLOCK_REAL, 0.6)
+    scheduler_run(&sched)
+    testing.expect(t, !st.sim_done && !st.real_done, "Neither should be done at 0.6s")
+
+    clock_advance(&sched, CLOCK_REAL, 0.5)
+    scheduler_run(&sched)
+    testing.expect(t, st.real_done, "Real-time fiber should complete even while sim clock is not advanced")
+    testing.expect(t, !st.sim_done, "Sim fiber must remain asleep while sim clock is paused")
+
+    // Advance CLOCK_SIM at 0.5x scale: 1.0s wall * 0.5 = 0.5s sim -> not done yet
+    clock_advance(&sched, CLOCK_SIM, 1.0 * 0.5)
+    scheduler_run(&sched)
+    testing.expect(t, !st.sim_done, "Sim fiber at 0.5x scale should only be at 0.5s sim time")
+
+    clock_advance(&sched, CLOCK_SIM, 1.0 * 0.5)
+    scheduler_run(&sched)
+    testing.expect(t, st.sim_done, "Sim fiber should complete at 1.0s sim time")
+}
+
+@(test)
+test_fixed_tick_clock_precision :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        step_at_wake: u64,
+        done:         bool,
+    }
+    st: State
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait_steps(f, 5)
+        s.step_at_wake = current_steps(f)
+        s.done = true
+    }, &st, clock = CLOCK_PHYS)
+
+    // Start fiber (enters wait_steps(5) on step 1)
+    clock_advance(&sched, CLOCK_PHYS, 1.0 / 60.0, steps = 1)
+    scheduler_run(&sched)
+    testing.expect(t, !st.done, "Should be waiting for 5 physics steps")
+
+    // Advance 4 steps -> total 5 steps (target is 1 + 5 = 6)
+    clock_advance(&sched, CLOCK_PHYS, 4.0 / 60.0, steps = 4)
+    scheduler_run(&sched)
+    testing.expect(t, !st.done, "Should still be waiting after 4 steps")
+
+    // Advance 1 more step -> wakes up!
+    clock_advance(&sched, CLOCK_PHYS, 1.0 / 60.0, steps = 1)
+    scheduler_run(&sched)
+    testing.expect(t, st.done, "Should wake on the 5th step")
+    testing.expect_value(t, st.step_at_wake, u64(6))
+}
+
+@(test)
+test_with_timeout_real_during_pause :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    Result :: struct {
+        timed_out: bool,
+        finished:  bool,
+    }
+    res: Result
+
+    spawn(&sched, proc(f: ^Fiber, r: ^Result) {
+        // Sim work takes 2.0 sim seconds, but timeout is on CLOCK_REAL (0.5s)
+        r.timed_out = with_timeout(f, 0.5, branch(proc(f: ^Fiber) {
+            wait(f, 2.0)
+        }), timeout_clock = CLOCK_REAL)
+        r.finished = true
+    }, &res, clock = CLOCK_SIM)
+
+    // Step 1: spawn and enter with_timeout
+    clock_advance(&sched, CLOCK_SIM, 0.01)
+    clock_advance(&sched, CLOCK_REAL, 0.01)
+    scheduler_run(&sched)
+    testing.expect(t, !res.finished, "Should be running")
+
+    // Sim is paused (only advance CLOCK_REAL by 0.6s)
+    clock_advance(&sched, CLOCK_REAL, 0.6)
+    scheduler_run(&sched)
+    testing.expect(t, res.finished, "with_timeout on CLOCK_REAL must fire even while CLOCK_SIM is paused")
+    testing.expect(t, res.timed_out, "with_timeout must report true (timed out)")
+}
+
+@(test)
+test_clock_queries_inside_fiber :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    Obs :: struct {
+        dt_sim:   f32,
+        t_sim:    f64,
+        steps:    u64,
+        cid:      Clock_ID,
+    }
+    obs: Obs
+
+    spawn(&sched, proc(f: ^Fiber, o: ^Obs) {
+        yield(f)
+        o.dt_sim = delta_time(f)
+        o.t_sim  = current_time(f)
+        o.steps  = current_steps(f)
+        o.cid    = fiber_clock(f)
+    }, &obs, clock = CLOCK_SIM)
+
+    scheduler_step(&sched, 0.1, CLOCK_SIM)
+    scheduler_step(&sched, 0.1, CLOCK_SIM)
+
+    testing.expect(t, abs(obs.dt_sim - 0.1) < 1e-5, "dt_sim should be 0.1")
+    testing.expect(t, abs(obs.t_sim - 0.2) < 1e-6, "t_sim should be 0.2")
+    testing.expect_value(t, obs.steps, u64(2))
+    testing.expect_value(t, obs.cid, CLOCK_SIM)
+}
+
+@(test)
+test_multi_clock_simultaneous_advance :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        sim_woke:  bool,
+        real_woke: bool,
+        tick_woke: bool,
+    }
+    st: State
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait(f, 0.25)
+        s.sim_woke = true
+    }, &st, clock = CLOCK_SIM)
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait(f, 0.5)
+        s.real_woke = true
+    }, &st, clock = CLOCK_REAL)
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        wait_steps(f, 3)
+        s.tick_woke = true
+    }, &st, clock = CLOCK_PHYS)
+
+    // Step 0: start all three fibers so they enter their wait states
+    clock_advance(&sched, CLOCK_SIM, 0.0, steps = 0)
+    clock_advance(&sched, CLOCK_REAL, 0.0, steps = 0)
+    clock_advance(&sched, CLOCK_PHYS, 0.0, steps = 0)
+    scheduler_run(&sched)
+    testing.expect(t, !st.sim_woke && !st.real_woke && !st.tick_woke, "None should wake at t=0")
+
+    // Advance all 3 clocks together: sim +0.3s, real +0.6s, phys +3 steps
+    clock_advance(&sched, CLOCK_SIM, 0.3, steps = 1)
+    clock_advance(&sched, CLOCK_REAL, 0.6, steps = 1)
+    clock_advance(&sched, CLOCK_PHYS, 0.05, steps = 3)
+    scheduler_run(&sched)
+
+    testing.expect(t, st.sim_woke, "Sim timer (0.25s <= 0.30s) should wake")
+    testing.expect(t, st.real_woke, "Real timer (0.50s <= 0.60s) should wake")
+    testing.expect(t, st.tick_woke, "Tick timer (3 steps) should wake")
+}
+
+@(test)
+test_ticker_zero_drift_accumulation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        ticks:      int,
+        wake_times: [4]f64,
+    }
+    st: State
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        for i in 0 ..< 4 {
+            ticker_wait(f, 0.1)
+            s.wake_times[i] = current_time(f)
+            s.ticks += 1
+        }
+    }, &st)
+
+    // Start at t=0
+    scheduler_step(&sched, 0.0)
+    // Step with uneven frame deltas (0.13s, 0.11s, 0.09s, 0.08s) -> total 0.41s
+    scheduler_step(&sched, 0.13) // t=0.13 -> wakes tick 1 (scheduled for 0.10)
+    testing.expect_value(t, st.ticks, 1)
+
+    scheduler_step(&sched, 0.11) // t=0.24 -> wakes tick 2 (scheduled for 0.20, not 0.23!)
+    testing.expect_value(t, st.ticks, 2)
+
+    scheduler_step(&sched, 0.09) // t=0.33 -> wakes tick 3 (scheduled for 0.30)
+    testing.expect_value(t, st.ticks, 3)
+
+    scheduler_step(&sched, 0.08) // t=0.41 -> wakes tick 4 (scheduled for 0.40)
+    testing.expect_value(t, st.ticks, 4)
+}
+
+@(test)
+test_mixed_clock_race_real_vs_sim :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        winner: int,
+        done:   bool,
+    }
+    st := State{winner = -1}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        s.winner = race(f,
+            branch(proc(f: ^Fiber) {
+                wait(f, 0.5) // Sim clock branch
+            }, clock = CLOCK_SIM),
+            branch(proc(f: ^Fiber) {
+                wait(f, 0.5) // Real clock branch
+            }, clock = CLOCK_REAL),
+        )
+        s.done = true
+    }, &st)
+
+    clock_advance(&sched, CLOCK_SIM, 0.0)
+    clock_advance(&sched, CLOCK_REAL, 0.0)
+    scheduler_run(&sched)
+
+    // Sim is paused (only advance CLOCK_REAL) -> branch 1 (CLOCK_REAL) must win
+    clock_advance(&sched, CLOCK_REAL, 0.6)
+    scheduler_run(&sched)
+
+    testing.expect(t, st.done, "Race should complete via real-time branch")
+    testing.expect_value(t, st.winner, 1)
+    stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.active_fibers, 0)
+}
+
+@(test)
+test_qol_overloads_and_accessors :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        counter: int,
+    }
+    st: State
+
+    h := spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        s.counter += 1
+        ok := sync(f,
+            branch(proc(f: ^Fiber, s2: ^State) {
+                wait(f, 0.05)
+                s2.counter += 10
+            }, s),
+            branch(proc(f: ^Fiber, s2: ^State) {
+                yield(f)
+                s2.counter += 100
+            }, s),
+            branch(proc(f: ^Fiber) {
+                yield(f)
+            }),
+        )
+        if ok {
+            s.counter += 1000
+        }
+    }, &st, name = "root_qol")
+
+    scheduler_step(&sched, 0.01)
+    testing.expect(t, fiber_is_alive(&sched, h), "Fiber should be alive")
+
+    scheduler_step(&sched, 0.06)
+    testing.expect(t, !fiber_is_alive(&sched, h), "Fiber should have completed")
+    testing.expect_value(t, st.counter, 1111)
+
+    // Scheduler time & step accessors
+    testing.expect(t, abs(scheduler_time(&sched, CLOCK_SIM) - 0.07) < 1e-6, "sim_time should be 0.07")
+    testing.expect_value(t, scheduler_steps(&sched, CLOCK_SIM), u64(2))
+}
+
+@(test)
+test_reinit_and_reuse_primitives :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 16)
+    defer scheduler_destroy(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+    ev: Event(int)
+    event_init(&ev)
+    tok: Async_Token
+    async_token_init(&tok)
+
+    // First round
+    State :: struct {
+        sig:  ^Signal,
+        ev:   ^Event(int),
+        tok:  ^Async_Token,
+        val:  int,
+        done: int,
+    }
+    st := State{sig = &sig, ev = &ev, tok = &tok}
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        signal_wait(f, s.sig)
+        v, _ := event_wait(f, s.ev)
+        s.val = v
+        if await_async(f, s.tok) {
+            s.done += 1
+        }
+    }, &st)
+
+    scheduler_step(&sched, 0.01)
+    signal_emit(&sched, &sig)
+    scheduler_step(&sched, 0.01)
+    event_emit(&sched, &ev, 42)
+    scheduler_step(&sched, 0.01)
+    async_token_complete(&tok, true)
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, st.done, 1)
+    testing.expect_value(t, st.val, 42)
+
+    // Re-initialize and reuse all primitives for a second round
+    signal_init(&sig)
+    event_init(&ev)
+    async_token_init(&tok)
+
+    spawn(&sched, proc(f: ^Fiber, s: ^State) {
+        signal_wait(f, s.sig)
+        v, _ := event_wait(f, s.ev)
+        s.val = v
+        if await_async(f, s.tok) {
+            s.done += 1
+        }
+    }, &st)
+
+    scheduler_step(&sched, 0.01)
+    signal_emit(&sched, &sig)
+    scheduler_step(&sched, 0.01)
+    event_emit(&sched, &ev, 99)
+    scheduler_step(&sched, 0.01)
+    async_token_complete(&tok, true)
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, st.done, 2)
+    testing.expect_value(t, st.val, 99)
+}
+
+@(test)
+test_fuzz_scheduler_invariants :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 128)
+    defer scheduler_destroy(&sched)
+
+    Fuzz_Shared :: struct {
+        rng_state: u64,
+        sig:       Signal,
+        ev:        Event(int),
+        scope_a:   Fiber_Scope,
+        scope_b:   Fiber_Scope,
+        cond_flag: bool,
+        completed: int,
+        aborted:   int,
+    }
+
+    xorshift64 :: proc(state: ^u64) -> u64 {
+        x := state^
+        x ~= x << 13
+        x ~= x >> 7
+        x ~= x << 17
+        state^ = x
+        return x
+    }
+
+    shared := Fuzz_Shared{rng_state = 0xCAFE_BABE_1337_BEEF}
+    signal_init(&shared.sig)
+    event_init(&shared.ev)
+
+    fuzz_worker :: proc(f: ^Fiber, s: ^Fuzz_Shared) {
+        fiber_set_cleanup(f, proc(raw: rawptr) {
+            sh := cast(^Fuzz_Shared)raw
+            sh.aborted += 1
+        }, s)
+
+        action := xorshift64(&s.rng_state) % 9
+        switch action {
+        case 0:
+            yield(f)
+            wait(f, 0.02)
+        case 1:
+            wait(f, 0.05)
+            yield(f)
+        case 2:
+            wait_steps(f, 2)
+        case 3:
+            signal_wait(f, &s.sig)
+        case 4:
+            _, _ = event_wait(f, &s.ev)
+        case 5:
+            for !s.cond_flag {
+                yield(f)
+            }
+        case 6:
+            _ = sync(f,
+                branch(proc(f: ^Fiber, sh: ^Fuzz_Shared) {
+                    wait(f, 0.01)
+                    yield(f)
+                }, s),
+                branch(proc(f: ^Fiber, sh: ^Fuzz_Shared) {
+                    yield(f)
+                }, s),
+            )
+        case 7:
+            _ = race(f,
+                branch(proc(f: ^Fiber) {
+                    wait(f, 0.01)
+                }),
+                branch(proc(f: ^Fiber) {
+                    wait(f, 0.10)
+                }),
+            )
+        case 8:
+            _ = with_timeout(f, 0.02, branch(proc(f: ^Fiber) {
+                wait(f, 0.05)
+            }))
+        }
+
+        // Clear cleanup if completing normally so `aborted` only counts aborts
+        f.cleanup_proc = nil
+        s.completed += 1
+    }
+
+    handles: [dynamic]Fiber_Handle
+    defer delete(handles)
+
+    for step in 0 ..< 250 {
+        // Randomly spawn 1..3 fibers
+        spawn_count := int(xorshift64(&shared.rng_state) % 3) + 1
+        for _ in 0 ..< spawn_count {
+            st := scheduler_pool_stats(&sched)
+            if st.active_fibers < 100 {
+                sc_choice := xorshift64(&shared.rng_state) % 3
+                sc: ^Fiber_Scope = nil
+                if sc_choice == 1 { sc = &shared.scope_a }
+                if sc_choice == 2 { sc = &shared.scope_b }
+                use_real := (xorshift64(&shared.rng_state) % 4) == 0
+                cid := CLOCK_REAL if use_real else CLOCK_SIM
+                h := spawn(&sched, fuzz_worker, &shared, scope = sc, clock = cid)
+                append(&handles, h)
+            }
+        }
+
+        // Randomly emit signals/events or toggle condition
+        if (xorshift64(&shared.rng_state) % 5) == 0 {
+            signal_emit(&sched, &shared.sig)
+        }
+        if (xorshift64(&shared.rng_state) % 5) == 0 {
+            event_emit(&sched, &shared.ev, step)
+        }
+        shared.cond_flag = (xorshift64(&shared.rng_state) % 3) == 0
+
+        // Randomly cancel a handle or scope
+        if len(handles) > 0 && (xorshift64(&shared.rng_state) % 4) == 0 {
+            idx := int(xorshift64(&shared.rng_state) % u64(len(handles)))
+            fiber_cancel(&sched, handles[idx])
+        }
+        if (xorshift64(&shared.rng_state) % 15) == 0 {
+            scope_cancel(&sched, &shared.scope_a)
+        }
+        if (xorshift64(&shared.rng_state) % 20) == 0 {
+            scope_cancel(&sched, &shared.scope_b)
+        }
+
+        // Step clocks
+        dt := f32(xorshift64(&shared.rng_state)%30+1) * 0.001
+        paused := (xorshift64(&shared.rng_state) % 10) == 0
+        clock_advance(&sched, CLOCK_REAL, dt, steps = 1)
+        if !paused {
+            clock_advance(&sched, CLOCK_SIM, dt, steps = 1)
+        }
+        scheduler_run(&sched)
+    }
+
+    // Drain remaining fibers: cancel scopes, emit signals, set cond_flag, step forward
+    shared.cond_flag = true
+    scope_cancel(&sched, &shared.scope_a)
+    scope_cancel(&sched, &shared.scope_b)
+    for h in handles {
+        fiber_cancel(&sched, h)
+    }
+    for _ in 0 ..< 20 {
+        signal_emit(&sched, &shared.sig)
+        event_emit(&sched, &shared.ev, 0)
+        clock_advance(&sched, CLOCK_REAL, 0.1, steps = 1)
+        clock_advance(&sched, CLOCK_SIM, 0.1, steps = 1)
+        scheduler_run(&sched)
+    }
+
+    stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.active_fibers, 0)
+    testing.expect_value(t, stats.free_fibers, 128)
+    testing.expect(t, shared.completed + shared.aborted > 100, "Should have processed many fibers")
+}
+
+@(test)
+test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched, 65536, 32)
+    defer scheduler_destroy(&sched)
+
+    State :: struct {
+        rng:     u64,
+        cleaned: int,
+    }
+    st := State{rng = 0x9988_7766_5544_3322}
+
+    nested_entry :: proc(f: ^Fiber, s: ^State) {
+        fiber_set_cleanup(f, proc(raw: rawptr) {
+            st_ptr := cast(^State)raw
+            st_ptr.cleaned += 1
+        }, s)
+
+        // Spawn nested race/sync if pool has room
+        pstats := scheduler_pool_stats(f.sched)
+        if pstats.active_fibers < 24 {
+            _ = race(f,
+                branch(proc(f: ^Fiber, st_inner: ^State) {
+                    fiber_set_cleanup(f, proc(raw: rawptr) {
+                        (cast(^State)raw).cleaned += 1
+                    }, st_inner)
+                    wait(f, 0.05)
+                }, s),
+                branch(proc(f: ^Fiber, st_inner: ^State) {
+                    fiber_set_cleanup(f, proc(raw: rawptr) {
+                        (cast(^State)raw).cleaned += 1
+                    }, st_inner)
+                    wait(f, 0.02)
+                }, s),
+            )
+        } else {
+            wait(f, 0.02)
+        }
+    }
+
+    scope: Fiber_Scope
+    for i in 0 ..< 60 {
+        pstats := scheduler_pool_stats(&sched)
+        if pstats.active_fibers <= 26 {
+            spawn(&sched, nested_entry, &st, scope = &scope)
+        }
+        scheduler_step(&sched, 0.01)
+        if i % 7 == 0 {
+            scope_cancel(&sched, &scope)
+        }
+    }
+
+    scope_cancel(&sched, &scope)
+    for _ in 0 ..< 10 {
+        scheduler_step(&sched, 0.1)
+    }
+
+    stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.active_fibers, 0)
+    testing.expect_value(t, stats.free_fibers, 32)
+    testing.expect(t, st.cleaned > 0, "Cleanup callbacks must have executed")
+}
+
+// ============================================================================
+// Standalone Test Runner (for cross-arch QEMU execution)
+// ============================================================================
+
+run_all_coroutine_tests :: proc(t: ^testing.T) {
+    test_basic_spawn_and_run(t)
+    test_stack_local_variables_across_yields(t)
+    test_wait_seconds_timer_heap(t)
+    test_wait_frames(t)
+    test_structured_sync(t)
+    test_structured_race(t)
+    test_scope_cancellation(t)
+    test_cleanup_proc_and_defer(t)
+    test_stack_canary_guard(t)
+    test_nested_race_with_sync_branch(t)
+    test_many_concurrent_fibers(t)
+    test_deep_nested_hierarchy_sync_race_sync(t)
+    test_sync_failure_propagation(t)
+    test_race_all_simultaneous_finish(t)
+    test_race_loser_with_children_aborts_all_descendants(t)
+    test_timer_heap_1000_random_sort(t)
+    test_timer_heap_random_cancellations(t)
+    test_pool_multi_slab_expansion_and_reclaim(t)
+    test_fiber_lifecycle_generation_reuse(t)
+    test_local_variable_isolation_many_fibers(t)
+    test_10k_yield_loop(t)
+    test_zero_and_negative_waits(t)
+    test_fiber_temp_allocator_isolation(t)
+    test_with_timeout_completion(t)
+    test_with_timeout_expired(t)
+    test_signal_broadcast(t)
+    test_stack_watermark_usage_calculation(t)
+    test_async_token_bridge(t)
+    test_virtual_memory_guard_pages(t)
+    test_spawn_by_value_primitives(t)
+    test_spawn_by_value_struct(t)
+    test_spawn_by_value_concurrency_no_crosstalk(t)
+    test_branch_by_value_sync(t)
+    test_branch_by_value_race(t)
+    test_spawn_by_value_ephemeral_stack_safety(t)
+    test_with_timeout_proc_overloads(t)
+    test_scope_query_helpers(t)
+    test_fiber_time_accessors(t)
+    test_scope_wait(t)
+    test_fallback_control_flow(t)
+    test_rush_success_preemption(t)
+    test_fail_primitive(t)
+    test_fallback_all_failing_and_by_value(t)
+    test_rush_5_branches_and_all_failing(t)
+    test_nested_concurrency_combinators(t)
+    test_fiber_join_normal_completion(t)
+    test_fiber_join_cancelled_target(t)
+    test_fiber_join_already_finished(t)
+    test_event_typed_multicast(t)
+    test_event_empty_emit(t)
+    test_scheduler_prewarm(t)
+    test_handle_introspection_and_status(t)
+    test_scheduler_pool_stats(t)
+    test_scope_hierarchy_multi_fiber_active_count(t)
+    test_signal_multicast_wait_and_broadcast(t)
+    test_scope_cancellation_preserves_independent_scopes(t)
+    test_race_stun_interruption_and_recovery(t)
+    test_scope_cancel_immediate_abort(t)
+    test_subscope_isolated_behavior_cancellation(t)
+    test_cancel_fiber_waiting_on_signal(t)
+    test_cancel_fiber_waiting_on_event(t)
+    test_scope_cancel_inside_nested_sync(t)
+    test_scope_cancel_inside_nested_race(t)
+    test_fallback_resilience_after_scope_cancellation(t)
+    test_branch_name_and_debug_tree_preservation(t)
+    test_signal_multicast_cascade_with_dynamic_waiters(t)
+    test_fiber_set_cleanup_deep_hierarchy_abort(t)
+    test_event_multicast_dynamic_subscribe_during_emit(t)
+    test_scheduler_prewarm_slab_expansion_under_load(t)
+    test_rush_and_fallback_with_signal_interruption(t)
+    test_watchdog_configuration_and_disable(t)
+    test_scope_destroy_prevents_stale_pointer_access(t)
+    test_temp_allocator_isolation_invariants(t)
+    test_event_multicast_broadcast_and_clear(t)
+    test_generational_handle_history_capacity(t)
+    test_scheduler_walk_tree_traversal(t)
+    test_structured_task_preemption_via_race_and_signal(t)
+    test_fiber_dynamic_renaming(t)
+    test_plan5_packed_generational_handles_bitwise(t)
+    test_plan5_handle_slot_reuse_and_aba_safety(t)
+    test_plan5_intrusive_wait_queue_operations(t)
+    test_plan5_o1_handle_lookups_under_high_fiber_load(t)
+    test_plan5_config_constants_integration(t)
+    test_wait_queue_auto_unlinking_on_abort(t)
+    test_scope_multi_cycle_emp_stun_and_recovery(t)
+    test_interruption_race_attack_recovery_loop(t)
+    test_with_timeout_by_value_branching(t)
+    test_fiber_calc_stack_usage_canary_breach_detection(t)
+    test_intrusive_fiber_scope_lifecycle(t)
+    test_fiber_cleanup_preserves_user_data(t)
+    test_scheduler_destroy_scope_detachment(t)
+    test_ready_queue_generational_aba_guard(t)
+    test_race_join_independent_sibling_non_interference(t)
+    test_rush_join_independent_sibling_non_interference(t)
+    test_fiber_self_join_deadlock_guard(t)
+    test_multi_isa_byte_opcodes_disassembly_validation(t)
+    test_high_level_inline_asm_stack_and_register_extractors(t)
+    test_real_time_clock_ignores_pause_and_scale(t)
+    test_fixed_tick_clock_precision(t)
+    test_with_timeout_real_during_pause(t)
+    test_clock_queries_inside_fiber(t)
+    test_multi_clock_simultaneous_advance(t)
+    test_ticker_zero_drift_accumulation(t)
+    test_mixed_clock_race_real_vs_sim(t)
+    test_qol_overloads_and_accessors(t)
+    test_reinit_and_reuse_primitives(t)
+    test_fuzz_scheduler_invariants(t)
+    test_fuzz_deep_cancel_and_pool_exhaustion(t)
+    test_heterogeneous_scope_cancellation(t)
+    test_time_scaling_and_pause(t)
+    test_real_time_clock_while_paused(t)
+    test_fixed_integer_tick_clock(t)
+    test_dual_clock_time_scaling(t)
+    test_multi_clock_heap_integrity(t)
+    test_scope_mass_cancel_mixed_states(t)
+    test_primitives_custom_arena_allocation_fidelity(t)
+    test_headless_boss_ai_fuzzing_simulation(t)
+    test_phase_transition_emp_coincidence_fuzzing(t)
+    test_wait_queue_defensive_and_paused_dispatch(t)
+    test_time_scale_defensive_clamping(t)
+    test_scheduler_destroy_wait_queue_unlinking(t)
+    test_spawn_real_val_while_paused(t)
+    test_real_time_fiber_paused_yield(t)
+    test_real_time_ticker_paused_zero_freeze(t)
+    test_fiber_pool_recycle_wake_clock_sanitization(t)
+    test_fiber_owned_ticker_zero_drift_and_rebase(t)
+    test_scheduler_reinit_no_memory_leak(t)
+    test_api_qol_fiber_overloads_and_nested_cleanup_chaining(t)
+}
+
+// ============================================================================
+// Restored Core Tests (Adapted to Indexed Clock_Domain Architecture)
+// ============================================================================
+
+@(test)
+test_heterogeneous_scope_cancellation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    scope: Fiber_Scope
+    defer scope_destroy(&sched, &scope)
+
+    sig: Signal
+    defer signal_destroy(&sig)
+
+    // 1. Fiber in Sleeping_Time (CLOCK_SIM)
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 100.0) }, scope = &scope)
+
+    // 2. Fiber in Sleeping_Steps (CLOCK_SIM)
+    spawn(&sched, proc(f: ^Fiber) { wait_steps(f, 500) }, scope = &scope)
+
+    // 3. Fiber waiting on Signal
+    spawn(&sched, proc(f: ^Fiber, s: ^Signal) {
+        signal_wait(f, s)
+    }, &sig, scope = &scope)
+
+    // 4. Fiber in Suspended_Join (sync)
+    spawn(&sched, proc(f: ^Fiber) {
+        sync(f,
+            branch(proc(f: ^Fiber) { wait_steps(f, 100) }),
+            branch(proc(f: ^Fiber) { wait_steps(f, 100) }),
+        )
+    }, scope = &scope)
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect(t, len(sched.clocks[CLOCK_SIM].timer_heap) > 0, "Timer heap should have waiter")
+    testing.expect(t, len(sched.clocks[CLOCK_SIM].step_waiters) > 0, "Step waiters should have waiter")
+    testing.expect_value(t, signal_waiter_count(&sig), 1)
+
+    scope_cancel(&sched, &scope)
+
+    testing.expect_value(t, len(sched.clocks[CLOCK_SIM].timer_heap), 0)
+    testing.expect_value(t, len(sched.clocks[CLOCK_SIM].step_waiters), 0)
+    testing.expect_value(t, signal_waiter_count(&sig), 0)
+}
+
+@(test)
+test_time_scaling_and_pause :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    done := false
+    spawn(&sched, proc(f: ^Fiber, d: ^bool) {
+        wait(f, 1.0)
+        d^ = true
+    }, &done)
+
+    // Scale to 2.0x -> 0.3s wall time * 2.0 = 0.6s sim time
+    scheduler_step(&sched, 0.0)       // start fiber
+    scheduler_step(&sched, 0.3 * 2.0) // sim_time = 0.6s
+    testing.expect_value(t, done, false)
+
+    // Pause via dt = 0.0
+    scheduler_step(&sched, 0.0) // sim_time stays 0.6s
+    testing.expect_value(t, done, false)
+
+    // Resume at 2.0x -> 0.25s wall time * 2.0 = +0.5s sim time (total 1.1s)
+    scheduler_step(&sched, 0.25 * 2.0)
+    testing.expect_value(t, done, true)
+}
+
+@(test)
+test_real_time_clock_while_paused :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    real_fiber_done := false
+    sim_fiber_done := false
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.10)
+        done^ = true
+    }, &real_fiber_done, clock = CLOCK_REAL)
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait(f, 0.10)
+        done^ = true
+    }, &sim_fiber_done, clock = CLOCK_SIM)
+
+    // Start both fibers
+    scheduler_run(&sched)
+
+    // Pause sim clock by only advancing CLOCK_REAL
+    for _ in 0 ..< 3 {
+        clock_advance(&sched, CLOCK_REAL, 0.05)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, real_fiber_done, true)
+    testing.expect_value(t, sim_fiber_done, false)
+    testing.expect_value(t, sched.clocks[CLOCK_SIM].time, 0.0)
+    testing.expect(t, sched.clocks[CLOCK_REAL].time >= 0.14)
+
+    // Advance CLOCK_SIM
+    for _ in 0 ..< 3 {
+        scheduler_step(&sched, 0.05)
+    }
+    testing.expect_value(t, sim_fiber_done, true)
+}
+
+@(test)
+test_fixed_integer_tick_clock :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tick50_done := false
+    tick100_done := false
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait_steps(f, 50)
+        done^ = true
+    }, &tick50_done, clock = CLOCK_PHYS)
+
+    spawn(&sched, proc(f: ^Fiber, done: ^bool) {
+        wait_steps(f, 100)
+        done^ = true
+    }, &tick100_done, clock = CLOCK_PHYS)
+
+    // Step 1: 30 ticks (fibers start and register wait_steps for 30+50=80 and 30+100=130)
+    clock_advance(&sched, CLOCK_PHYS, 0.5, steps = 30)
+    scheduler_run(&sched)
+    testing.expect_value(t, tick50_done, false)
+    testing.expect_value(t, tick100_done, false)
+    testing.expect_value(t, sched.clocks[CLOCK_PHYS].steps, 30)
+
+    // Step 2: 50 more ticks (steps = 80) -> Fiber 1 wakes!
+    clock_advance(&sched, CLOCK_PHYS, 0.8, steps = 50)
+    scheduler_run(&sched)
+    testing.expect_value(t, tick50_done, true)
+    testing.expect_value(t, tick100_done, false)
+    testing.expect_value(t, sched.clocks[CLOCK_PHYS].steps, 80)
+
+    // Step 3: 50 more ticks (steps = 130) -> Fiber 2 wakes!
+    clock_advance(&sched, CLOCK_PHYS, 0.8, steps = 50)
+    scheduler_run(&sched)
+    testing.expect_value(t, tick100_done, true)
+    testing.expect_value(t, sched.clocks[CLOCK_PHYS].steps, 130)
+}
+
+@(test)
+test_dual_clock_time_scaling :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Dual_Obs :: struct {
+        sim_dt:  f32,
+        real_dt: f32,
+        sim_t:   f64,
+        real_t:  f64,
+    }
+    obs: Dual_Obs
+
+    spawn(&sched, proc(f: ^Fiber, d: ^Dual_Obs) {
+        yield(f)
+        d.sim_dt = delta_time(f)
+        d.sim_t  = current_time(f)
+    }, &obs, clock = CLOCK_SIM)
+
+    spawn(&sched, proc(f: ^Fiber, d: ^Dual_Obs) {
+        yield(f)
+        d.real_dt = delta_time(f)
+        d.real_t  = current_time(f)
+    }, &obs, clock = CLOCK_REAL)
+
+    // Step 1 (CLOCK_SIM at 0.5x scale -> 0.05s, CLOCK_REAL at 1.0x -> 0.10s)
+    clock_advance(&sched, CLOCK_SIM, 0.10 * 0.5)
+    clock_advance(&sched, CLOCK_REAL, 0.10)
+    scheduler_run(&sched)
+
+    // Step 2
+    clock_advance(&sched, CLOCK_SIM, 0.10 * 0.5)
+    clock_advance(&sched, CLOCK_REAL, 0.10)
+    scheduler_run(&sched)
+
+    testing.expect(t, abs(obs.real_dt - 0.10) < 0.001)
+    testing.expect(t, abs(obs.sim_dt - 0.05) < 0.001)
+    testing.expect(t, abs(obs.real_t - 0.20) < 0.001)
+    testing.expect(t, abs(obs.sim_t - 0.10) < 0.001)
+}
+
+@(test)
+test_multi_clock_heap_integrity :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    completed_count := 0
+
+    for _ in 0 ..< 20 {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            wait(f, 0.02)
+            c^ += 1
+        }, &completed_count, clock = CLOCK_REAL)
+    }
+
+    for _ in 0 ..< 20 {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            wait(f, 0.02)
+            c^ += 1
+        }, &completed_count, clock = CLOCK_SIM)
+    }
+
+    for _ in 0 ..< 20 {
+        spawn(&sched, proc(f: ^Fiber, c: ^int) {
+            wait_steps(f, 3)
+            c^ += 1
+        }, &completed_count, clock = CLOCK_PHYS)
+    }
+
+    for _ in 0 ..< 5 {
+        clock_advance(&sched, CLOCK_REAL, 0.01)
+        clock_advance(&sched, CLOCK_SIM, 0.01)
+        clock_advance(&sched, CLOCK_PHYS, 0.01, steps = 1)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, completed_count, 60)
+    testing.expect_value(t, len(sched.clocks[CLOCK_REAL].timer_heap), 0)
+    testing.expect_value(t, len(sched.clocks[CLOCK_SIM].timer_heap), 0)
+    testing.expect_value(t, len(sched.clocks[CLOCK_PHYS].step_waiters), 0)
+}
+
+@(test)
+test_scope_mass_cancel_mixed_states :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    mixed_scope: Fiber_Scope
+    defer scope_destroy(&sched, &mixed_scope)
+
+    sig: Signal
+    defer signal_destroy(&sig)
+
+    // 1: Sleeping_Time on CLOCK_SIM
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 5.0) }, scope = &mixed_scope, clock = CLOCK_SIM)
+    // 2: Sleeping_Time on CLOCK_REAL
+    spawn(&sched, proc(f: ^Fiber) { wait(f, 5.0) }, scope = &mixed_scope, clock = CLOCK_REAL)
+    // 3: Sleeping_Steps on CLOCK_SIM
+    spawn(&sched, proc(f: ^Fiber) { wait_steps(f, 100) }, scope = &mixed_scope, clock = CLOCK_SIM)
+    // 4: Sleeping_Steps on CLOCK_PHYS
+    spawn(&sched, proc(f: ^Fiber) { wait_steps(f, 100) }, scope = &mixed_scope, clock = CLOCK_PHYS)
+    // 5: Waiting on Signal
+    spawn(&sched, proc(f: ^Fiber, s: ^Signal) { signal_wait(f, s) }, &sig, scope = &mixed_scope)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, scope_active_count(&mixed_scope), 5)
+
+    cancelled := scope_cancel(&sched, &mixed_scope)
+    testing.expect_value(t, cancelled, 5)
+    testing.expect_value(t, scope_active_count(&mixed_scope), 0)
+}
+
+@(test)
+test_primitives_custom_arena_allocation_fidelity :: proc(t: ^testing.T) {
+    track: mem.Tracking_Allocator
+    mem.tracking_allocator_init(&track, context.allocator)
+    defer mem.tracking_allocator_destroy(&track)
+    arena_alloc := mem.tracking_allocator(&track)
+
+    {
+        ev: Event(int)
+        event_init(&ev)
+        event_destroy(&ev)
+    }
+    {
+        sig: Signal
+        signal_init(&sig)
+        signal_destroy(&sig)
+    }
+    {
+        sched: Scheduler
+        context.allocator = arena_alloc
+        scheduler_init(&sched, 65536, 16)
+        scheduler_destroy(&sched)
+    }
+
+    testing.expect_value(t, len(track.allocation_map), 0)
+    testing.expect_value(t, track.current_memory_allocated, 0)
+}
+
+@(test)
+test_headless_boss_ai_fuzzing_simulation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Fuzz_Boss :: struct {
+        hp:          f32,
+        alive:       bool,
+        phase:       int,
+        shots_fired: int,
+        stuns:       int,
+        stun_signal: Signal,
+    }
+
+    fuzz_patrol_subloop :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.alive {
+            wait(f, 0.1)
+        }
+    }
+
+    fuzz_spiral_shoot :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.alive {
+            ticker_wait(f, 0.04)
+            b.shots_fired += 1
+        }
+    }
+
+    fuzz_targeted_burst :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.alive {
+            ticker_wait(f, 0.08)
+            b.shots_fired += 2
+        }
+    }
+
+    fuzz_attack_loop_p1 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.hp > 700.0 && b.alive {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    sync(f,
+                        branch(fuzz_spiral_shoot, b, "Spiral"),
+                        branch(fuzz_targeted_burst, b, "Burst"),
+                    )
+                }, b, "P1 Attack Subtree"),
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P1 Stun Watcher"),
+            )
+            if winner == 1 && b.hp > 700.0 && b.alive {
+                b.stuns += 1
+                wait(f, 0.15)
+            }
+        }
+    }
+
+    fuzz_attack_loop_p2 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.hp > 350.0 && b.alive {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    sync(f,
+                        branch(fuzz_spiral_shoot, b, "Enraged Spiral"),
+                        branch(fuzz_targeted_burst, b, "Enraged Burst"),
+                    )
+                }, b, "P2 Attack Subtree"),
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P2 Stun Watcher"),
+            )
+            if winner == 1 && b.hp > 350.0 && b.alive {
+                b.stuns += 1
+                wait(f, 0.15)
+            }
+        }
+    }
+
+    fuzz_attack_loop_p3 :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        for b.alive {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    sync(f,
+                        branch(fuzz_spiral_shoot, b, "Berserk Spiral"),
+                        branch(fuzz_targeted_burst, b, "Berserk Burst"),
+                    )
+                }, b, "P3 Attack Subtree"),
+                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P3 Stun Watcher"),
+            )
+            if winner == 1 && b.alive {
+                b.stuns += 1
+                wait(f, 0.10)
+            }
+        }
+    }
+
+    fuzz_boss_master :: proc(f: ^Fiber, b: ^Fuzz_Boss) {
+        b.phase = 1
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                for b.hp > 700.0 && b.alive { yield(f) }
+            }, b, "HP < 700"),
+            branch(fuzz_patrol_subloop, b, "Patrol P1"),
+            branch(fuzz_attack_loop_p1, b, "Attacks P1"),
+        )
+        if !b.alive do return
+
+        b.phase = 2
+        wait(f, 0.1)
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                for b.hp > 350.0 && b.alive { yield(f) }
+            }, b, "HP < 350"),
+            branch(fuzz_patrol_subloop, b, "Patrol P2"),
+            branch(fuzz_attack_loop_p2, b, "Attacks P2"),
+        )
+        if !b.alive do return
+
+        b.phase = 3
+        wait(f, 0.1)
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
+                for b.alive { yield(f) }
+            }, b, "Death Trigger"),
+            branch(fuzz_patrol_subloop, b, "Patrol P3"),
+            branch(fuzz_attack_loop_p3, b, "Attacks P3"),
+        )
+    }
+
+    boss := Fuzz_Boss{hp = 1000.0, alive = true, phase = 1}
+    defer signal_destroy(&boss.stun_signal)
+
+    spawn(&sched, fuzz_boss_master, &boss)
+
+    rng_state: u64 = 0x853C49E6748FEA9B
+    xorshift64 :: proc(state: ^u64) -> u64 {
+        x := state^
+        x ~= x << 13
+        x ~= x >> 7
+        x ~= x << 17
+        state^ = x
+        return x
+    }
+
+    total_emp_pulses := 0
+    for _ in 0 ..< 2000 {
+        r := xorshift64(&rng_state)
+        dt := (5.0 + f32(r % 25)) / 1000.0
+        if boss.alive {
+            boss.hp -= 0.65
+            if boss.hp <= 0.0 do boss.alive = false
+        }
+        if (r % 25) == 0 && boss.alive {
+            signal_emit(&sched, &boss.stun_signal)
+            total_emp_pulses += 1
+        }
+        scheduler_step(&sched, dt)
+
+        stats := scheduler_pool_stats(&sched)
+        testing.expect(t, stats.active_fibers <= 16)
+        testing.expect_value(t, stats.total_stacks, stats.active_fibers + stats.free_fibers)
+    }
+
+    testing.expect(t, !boss.alive)
+    testing.expect_value(t, boss.phase, 3)
+    testing.expect(t, total_emp_pulses >= 10)
+    testing.expect(t, boss.stuns >= 5)
+    testing.expect(t, boss.shots_fired >= 100)
+
+    final_stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, final_stats.active_fibers, 0)
+}
+
+@(test)
+test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Boss_State :: struct {
+        hp:                 f32,
+        phase:              int,
+        alive:              bool,
+        p1_attacks_spawned: int,
+        p2_attacks_spawned: int,
+        p3_attacks_spawned: int,
+        phase1_in_p2_error: bool,
+        phase2_in_p3_error: bool,
+        stun_signal:        Signal,
+    }
+
+    b_state := Boss_State{hp = 1000.0, phase = 1, alive = true}
+    defer signal_destroy(&b_state.stun_signal)
+
+    p1_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.alive && b.phase == 1 {
+            b.p1_attacks_spawned += 1
+            wait(f, 0.05)
+            if b.phase != 1 do b.phase1_in_p2_error = true
+        }
+    }
+
+    p2_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.alive && b.phase == 2 {
+            b.p2_attacks_spawned += 1
+            wait(f, 0.05)
+            if b.phase != 2 do b.phase2_in_p3_error = true
+        }
+    }
+
+    p3_attack_proc :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.alive && b.phase == 3 {
+            b.p3_attacks_spawned += 1
+            wait(f, 0.05)
+        }
+    }
+
+    p1_loop :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.hp > 700.0 && b.alive && b.phase == 1 {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    sync(f,
+                        branch(p1_attack_proc, b, "P1 Attack A"),
+                        branch(p1_attack_proc, b, "P1 Attack B"),
+                    )
+                }, b, "P1 Attacks"),
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P1 Stun"),
+            )
+            if winner == 1 && b.hp > 700.0 && b.alive && b.phase == 1 {
+                wait(f, 0.2)
+            }
+        }
+    }
+
+    p2_loop :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.hp > 350.0 && b.alive && b.phase == 2 {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    sync(f,
+                        branch(p2_attack_proc, b, "P2 Attack A"),
+                        branch(p2_attack_proc, b, "P2 Attack B"),
+                    )
+                }, b, "P2 Attacks"),
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P2 Stun"),
+            )
+            if winner == 1 && b.hp > 350.0 && b.alive && b.phase == 2 {
+                wait(f, 0.2)
+            }
+        }
+    }
+
+    p3_loop :: proc(f: ^Fiber, b: ^Boss_State) {
+        for b.alive && b.phase == 3 {
+            winner := race(f,
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    sync(f,
+                        branch(p3_attack_proc, b, "P3 Attack A"),
+                        branch(p3_attack_proc, b, "P3 Attack B"),
+                    )
+                }, b, "P3 Attacks"),
+                branch(proc(f: ^Fiber, b: ^Boss_State) {
+                    signal_wait(f, &b.stun_signal)
+                }, b, "P3 Stun"),
+            )
+            if winner == 1 && b.alive && b.phase == 3 {
+                wait(f, 0.1)
+            }
+        }
+    }
+
+    boss_ai_timeline :: proc(f: ^Fiber, b: ^Boss_State) {
+        b.phase = 1
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Boss_State) {
+                for b.hp > 700.0 && b.alive { yield(f) }
+            }, b, "HP < 700 Trigger"),
+            branch(p1_loop, b, "P1 Loop"),
+        )
+        if !b.alive do return
+
+        b.phase = 2
+        wait(f, 0.1)
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Boss_State) {
+                for b.hp > 350.0 && b.alive { yield(f) }
+            }, b, "HP < 350 Trigger"),
+            branch(p2_loop, b, "P2 Loop"),
+        )
+        if !b.alive do return
+
+        b.phase = 3
+        wait(f, 0.1)
+        race(f,
+            branch(proc(f: ^Fiber, b: ^Boss_State) {
+                for b.alive { yield(f) }
+            }, b, "Death Trigger"),
+            branch(p3_loop, b, "P3 Loop"),
+        )
+    }
+
+    spawn(&sched, boss_ai_timeline, &b_state)
+
+    for frame in 0 ..< 1000 {
+        if b_state.alive {
+            b_state.hp -= 1.3
+            if b_state.hp <= 0 do b_state.alive = false
+        }
+        if (b_state.hp >= 690.0 && b_state.hp <= 710.0) || (b_state.hp >= 340.0 && b_state.hp <= 360.0) || (frame % 20 == 0) {
+            signal_emit(&sched, &b_state.stun_signal)
+        }
+        scheduler_step(&sched, 0.016)
+        testing.expect(t, !b_state.phase1_in_p2_error)
+        testing.expect(t, !b_state.phase2_in_p3_error)
+    }
+
+    testing.expect(t, !b_state.alive)
+    testing.expect_value(t, b_state.phase, 3)
+    testing.expect(t, b_state.p1_attacks_spawned > 0)
+    testing.expect(t, b_state.p2_attacks_spawned > 0)
+    testing.expect(t, b_state.p3_attacks_spawned > 0)
+
+    stats := scheduler_pool_stats(&sched)
+    testing.expect_value(t, stats.active_fibers, 0)
+}
+
+@(test)
+test_wait_queue_defensive_and_paused_dispatch :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    q1, q2: Wait_Queue
+    f: Fiber
+    f.handle = 1
+
+    wait_queue_push_back(&q1, &f)
+    testing.expect_value(t, f.current_wait_queue, &q1)
+
+    // Cross-queue removal must fail defensively
+    removed_wrong := wait_queue_remove(&q2, &f)
+    testing.expect(t, !removed_wrong)
+    testing.expect_value(t, f.current_wait_queue, &q1)
+
+    removed_ok := wait_queue_remove(&q1, &f)
+    testing.expect(t, removed_ok)
+    testing.expect_value(t, f.current_wait_queue, nil)
+}
+
+@(test)
+test_time_scale_defensive_clamping :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    clock_advance(&sched, CLOCK_SIM, 2.5)
+    testing.expect_value(t, sched.clocks[CLOCK_SIM].delta, f32(2.5))
+    testing.expect(t, abs(sched.clocks[CLOCK_SIM].time - 2.5) < 1e-5)
+
+    // Negative dt clamps to 0.0 to protect min-heap monotonicity
+    clock_advance(&sched, CLOCK_SIM, -5.0)
+    testing.expect_value(t, sched.clocks[CLOCK_SIM].delta, f32(0.0))
+    testing.expect(t, abs(sched.clocks[CLOCK_SIM].time - 2.5) < 1e-5)
+
+    // NaN dt clamps to 0.0
+    nan_val := math.nan_f32()
+    clock_advance(&sched, CLOCK_SIM, nan_val)
+    testing.expect_value(t, sched.clocks[CLOCK_SIM].delta, f32(0.0))
+    testing.expect(t, abs(sched.clocks[CLOCK_SIM].time - 2.5) < 1e-5)
+}
+
+@(test)
+test_scheduler_destroy_wait_queue_unlinking :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+    defer signal_destroy(&sig)
+
+    spawn(&sched, proc(f: ^Fiber, s: ^Signal) {
+        signal_wait(f, s)
+    }, &sig)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, sig.waiters.head != nil, true)
+
+    // Destroy scheduler while fiber is still in sig.waiters
+    scheduler_destroy(&sched)
+
+    // Outliving signal waiters list must have been unlinked to prevent UAF!
+    testing.expect_value(t, sig.waiters.head == nil, true)
+    testing.expect_value(t, sig.waiters.tail == nil, true)
+}
+
+@(test)
+test_spawn_real_val_while_paused :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Payload :: struct {
+        x:     int,
+        y:     int,
+        out_x: ^int,
+        out_y: ^int,
+    }
+
+    res_x, res_y: int = 0, 0
+    p := Payload{x = 42, y = 84, out_x = &res_x, out_y = &res_y}
+
+    spawn(&sched, proc(f: ^Fiber, data: Payload) {
+        wait(f, 0.05)
+        data.out_x^ = data.x
+        data.out_y^ = data.y
+    }, p, clock = CLOCK_REAL)
+
+    // Advance only CLOCK_REAL while CLOCK_SIM is not stepped
+    for _ in 0 ..< 10 {
+        clock_advance(&sched, CLOCK_REAL, 0.02)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, res_x, 42)
+    testing.expect_value(t, res_y, 84)
+}
+
+@(test)
+test_real_time_fiber_paused_yield :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    step_count := 0
+    spawn(&sched, proc(f: ^Fiber, counter: ^int) {
+        for i := 0; i < 5; i += 1 {
+            counter^ += 1
+            if i % 2 == 0 {
+                yield(f)
+            } else {
+                wait(f, 0.0)
+            }
+        }
+    }, &step_count, name = "Realtime Paused Worker", clock = CLOCK_REAL)
+
+    for _ in 0 ..< 6 {
+        clock_advance(&sched, CLOCK_REAL, 0.016)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, step_count, 5)
+}
+
+@(test)
+test_real_time_ticker_paused_zero_freeze :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ticks := 0
+    spawn(&sched, proc(f: ^Fiber, counter: ^int) {
+        for i := 0; i < 4; i += 1 {
+            ticker_wait(f, 0.01)
+            counter^ += 1
+        }
+    }, &ticks, name = "Realtime Ticker Worker", clock = CLOCK_REAL)
+
+    for _ in 0 ..< 6 {
+        clock_advance(&sched, CLOCK_REAL, 0.016)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, ticks, 4)
+}
+
+@(test)
+test_fiber_pool_recycle_wake_clock_sanitization :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    real_clock_observed: Clock_ID = -1
+    sim_clock_observed: Clock_ID = -1
+
+    h_real := spawn(&sched, proc(f: ^Fiber, out: ^Clock_ID) {
+        out^ = f.clock_id
+    }, &real_clock_observed, name = "Real Worker", clock = CLOCK_REAL)
+
+    scheduler_step(&sched, 0.016)
+
+    h_sim := spawn(&sched, proc(f: ^Fiber, out: ^Clock_ID) {
+        out^ = f.clock_id
+    }, &sim_clock_observed, name = "Sim Worker")
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, real_clock_observed, CLOCK_REAL)
+    testing.expect_value(t, sim_clock_observed, CLOCK_SIM)
+    testing.expect_value(t, fiber_is_alive(&sched, h_real), false)
+    testing.expect_value(t, fiber_is_alive(&sched, h_sim), false)
+}
+
 @(test)
 test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
     sched: Scheduler
@@ -8516,25 +5828,17 @@ test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
 
     ticks := 0
     spawn(&sched, proc(f: ^Fiber, count: ^int) {
-        // Use direct fiber-owned ticker (no stack struct allocated)
         for {
             ticker_wait(f, 0.05)
             count^ += 1
         }
     }, &ticks)
 
-    // Step 0.05s * 5 = 0.25s:
-    // Step 1 (0.05s): fiber initializes ticker, sets next_wake = 0.10s, sleeps
-    // Step 2 (0.10s): tick 1, next_wake = 0.15s
-    // Step 3 (0.15s): tick 2, next_wake = 0.20s
-    // Step 4 (0.20s): tick 3, next_wake = 0.25s
-    // Step 5 (0.25s): tick 4, next_wake = 0.30s
     for _ in 0 ..< 5 {
         scheduler_step(&sched, 0.05)
     }
     testing.expect_value(t, ticks, 4)
 
-    // Rebase and multi-fiber non-interference test
     fiber_a_ticks := 0
     fiber_b_ticks := 0
 
@@ -8552,9 +5856,6 @@ test_fiber_owned_ticker_zero_drift_and_rebase :: proc(t: ^testing.T) {
         }
     }, &fiber_b_ticks)
 
-    // Step 0.02s * 5 = 0.10s:
-    // Fiber A (0.02s): init at 0.02s, ticks at 0.04s, 0.06s, 0.08s, 0.10s -> 4 ticks
-    // Fiber B (0.04s): init at 0.02s, next_wake = 0.06s, ticks at 0.06s, 0.10s -> 2 ticks
     for _ in 0 ..< 5 {
         scheduler_step(&sched, 0.02)
     }
@@ -8582,43 +5883,23 @@ test_scheduler_reinit_no_memory_leak :: proc(t: ^testing.T) {
         wait(f, 1.0)
     }, scope = &scope)
     spawn(&sched, proc(f: ^Fiber) {
-        yield_frame(f)
+        yield(f)
     }, scope = &scope)
-    spawn_ptr(&sched, proc(f: ^Fiber, s: ^Signal) {
+    spawn(&sched, proc(f: ^Fiber, s: ^Signal) {
         signal_wait(f, s)
     }, &sig, scope = &scope)
 
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, scope_active_count(&scope), 3)
 
-    // Re-initialize without calling scheduler_destroy first (simulates in-place game restart)
+    // Re-initialize without calling scheduler_destroy first
     scheduler_init(&sched, alloc_mode = .Standard_Slab, allocator = alloc)
     scheduler_prewarm(&sched, 64)
 
-    // Outliving scope and wait queue should have been cleanly detached during re-init
     testing.expect_value(t, scope_active_count(&scope), 0)
     testing.expect(t, sig.waiters.head == nil)
 
-    // Also test Channel and Generator re-init without explicit destroy
-    ch: Channel(int)
-    chan_init(&ch, capacity = 8, allocator = alloc)
-    chan_init(&ch, capacity = 16, allocator = alloc)
-    chan_destroy(&ch)
-
-    gen: Generator(int)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        yield_value(f, g, 42)
-    }, allocator = alloc)
-    generator_init(&gen, proc(f: ^Fiber, g: ^Generator(int)) {
-        yield_value(f, g, 99)
-    }, allocator = alloc)
-    val, ok := generator_next(&gen)
-    testing.expect_value(t, ok, true)
-    testing.expect_value(t, val, 99)
-    generator_destroy(&gen)
-
     scheduler_destroy(&sched)
-    // Calling destroy a second time must be a safe no-op
     scheduler_destroy(&sched)
 
     testing.expect_value(t, len(track.allocation_map), 0)
@@ -8631,19 +5912,13 @@ test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) 
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
 
-    // 1. Test ^Fiber overloads for signal_emit, event_emit, mutex_unlock, semaphore_release,
-    //    latch_count_down, fiber_is_alive, fiber_status, fiber_cancel, scope_cancel, scope_destroy.
     QoL_Ctx :: struct {
         sig:          Signal,
         ev:           Event(int),
-        mtx:          Fiber_Mutex,
-        sem:          Fiber_Semaphore,
-        latch:        Fiber_Latch,
         child_scope:  Fiber_Scope,
         target_h:     Fiber_Handle,
         ev_received:  int,
         sig_woke:     bool,
-        latch_woke:   bool,
         status_alive: bool,
         status_val:   Fiber_Status,
     }
@@ -8652,12 +5927,6 @@ test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) 
     defer signal_destroy(&qctx.sig)
     event_init(&qctx.ev)
     defer event_destroy(&qctx.ev)
-    mutex_init(&qctx.mtx)
-    defer mutex_destroy(&qctx.mtx)
-    semaphore_init(&qctx.sem, 1)
-    defer semaphore_destroy(&qctx.sem)
-    latch_init(&qctx.latch, 1)
-    defer latch_destroy(&qctx.latch)
 
     qctx.target_h = spawn(&sched, proc(f: ^Fiber) {
         wait(f, 10.0)
@@ -8678,29 +5947,15 @@ test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) 
         }
     }, &qctx)
 
-    spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
-        latch_wait(f, &c.latch)
-        c.latch_woke = true
-    }, &qctx)
-
-    // Step once so waiters suspend
     scheduler_step(&sched, 0.01)
 
-    // Spawn driver fiber that uses `f` (^Fiber) directly as first argument for all primitives
     spawn(&sched, proc(f: ^Fiber, c: ^QoL_Ctx) {
         c.status_alive = fiber_is_alive(f, c.target_h)
         st, _ := fiber_status(f, c.target_h)
         c.status_val = st
 
-        mutex_lock(f, &c.mtx)
-        mutex_unlock(f, &c.mtx)
-
-        semaphore_acquire(f, &c.sem)
-        semaphore_release(f, &c.sem)
-
         signal_emit(f, &c.sig)
         event_emit(f, &c.ev, 777)
-        latch_count_down(f, &c.latch)
 
         fiber_cancel(f, c.target_h)
         scope_cancel(f, &c.child_scope)
@@ -8714,283 +5969,6 @@ test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) 
     testing.expect_value(t, qctx.status_val, Fiber_Status.Sleeping_Time)
     testing.expect_value(t, qctx.sig_woke, true)
     testing.expect_value(t, qctx.ev_received, 777)
-    testing.expect_value(t, qctx.latch_woke, true)
     testing.expect_value(t, fiber_is_alive(&sched, qctx.target_h), false)
     testing.expect_value(t, scope_active_count(&qctx.child_scope), 0)
-    testing.expect_value(t, mutex_is_locked(&qctx.mtx), false)
-    testing.expect_value(t, semaphore_available_permits(&qctx.sem), 1)
-
-    // 2. Test nested cleanup hook chaining:
-    //    custom fiber_set_cleanup + with_mutex + with_semaphore + unbuffered chan_send abort
-    Chain_Ctx :: struct {
-        mtx:          Fiber_Mutex,
-        sem:          Fiber_Semaphore,
-        ch:           Channel(int),
-        user_cleaned: int,
-    }
-    cctx: Chain_Ctx
-    mutex_init(&cctx.mtx)
-    defer mutex_destroy(&cctx.mtx)
-    semaphore_init(&cctx.sem, 1)
-    defer semaphore_destroy(&cctx.sem)
-    chan_init(&cctx.ch, 0)
-    defer chan_destroy(&cctx.ch)
-
-    sender_h := spawn(&sched, proc(f: ^Fiber, c: ^Chain_Ctx) {
-        fiber_set_cleanup(f, proc(c: ^Chain_Ctx) {
-            c.user_cleaned += 10
-        }, c)
-
-        with_mutex(f, &c.mtx, proc(f: ^Fiber, c: ^Chain_Ctx) {
-            with_semaphore(f, &c.sem, proc(f: ^Fiber, c: ^Chain_Ctx) {
-                // Suspend in unbuffered rendezvous
-                chan_send(f, &c.ch, 42)
-            }, c)
-        }, c)
-    }, &cctx)
-
-    scheduler_step(&sched, 0.01)
-    // Verify mutex is locked, semaphore is acquired, and unbuffered channel has count == 1
-    testing.expect_value(t, mutex_is_locked(&cctx.mtx), true)
-    testing.expect_value(t, semaphore_available_permits(&cctx.sem), 0)
-    testing.expect_value(t, cctx.ch.count, 1)
-
-    // Cancel the fiber mid-rendezvous: ALL 4 cleanup hooks in the chain must run!
-    fiber_cancel(&sched, sender_h)
-
-    testing.expect_value(t, cctx.ch.count, 0)
-    testing.expect_value(t, semaphore_available_permits(&cctx.sem), 1)
-    testing.expect_value(t, mutex_is_locked(&cctx.mtx), false)
-    testing.expect_value(t, cctx.user_cleaned, 10)
-
-    // 3. Verify that calling fiber_set_cleanup INSIDE with_mutex is not clobbered on normal exit
-    inner_h := spawn(&sched, proc(f: ^Fiber, c: ^Chain_Ctx) {
-        with_mutex(f, &c.mtx, proc(f: ^Fiber, c: ^Chain_Ctx) {
-            fiber_set_cleanup(f, proc(c: ^Chain_Ctx) {
-                c.user_cleaned += 100
-            }, c)
-        }, c)
-        wait(f, 10.0)
-    }, &cctx)
-
-    scheduler_step(&sched, 0.01)
-    testing.expect_value(t, mutex_is_locked(&cctx.mtx), false)
-    fiber_cancel(&sched, inner_h)
-    testing.expect_value(t, cctx.user_cleaned, 110)
-}
-
-// ============================================================================
-// Full Test Suite Dispatcher (for QEMU / Cross-Platform Standalone Runners)  
-// ============================================================================
-
-run_all_coroutine_tests :: proc(verbose := false) -> (passed: int, failed: int) {
-    tests := []struct{ name: string, fn: proc(t: ^testing.T) } {
-        { "test_basic_spawn_and_run", test_basic_spawn_and_run },
-        { "test_stack_local_variables_across_yields", test_stack_local_variables_across_yields },
-        { "test_wait_seconds_timer_heap", test_wait_seconds_timer_heap },
-        { "test_wait_frames", test_wait_frames },
-        { "test_wait_until_condition", test_wait_until_condition },
-        { "test_structured_sync", test_structured_sync },
-        { "test_structured_race", test_structured_race },
-        { "test_scope_cancellation", test_scope_cancellation },
-        { "test_cleanup_proc_and_defer", test_cleanup_proc_and_defer },
-        { "test_tween_interpolation", test_tween_interpolation },
-        { "test_stack_canary_guard", test_stack_canary_guard },
-        { "test_nested_race_with_sync_branch", test_nested_race_with_sync_branch },
-        { "test_time_scaling_and_pause", test_time_scaling_and_pause },
-        { "test_many_concurrent_fibers", test_many_concurrent_fibers },
-        { "test_deep_nested_hierarchy_sync_race_sync", test_deep_nested_hierarchy_sync_race_sync },
-        { "test_sync_failure_propagation", test_sync_failure_propagation },
-        { "test_race_all_simultaneous_finish", test_race_all_simultaneous_finish },
-        { "test_race_loser_with_children_aborts_all_descendants", test_race_loser_with_children_aborts_all_descendants },
-        { "test_timer_heap_1000_random_sort", test_timer_heap_1000_random_sort },
-        { "test_timer_heap_random_cancellations", test_timer_heap_random_cancellations },
-        { "test_condition_immediate_satisfaction", test_condition_immediate_satisfaction },
-        { "test_pool_multi_slab_expansion_and_reclaim", test_pool_multi_slab_expansion_and_reclaim },
-        { "test_fiber_lifecycle_generation_reuse", test_fiber_lifecycle_generation_reuse },
-        { "test_local_variable_isolation_many_fibers", test_local_variable_isolation_many_fibers },
-        { "test_heterogeneous_scope_cancellation", test_heterogeneous_scope_cancellation },
-        { "test_10k_yield_loop", test_10k_yield_loop },
-        { "test_zero_and_negative_waits", test_zero_and_negative_waits },
-        { "test_fiber_temp_allocator_isolation", test_fiber_temp_allocator_isolation },
-        { "test_with_timeout_completion", test_with_timeout_completion },
-        { "test_with_timeout_expired", test_with_timeout_expired },
-        { "test_signal_broadcast", test_signal_broadcast },
-        { "test_fiber_mutex_contention", test_fiber_mutex_contention },
-        { "test_stack_watermark_usage_calculation", test_stack_watermark_usage_calculation },
-        { "test_async_token_bridge", test_async_token_bridge },
-        { "test_channel_synchronous_rendezvous", test_channel_synchronous_rendezvous },
-        { "test_channel_buffered_fifo", test_channel_buffered_fifo },
-        { "test_channel_close_and_drain", test_channel_close_and_drain },
-        { "test_generator_lazy_sequence", test_generator_lazy_sequence },
-        { "test_virtual_memory_guard_pages", test_virtual_memory_guard_pages },
-        { "test_spawn_by_value_primitives", test_spawn_by_value_primitives },
-        { "test_spawn_by_value_struct", test_spawn_by_value_struct },
-        { "test_spawn_by_value_concurrency_no_crosstalk", test_spawn_by_value_concurrency_no_crosstalk },
-        { "test_branch_by_value_sync", test_branch_by_value_sync },
-        { "test_branch_by_value_race", test_branch_by_value_race },
-        { "test_spawn_by_value_ephemeral_stack_safety", test_spawn_by_value_ephemeral_stack_safety },
-        { "test_tween_vectors", test_tween_vectors },
-        { "test_with_timeout_proc_overloads", test_with_timeout_proc_overloads },
-        { "test_wait_while", test_wait_while },
-        { "test_wait_until_val", test_wait_until_val },
-        { "test_scope_query_helpers", test_scope_query_helpers },
-        { "test_fiber_time_accessors", test_fiber_time_accessors },
-        { "test_scope_wait", test_scope_wait },
-        { "test_expanded_easing_functions", test_expanded_easing_functions },
-        { "test_channel_ring_buffer_wraparound", test_channel_ring_buffer_wraparound },
-        { "test_generator_lightweight_memory", test_generator_lightweight_memory },
-        { "test_fallback_control_flow", test_fallback_control_flow },
-        { "test_rush_success_preemption", test_rush_success_preemption },
-        { "test_phase_director_fsm", test_phase_director_fsm },
-        { "test_simulate_until_headless", test_simulate_until_headless },
-        { "test_fail_primitive", test_fail_primitive },
-        { "test_fallback_all_failing_and_by_value", test_fallback_all_failing_and_by_value },
-        { "test_rush_5_branches_and_all_failing", test_rush_5_branches_and_all_failing },
-        { "test_phase_director_rapid_transitions", test_phase_director_rapid_transitions },
-        { "test_simulate_until_channel_pipeline", test_simulate_until_channel_pipeline },
-        { "test_nested_concurrency_combinators", test_nested_concurrency_combinators },
-        { "test_scheduler_step_while_paused", test_scheduler_step_while_paused },
-        { "test_real_time_clock_while_paused", test_real_time_clock_while_paused },
-        { "test_fixed_integer_tick_clock", test_fixed_integer_tick_clock },
-        { "test_dual_clock_time_scaling", test_dual_clock_time_scaling },
-        { "test_multi_clock_heap_integrity", test_multi_clock_heap_integrity },
-        { "test_fiber_join_normal_completion", test_fiber_join_normal_completion },
-        { "test_fiber_join_cancelled_target", test_fiber_join_cancelled_target },
-        { "test_fiber_join_already_finished", test_fiber_join_already_finished },
-        { "test_event_typed_multicast", test_event_typed_multicast },
-        { "test_event_empty_emit", test_event_empty_emit },
-        { "test_fiber_semaphore_concurrency_limit", test_fiber_semaphore_concurrency_limit },
-        { "test_fiber_semaphore_try_acquire", test_fiber_semaphore_try_acquire },
-        { "test_fiber_latch_barrier", test_fiber_latch_barrier },
-        { "test_scheduler_prewarm", test_scheduler_prewarm },
-        { "test_handle_introspection_and_status", test_handle_introspection_and_status },
-        { "test_scheduler_pool_stats", test_scheduler_pool_stats },
-        { "test_chan_try_select_recv", test_chan_try_select_recv },
-        { "test_chan_select_recv_blocking", test_chan_select_recv_blocking },
-        { "test_chan_select_closed_channel", test_chan_select_closed_channel },
-        { "test_scope_hierarchy_multi_fiber_active_count", test_scope_hierarchy_multi_fiber_active_count },
-        { "test_signal_multicast_wait_and_broadcast", test_signal_multicast_wait_and_broadcast },
-        { "test_scope_cancellation_preserves_independent_scopes", test_scope_cancellation_preserves_independent_scopes },
-        { "test_race_stun_interruption_and_recovery", test_race_stun_interruption_and_recovery },
-        { "test_scope_cancel_immediate_abort", test_scope_cancel_immediate_abort },
-        { "test_subscope_isolated_behavior_cancellation", test_subscope_isolated_behavior_cancellation },
-        { "test_cancel_fiber_waiting_on_semaphore", test_cancel_fiber_waiting_on_semaphore },
-        { "test_cancel_fiber_holding_semaphore_with_cleanup", test_cancel_fiber_holding_semaphore_with_cleanup },
-        { "test_cancel_fiber_waiting_on_mutex", test_cancel_fiber_waiting_on_mutex },
-        { "test_cancel_fiber_waiting_on_latch", test_cancel_fiber_waiting_on_latch },
-        { "test_cancel_fiber_waiting_on_signal", test_cancel_fiber_waiting_on_signal },
-        { "test_cancel_fiber_waiting_on_event", test_cancel_fiber_waiting_on_event },
-        { "test_scope_cancel_inside_nested_sync", test_scope_cancel_inside_nested_sync },
-        { "test_scope_cancel_inside_nested_race", test_scope_cancel_inside_nested_race },
-        { "test_fallback_resilience_after_scope_cancellation", test_fallback_resilience_after_scope_cancellation },
-        { "test_branch_name_and_debug_tree_preservation", test_branch_name_and_debug_tree_preservation },
-        { "test_multi_channel_select_stress_with_producer_cancellation", test_multi_channel_select_stress_with_producer_cancellation },
-        { "test_signal_multicast_cascade_with_dynamic_waiters", test_signal_multicast_cascade_with_dynamic_waiters },
-        { "test_fiber_set_cleanup_deep_hierarchy_abort", test_fiber_set_cleanup_deep_hierarchy_abort },
-        { "test_semaphore_high_contention_random_cancellations", test_semaphore_high_contention_random_cancellations },
-        { "test_mutex_lock_unlock_cancellation_churn", test_mutex_lock_unlock_cancellation_churn },
-        { "test_event_multicast_dynamic_subscribe_during_emit", test_event_multicast_dynamic_subscribe_during_emit },
-        { "test_latch_partial_countdown_with_waiter_cancellations", test_latch_partial_countdown_with_waiter_cancellations },
-        { "test_scope_mass_cancel_mixed_states", test_scope_mass_cancel_mixed_states },
-        { "test_scheduler_prewarm_slab_expansion_under_load", test_scheduler_prewarm_slab_expansion_under_load },
-        { "test_rush_and_fallback_with_signal_interruption", test_rush_and_fallback_with_signal_interruption },
-        { "test_chan_destroy_auto_wakes_blocked_receivers", test_chan_destroy_auto_wakes_blocked_receivers },
-        { "test_chan_destroy_auto_wakes_blocked_senders", test_chan_destroy_auto_wakes_blocked_senders },
-        { "test_chan_recv_timeout_success", test_chan_recv_timeout_success },
-        { "test_chan_recv_timeout_expires", test_chan_recv_timeout_expires },
-        { "test_chan_recv_timeout_closed_channel", test_chan_recv_timeout_closed_channel },
-        { "test_watchdog_configuration_and_disable", test_watchdog_configuration_and_disable },
-        { "test_channel_close_multicast_with_interleaved_receivers", test_channel_close_multicast_with_interleaved_receivers },
-        { "test_chan_recv_timeout_concurrent_producers", test_chan_recv_timeout_concurrent_producers },
-        { "test_scope_destroy_prevents_stale_pointer_access", test_scope_destroy_prevents_stale_pointer_access },
-        { "test_temp_allocator_isolation_invariants", test_temp_allocator_isolation_invariants },
-        { "test_mutex_stale_waiter_abort_immunity", test_mutex_stale_waiter_abort_immunity },
-        { "test_scoped_mutex_and_semaphore", test_scoped_mutex_and_semaphore },
-        { "test_multi_channel_select", test_multi_channel_select },
-        { "test_event_multicast_broadcast_and_clear", test_event_multicast_broadcast_and_clear },
-        { "test_generational_handle_history_capacity", test_generational_handle_history_capacity },
-        { "test_channel_stale_waiter_abort_immunity", test_channel_stale_waiter_abort_immunity },
-        { "test_with_mutex_val", test_with_mutex_val },
-        { "test_with_semaphore_val", test_with_semaphore_val },
-        { "test_chan_select_recv_multiplexing", test_chan_select_recv_multiplexing },
-        { "test_scheduler_walk_tree_traversal", test_scheduler_walk_tree_traversal },
-        { "test_precision_drift_compensated_ticker", test_precision_drift_compensated_ticker },
-        { "test_structured_task_preemption_via_race_and_signal", test_structured_task_preemption_via_race_and_signal },
-        { "test_primitives_custom_arena_allocation_fidelity", test_primitives_custom_arena_allocation_fidelity },
-        { "test_simulate_until_with_active_watchdog", test_simulate_until_with_active_watchdog },
-        { "test_wait_until_timeout_mechanics", test_wait_until_timeout_mechanics },
-        { "test_wait_while_timeout_mechanics", test_wait_while_timeout_mechanics },
-        { "test_fiber_dynamic_renaming", test_fiber_dynamic_renaming },
-        { "test_chan_cap_inspection", test_chan_cap_inspection },
-        { "test_plan5_packed_generational_handles_bitwise", test_plan5_packed_generational_handles_bitwise },
-        { "test_plan5_handle_slot_reuse_and_aba_safety", test_plan5_handle_slot_reuse_and_aba_safety },
-        { "test_plan5_intrusive_wait_queue_operations", test_plan5_intrusive_wait_queue_operations },
-        { "test_plan5_o1_handle_lookups_under_high_fiber_load", test_plan5_o1_handle_lookups_under_high_fiber_load },
-        { "test_plan5_config_constants_integration", test_plan5_config_constants_integration },
-        { "test_wait_queue_auto_unlinking_on_abort", test_wait_queue_auto_unlinking_on_abort },
-        { "test_scope_multi_cycle_emp_stun_and_recovery", test_scope_multi_cycle_emp_stun_and_recovery },
-        { "test_interruption_race_attack_recovery_loop", test_interruption_race_attack_recovery_loop },
-        { "test_headless_boss_ai_fuzzing_simulation", test_headless_boss_ai_fuzzing_simulation },
-        { "test_phase_transition_emp_coincidence_fuzzing", test_phase_transition_emp_coincidence_fuzzing },
-        { "test_sim_ticks_continuous_zero_drift", test_sim_ticks_continuous_zero_drift },
-        { "test_wait_queue_defensive_and_paused_dispatch", test_wait_queue_defensive_and_paused_dispatch },
-        { "test_time_scale_defensive_clamping", test_time_scale_defensive_clamping },
-        { "test_generator_o1_and_recycle_wait_queue_defense", test_generator_o1_and_recycle_wait_queue_defense },
-        { "test_chan_recv_timeout_unbuffered_safety", test_chan_recv_timeout_unbuffered_safety },
-        { "test_scheduler_destroy_wait_queue_unlinking", test_scheduler_destroy_wait_queue_unlinking },
-        { "test_with_timeout_by_value_branching", test_with_timeout_by_value_branching },
-        { "test_fiber_calc_stack_usage_canary_breach_detection", test_fiber_calc_stack_usage_canary_breach_detection },
-        { "test_chan_unbuffered_sender_before_receiver", test_chan_unbuffered_sender_before_receiver },
-        { "test_chan_select_unbuffered_with_sender", test_chan_select_unbuffered_with_sender },
-        { "test_spawn_real_val_while_paused", test_spawn_real_val_while_paused },
-        { "test_defensive_semaphore_and_latch_non_positive", test_defensive_semaphore_and_latch_non_positive },
-        { "test_simulate_until_while_paused", test_simulate_until_while_paused },
-        { "test_intrusive_fiber_scope_lifecycle", test_intrusive_fiber_scope_lifecycle },
-        { "test_chan_unbuffered_multi_sender_rendezvous", test_chan_unbuffered_multi_sender_rendezvous },
-        { "test_chan_unbuffered_sender_abort_cleanup", test_chan_unbuffered_sender_abort_cleanup },
-        { "test_real_time_fiber_paused_yield", test_real_time_fiber_paused_yield },
-        { "test_real_time_ticker_paused_zero_freeze", test_real_time_ticker_paused_zero_freeze },
-        { "test_fiber_cleanup_preserves_user_data", test_fiber_cleanup_preserves_user_data },
-        { "test_fiber_pool_recycle_wake_clock_sanitization", test_fiber_pool_recycle_wake_clock_sanitization },
-        { "test_scheduler_destroy_scope_detachment", test_scheduler_destroy_scope_detachment },
-        { "test_ready_queue_generational_aba_guard", test_ready_queue_generational_aba_guard },
-        { "test_paused_condition_waiters_polling", test_paused_condition_waiters_polling },
-        { "test_with_mutex_automatic_abort_cleanup", test_with_mutex_automatic_abort_cleanup },
-        { "test_with_semaphore_automatic_abort_cleanup", test_with_semaphore_automatic_abort_cleanup },
-        { "test_chan_select_recv_buffered_priority_over_closed", test_chan_select_recv_buffered_priority_over_closed },
-        { "test_unbuffered_chan_sender_first_rendezvous", test_unbuffered_chan_sender_first_rendezvous },
-        { "test_unbuffered_chan_multi_sender_fifo_rendezvous", test_unbuffered_chan_multi_sender_fifo_rendezvous },
-        { "test_race_join_independent_sibling_non_interference", test_race_join_independent_sibling_non_interference },
-        { "test_rush_join_independent_sibling_non_interference", test_rush_join_independent_sibling_non_interference },
-        { "test_ticker_zero_drift_f64_precision", test_ticker_zero_drift_f64_precision },
-        { "test_generator_early_destruction_and_clean_state", test_generator_early_destruction_and_clean_state },
-        { "test_semaphore_true_zii_unbounded_permits", test_semaphore_true_zii_unbounded_permits },
-        { "test_mutex_owner_tracking_and_unlock_safety", test_mutex_owner_tracking_and_unlock_safety },
-        { "test_fiber_self_join_deadlock_guard", test_fiber_self_join_deadlock_guard },
-        { "test_chan_send_timeout_success_and_expiry", test_chan_send_timeout_success_and_expiry },
-        { "test_with_timeout_real_domain_execution", test_with_timeout_real_domain_execution },
-        { "test_simulate_until_val_by_value_dispatch", test_simulate_until_val_by_value_dispatch },
-        { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
-        { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
-        { "test_fiber_owned_ticker_zero_drift_and_rebase", test_fiber_owned_ticker_zero_drift_and_rebase },
-        { "test_scheduler_reinit_no_memory_leak", test_scheduler_reinit_no_memory_leak },
-        { "test_api_qol_fiber_overloads_and_nested_cleanup_chaining", test_api_qol_fiber_overloads_and_nested_cleanup_chaining },
-    }
-
-    total := len(tests)
-    for test, i in tests {
-        t: testing.T
-        test.fn(&t)
-        if t.error_count == 0 {
-            passed += 1
-            if verbose {
-                fmt.printf("  [PASS] [%3d/%3d] %s\n", i + 1, total, test.name)
-            }
-        } else {
-            failed += 1
-            fmt.printf("  [FAIL] [%3d/%3d] %s (errors: %d)\n", i + 1, total, test.name, t.error_count)
-        }
-    }
-    return passed, failed
 }

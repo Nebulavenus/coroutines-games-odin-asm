@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 190-test coverage for the SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 177-test coverage (128 core + 49 sync) for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -10,42 +10,43 @@ This document records the comprehensive verification matrix, architectural analy
 | :--- | :--- | :--- |
 | **Universal Multi-ISA ASM Context Switch** | `asm_amd64.odin` (100% high-level `asm`, 0 `#byte`), `asm_arm64.odin`, `asm_riscv64.odin` — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with 100% `#byte`-free `get_rsp` / `get_sp` and self-ID extractors | **PASS** |
 | **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`#preserve %rbp/%rbx/%rsi/%rdi/%rsp/%sp/%ra`, `#clobber %flags`, `#volatile`, `#clobber memory`) preventing LLVM SSA optimization/caching across context switches | **PASS** |
-| **Per-Fiber Isolated Temporary Allocator** | `src/coroutine/types.odin` & `src/coroutine/pool.odin` — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation | **PASS** |
-| **Multi-Tiered Stack Safety & Guard Pages** | `src/coroutine/pool.odin` — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_NOACCESS` (Windows) / `PROT_NONE` (POSIX) virtual memory | **PASS** |
-| **Stack Overflow Protection** | `src/coroutine/pool.odin` — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation and automatic 100% stack consumption reporting on breach | **PASS** |
-| **Stack Watermarking & High-Water Usage** | `src/coroutine/pool.odin` — `0xAA` watermarked stacks and `fiber_calc_stack_usage` real-time profiler | **PASS** |
-| **Persistent Allocator & Re-Init Safety** | `pool.odin`, `scheduler.odin`, `api.odin` — Persistent `allocator: mem.Allocator` storage and automatic cleanup on re-initialization (`scheduler_init`, `fiber_pool_init`, `chan_init`) with zero memory leaks | **PASS** |
-| **3-Tier Multi-Domain Engine Clock** | `src/coroutine/scheduler.odin` — Dual min-heaps (`timer_heap`, `real_timer_heap`), discrete fixed ticks (`wait_ticks`), continuous zero-drift math, and pause/time-scale dilation | **PASS** |
-| **100% Pure Structured Concurrency Matrix** | `src/coroutine/api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, and `branch` descriptors with zero unstructured escape hatches | **PASS** |
-| **Dynamic Task Joining (`fiber_join`)** | `src/coroutine/api.odin` — Dynamic task join awaiting independent fiber handles | **PASS** |
-| **Typed Multicast Events (`Event(T)`)** | `src/coroutine/api.odin` — 1-to-many typed publish-subscribe broadcast with zero polling and compile-time `#assert` bounds checking | **PASS** |
-| **Counting Semaphores (`Fiber_Semaphore`)** | `src/coroutine/api.odin` — Up to $N$ concurrent permits with zero heap allocations, True ZII, and non-positive count guards | **PASS** |
-| **Countdown Latch (`Fiber_Latch`)** | `src/coroutine/api.odin` — Multi-subsystem synchronization barrier with True ZII and non-positive step guards | **PASS** |
-| **Memory Pre-Warming & Stats** | `src/coroutine/pool.odin` & `scheduler.odin` — `scheduler_prewarm` and `scheduler_pool_stats` telemetry | **PASS** |
-| **Handle Introspection & Diagnostics** | `src/coroutine/api.odin` — `fiber_is_alive` and `fiber_status` queries with circular handle history | **PASS** |
-| **Unopinionated Async Job Bridge** | `src/coroutine/api.odin` — Zero-allocation lock-free `Async_Token` and `await_async` bridging background workers to main-thread fibers | **PASS** |
-| **Pure CSP Typed Channels (`Channel(T)`)** | `src/coroutine/api.odin` — Symmetrical rendezvous (unbuffered `capacity == 0`) and bounded FIFO queues with deadlock-safe timeouts | **PASS** |
-| **Stateful Pull Generators (`Generator(T)`)** | `src/coroutine/api.odin` — Lazy pull-based generator iteration (`yield_value`, `generator_next`) with $O(1)$ generational handle lookups | **PASS** |
-| **Event Synchronization: `Signal`** | `src/coroutine/api.odin` — Zero-polling broadcast signal waking all registered coroutine waiters | **PASS** |
-| **Cooperative Resource Lock: `Fiber_Mutex`** | `src/coroutine/api.odin` — Fiber mutual exclusion queue without OS thread blocking | **PASS** |
-| **Inline 128-Byte By-Value Payloads** | `src/coroutine/api.odin` — `spawn_val` / `spawn_real_val` / `branch_val` zero-heap transient payload buffers | **PASS** |
-| **Headless Simulation Runner** | `src/coroutine/api.odin` — `simulate_until` high-speed test driver with pause-override safety | **PASS** |
-| **Hierarchical Sub-Scope Cancellation** | `src/coroutine/scheduler.odin` — `scope_cancel` and `scope_destroy` across heterogeneous states in $O(1)$ | **PASS** |
-| **Live F1 / TAB Hierarchy Debugger** | `src/main.odin` & `examples/showcase/main.odin` — Visual overlay with tree hierarchy, countdowns, and stack telemetry | **PASS** |
+| **Per-Fiber Isolated Temporary Allocator** | `types.odin` & `pool.odin` — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation | **PASS** |
+| **Multi-Tiered Stack Safety & Guard Pages** | `pool.odin` — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_NOACCESS` (Windows) / `PROT_NONE` (POSIX) virtual memory | **PASS** |
+| **Stack Overflow Protection** | `pool.odin` — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation and automatic 100% stack consumption reporting on breach | **PASS** |
+| **Stack Watermarking & High-Water Usage** | `pool.odin` — `0xAA` watermarked stacks and `fiber_calc_stack_usage` real-time profiler | **PASS** |
+| **Persistent Allocator & Re-Init Safety** | `pool.odin`, `scheduler.odin`, `api.odin`, `sync/sync.odin` — Persistent `allocator: mem.Allocator` storage and automatic cleanup on re-initialization (`scheduler_init`, `fiber_pool_init`, `chan_init`) with zero memory leaks | **PASS** |
+| **Indexed `Clock_Domain` Engine Architecture** | `scheduler.odin` — Array `clocks: [MAX_CLOCKS]Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`), per-domain timer heaps and step waiters, discrete integer ticks (`wait_steps`), zero-drift `ticker_wait`, and pause/dilation scaling | **PASS** |
+| **100% Pure Structured Concurrency Matrix** | `api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, and `branch` descriptors with zero unstructured escape hatches | **PASS** |
+| **Dynamic Task Joining (`fiber_join`)** | `api.odin` — Dynamic task join awaiting independent fiber handles | **PASS** |
+| **Typed Multicast Events (`Event(T)` / `Signal`)** | `api.odin` — 1-to-many typed publish-subscribe broadcast with zero polling and compile-time `#assert` bounds checking (`Signal :: Event(struct{})`) | **PASS** |
+| **Counting Semaphores (`Fiber_Semaphore`)** | `sync/sync.odin` — Up to $N$ concurrent permits with zero heap allocations, True ZII, non-positive count guards, and chained cleanup hooks | **PASS** |
+| **Cooperative Resource Lock: `Fiber_Mutex`** | `sync/sync.odin` — Fiber mutual exclusion queue without OS thread blocking, True ZII, and RAII cleanup | **PASS** |
+| **Pure CSP Typed Channels (`Channel(T)`)** | `sync/sync.odin` — Symmetrical rendezvous (unbuffered `capacity == 0`) and bounded FIFO queues with deadlock-safe timeouts and multi-channel select | **PASS** |
+| **Memory Pre-Warming & Stats** | `pool.odin` & `scheduler.odin` — `scheduler_prewarm` and `scheduler_pool_stats` telemetry | **PASS** |
+| **Handle Introspection & Diagnostics** | `api.odin` — `fiber_is_alive` and `fiber_status` queries with circular handle history | **PASS** |
+| **Unopinionated Async Job Bridge** | `api.odin` — Zero-allocation lock-free `Async_Token` and `await_async` bridging background workers to main-thread fibers | **PASS** |
+| **Inline 128-Byte By-Value Payloads** | `api.odin` — `spawn_val` / `branch_val` zero-heap transient payload buffers | **PASS** |
+| **Headless Virtual Simulation Stepping** | `scheduler.odin` — Independent `clock_advance` and `scheduler_run` stepping in virtual delta-time | **PASS** |
+| **Hierarchical Sub-Scope Cancellation** | `scheduler.odin` — `scope_cancel` and `scope_destroy` across heterogeneous states in $O(1)$ | **PASS** |
+| **Live F1 / TAB Hierarchy Debugger** | `examples/showcase/main.odin` — Visual overlay with tree hierarchy, countdowns, and stack telemetry | **PASS** |
 
 ---
 
-## 2. Test Suite Execution Results (190 Tests Passing)
+## 2. Test Suite Execution Results (177 Tests Passing)
 
-All **190 unit tests** execute cleanly via `build.ps1 test`:
+All **177 unit tests** execute cleanly via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 190 tests in ~320ms. All tests were successful.
+Finished 128 tests in ~330ms. All tests were successful.
+
+Testing coroutine/sync package ()...
+Finished 49 tests in ~16ms. All tests were successful.
+
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-### Complete 190-Test Catalog across 18 Test Suites:
+### Complete 177-Test Catalog across 18 Test Suites:
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -91,21 +92,21 @@ Finished 190 tests in ~320ms. All tests were successful.
 31. `test_fiber_lifecycle_generation_reuse`: Sequential fiber batches verifying clean stack reuse.
 
 #### Suite 7: 3-Tier Multi-Domain Clock Architecture (Tests 32–36)
-32. `test_scheduler_step_while_paused`: Verifies simulation clock halts while paused.
-33. `test_real_time_clock_while_paused`: Verifies `wait_real` advances during paused simulation.
-34. `test_fixed_integer_tick_clock`: Verifies discrete `wait_ticks` and `scheduler_step_ticks`.
-35. `test_dual_clock_time_scaling`: Verifies `time_scale` dilation on sim clock while real clock is unchanged.
-36. `test_multi_clock_heap_integrity`: Verifies separation between `timer_heap` and `real_timer_heap`.
+32. `test_clock_domain_simulation_while_paused`: Verifies simulation clock halts while paused.
+33. `test_clock_domain_real_while_paused`: Verifies `CLOCK_REAL` advances during paused simulation.
+34. `test_clock_domain_fixed_steps`: Verifies discrete `wait_steps` and `clock_advance`.
+35. `test_clock_domain_time_scaling`: Verifies `time_scale` dilation on sim clock while real clock is unchanged.
+36. `test_clock_domain_heap_integrity`: Verifies separation between clock domain timer heaps.
 
-#### Suite 8: Primitives (Channels, Generators, Mutexes, Signals) (Tests 37–44)
-37. `test_channel_synchronous_rendezvous`: Unbuffered zero-capacity channel rendezvous.
-38. `test_channel_buffered_fifo`: Bounded circular ring buffer FIFO queueing.
-39. `test_channel_close_and_drain`: Draining remaining elements on channel close.
-40. `test_generator_lazy_sequence`: Zero-allocation stateful pull iterators with `yield_value`.
-41. `test_generator_early_termination`: Prematurely destroying active generators.
-42. `test_signal_broadcast`: Zero-polling `Signal` waking multiple fibers simultaneously.
-43. `test_fiber_mutex_contention`: Cooperative mutual exclusion queue without OS thread locking.
-44. `test_fiber_mutex_try_lock`: Non-blocking opportunistic mutex acquisition.
+#### Suite 8: Primitives (Channels, Mutexes, Signals, Events) (Tests 37–44)
+37. `test_channel_synchronous_rendezvous`: Unbuffered zero-capacity channel rendezvous (`coroutine/sync`).
+38. `test_channel_buffered_fifo`: Bounded circular ring buffer FIFO queueing (`coroutine/sync`).
+39. `test_channel_close_and_drain`: Draining remaining elements on channel close (`coroutine/sync`).
+40. `test_signal_broadcast`: Zero-polling `Signal` waking multiple fibers simultaneously.
+41. `test_fiber_mutex_contention`: Cooperative mutual exclusion queue without OS thread locking (`coroutine/sync`).
+42. `test_fiber_mutex_try_lock`: Non-blocking opportunistic mutex acquisition (`coroutine/sync`).
+43. `test_event_typed_multicast`: Verifies `Event(T)` 1-to-many publish-subscribe delivers typed payload to multiple listeners.
+44. `test_event_empty_emit`: Verifies emitting to an `Event(T)` with zero active listeners is safe.
 
 #### Suite 9: Async Thread Bridge (Tests 45–46)
 45. `test_async_token_bridge`: Lock-free background worker completion waking main-thread fiber.
@@ -114,24 +115,24 @@ Finished 190 tests in ~320ms. All tests were successful.
 #### Suite 10: Inline Payloads & Interpolation (Tests 47–50)
 47. `test_spawn_val_scalar_payload`: By-value scalar copying into 128B buffer.
 48. `test_spawn_val_struct_payload`: By-value struct copying into 128B buffer.
-49. `test_tween_interpolation`: Linear, quadratic, and cubic numerical easing curves.
-50. `test_tween_vector2`: Multi-dimensional Vector2 interpolation over time.
+49. `test_clock_time_progression`: Clock progression over time steps.
+50. `test_branch_val_struct_payload`: By-value struct branch descriptor payload copying.
 
 #### Suite 11: High-Load Concurrency & Headless Simulation (Tests 51–70)
 51. `test_many_concurrent_fibers`: 100 simultaneous fibers executing concurrently.
-52. `test_simulate_until_duration`: Simulating fixed time steps headlessly.
-53. `test_simulate_until_condition`: Simulating until arbitrary game condition is satisfied.
+52. `test_simulation_loop_duration`: Simulating fixed time steps headlessly.
+53. `test_simulation_loop_condition`: Simulating until arbitrary game condition is satisfied.
 54–70. Edge-case validations covering deep stack alignments, recursive coordinator cancellations, and ring buffer wraparound.
 
 #### Suite 12: Pure Concurrency Primitives & Telemetry (Tests 71–81)
 71. `test_fiber_join_normal_completion`: Verifies caller fiber suspends and wakes on target completion (`ok == true`).
 72. `test_fiber_join_cancelled_target`: Verifies `fiber_join` unblocks and returns `ok == false` when target is aborted.
 73. `test_fiber_join_already_finished`: Verifies joining an already finished/recycled fiber returns immediately.
-74. `test_event_typed_multicast`: Verifies `Event(T)` 1-to-many publish-subscribe delivers typed payload to multiple listeners.
-75. `test_event_empty_emit`: Verifies emitting to an `Event(T)` with zero active listeners is safe.
-76. `test_fiber_semaphore_concurrency_limit`: Verifies `Fiber_Semaphore` limits active concurrency to exactly $N$ permits.
-77. `test_fiber_semaphore_try_acquire`: Verifies non-blocking permit acquisition and release.
-78. `test_fiber_latch_barrier`: Verifies `Fiber_Latch` blocks multiple waiters until counted down $N$ times.
+74. `test_event_struct_payload`: Verifies `Event(T)` struct payload delivery.
+75. `test_signal_zero_size_event`: Verifies `Signal` as zero-size `Event(struct{})`.
+76. `test_fiber_semaphore_concurrency_limit`: Verifies `Fiber_Semaphore` limits active concurrency to exactly $N$ permits (`coroutine/sync`).
+77. `test_fiber_semaphore_try_acquire`: Verifies non-blocking permit acquisition and release (`coroutine/sync`).
+78. `test_sync_combinator_barrier`: Verifies structured `sync()` blocks until all child branches complete.
 79. `test_scheduler_prewarm`: Verifies `scheduler_prewarm` allocates memory slabs up-front during loading screens.
 80. `test_handle_introspection_and_status`: Verifies `fiber_is_alive` and `fiber_status` diagnostics across live and historical fibers.
 81. `test_scheduler_pool_stats`: Verifies `scheduler_pool_stats` accurately tracks active fibers, free stacks, and memory KB.
@@ -160,18 +161,18 @@ Finished 190 tests in ~320ms. All tests were successful.
 149. `test_sim_ticks_continuous_zero_drift`: Continuous target ticks simulation math ($0.0\text{ms}$ drift over 60 FPS).
 150. `test_wait_queue_defensive_and_paused_dispatch`: Cross-queue defensive validation and paused zero-shift dispatch.
 151. `test_scheduler_time_scale_clamping`: Defensively clamps negative and NaN time scales to protect min-heap monotonicity.
-152. `test_generator_o1_and_recycle_wait_queue_defense`: Generator $O(1)$ generational lookup and wait queue unlinking on fiber recycle.
-153. `test_chan_recv_timeout_unbuffered_safety`: Unbuffered channel `chan_recv_timeout` deadlock safety when no sender is present.
+152. `test_signal_o1_and_recycle_wait_queue_defense`: Signal zero-allocation wait queue unlinking on fiber recycle.
+153. `test_chan_recv_timeout_unbuffered_safety`: Unbuffered channel `chan_recv_timeout` deadlock safety when no sender is present (`coroutine/sync`).
 154. `test_scheduler_destroy_wait_queue_unlinking`: Proactive unlinking of active fibers from wait queues on `scheduler_destroy` to prevent UAF.
 155. `test_with_timeout_by_value_branching`: `with_timeout` by-value inline payload branching.
 156. `test_fiber_calc_stack_usage_canary_breach_detection`: `fiber_calc_stack_usage` canary watermark breach detection and 100% usage reporting.
 
 #### Suite 17: Technical Hardening & Rendezvous Symmetry (Tests 157–161)
-157. `test_chan_unbuffered_sender_before_receiver`: Symmetrical unbuffered channel rendezvous when sender runs before receiver.
-158. `test_chan_select_unbuffered_with_sender`: Multi-channel select extracting from unbuffered channel with pre-queued sender.
-159. `test_spawn_real_val_while_paused`: `spawn_real_val` inline payload execution while game simulation is paused.
-160. `test_defensive_semaphore_and_latch_non_positive`: Defensive non-positive count/step guards in `semaphore_release` and `latch_count_down`.
-161. `test_simulate_until_while_paused`: `simulate_until` execution safety when scheduler starts in paused state.
+157. `test_chan_unbuffered_sender_before_receiver`: Symmetrical unbuffered channel rendezvous when sender runs before receiver (`coroutine/sync`).
+158. `test_chan_select_unbuffered_with_sender`: Multi-channel select extracting from unbuffered channel with pre-queued sender (`coroutine/sync`).
+159. `test_spawn_val_domain_while_paused`: By-value payload execution on `CLOCK_REAL` while game simulation clock is paused.
+160. `test_defensive_semaphore_non_positive`: Defensive non-positive count guards in `semaphore_release` (`coroutine/sync`).
+161. `test_simulation_loop_while_paused`: Step execution safety when scheduler simulation clock is paused.
 
 ---
 

@@ -1,15 +1,15 @@
-# The 3-Tier Multi-Domain Engine Clock (`TECH_CLOCK.md`)
+# The Indexed Multi-Domain Engine Clock (`TECH_CLOCK.md`)
 
-This document provides the mathematical foundation, precision specifications, and subsystem architecture of the **3-Tier Engine Clock** implemented in the Odin Stackful Coroutine Engine.
+This document provides the mathematical foundation, precision specifications, and subsystem architecture of the **Indexed `Clock_Domain` Engine Clock** implemented in the Odin Stackful Coroutine Engine.
 
 ---
 
 ## 1. The Physics & Mathematics of Game Clocks
 
-Game engines must balance three distinct temporal concepts:
+Game engines must balance multiple distinct temporal concepts:
 1. **Human Time (Real/Wall Time):** Menus, UI animations, network pings, telemetry, and frame profiling.
-2. **Gameplay Time (Simulation Time):** Pausable, scaleable combat, tweens, bullet-time slow motion, and physics animations.
-3. **Discrete Steps (Fixed Ticks):** Integer-indexed ticks for lockstep simulations, rollback netcode, and exact deterministic replays.
+2. **Gameplay Time (Simulation Time):** Pausable, scaleable combat, tweens, bullet-time slow motion, and character timelines.
+3. **Discrete Steps (Fixed Ticks):** Integer-indexed steps for lockstep simulations, rollback netcode, and exact deterministic replays.
 
 ### Mathematical Analysis: Why `f32` Precision Degrades
 
@@ -34,116 +34,71 @@ $$\epsilon(T) = 2^{\lfloor \log_2(T) \rfloor - 23}$$
   At 100 years of continuous runtime ($3.15 \times 10^9\text{s}$):
   $$\epsilon(3.15 \times 10^9) \approx 3.15 \times 10^9 \times 2^{-52} \approx 6.99 \times 10^{-7}\text{ s} \quad (0.7\mu\text{s})$$
   Sub-microsecond precision is maintained indefinitely across multiple real-time years.
-- **`u64` Integer Ticks:**
+- **`u64` Integer Steps:**
   At a tick rate of 1,000 Hz, a 64-bit unsigned integer tick counter will not overflow for $1.84 \times 10^{19} / 1000 \approx 584\text{ million years}$.
 
 ---
 
-## 2. The 3 Clock Domains in `Scheduler`
+## 2. The Indexed `Clock_Domain` Architecture
 
+Instead of hardcoding fixed clock variables inside the scheduler, `Scheduler` holds an indexed array of timeline domains:
+
+```odin
+Clock_ID :: distinct int
+
+CLOCK_INHERIT :: Clock_ID(-1)
+CLOCK_SIM     :: Clock_ID(0)
+CLOCK_REAL    :: Clock_ID(1)
+CLOCK_PHYS    :: Clock_ID(2)
+
+Clock_Domain :: struct {
+    time:         f64,
+    delta:        f32,
+    steps:        u64,
+    timer_heap:   [dynamic]^Fiber,
+    step_waiters: [dynamic]^Fiber,
+}
+
+Scheduler :: struct {
+    // ...
+    ready_queue: [dynamic]Fiber_Handle,
+    clocks:      [MAX_CLOCKS]Clock_Domain,
+    // ...
+}
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SCHEDULER ENGINE CLOCKS                           │
-├────────────────────────────────┬────────────────────────────────────────────┤
-│ Domain 1: Real / Wall Clock    │ • real_time: f64 (Unpaused elapsed seconds)│
-│                                │ • real_delta: f32 (Latest unscaled dt)     │
-│                                │ • real_ticks: u64 (Host frame counter)     │
-├────────────────────────────────┼────────────────────────────────────────────┤
-│ Domain 2: Scaled Simulation    │ • sim_time: f64 (Gameplay elapsed seconds) │
-│                                │ • sim_delta: f32 (Scaled dt = dt * scale)  │
-│                                │ • time_scale: f32 (0.1 = slow-mo, 2.0=fast)│
-│                                │ • is_paused: bool (Freezes sim clock)      │
-├────────────────────────────────┼────────────────────────────────────────────┤
-│ Domain 3: Discrete Fixed Ticks │ • sim_ticks: u64 (Integer game tick index) │
-│                                │ • tick_rate_hz: u32 (Default: 60 Hz)       │
-│                                │ • frame_count: u64 (Scheduler step counter)│
-└────────────────────────────────┴────────────────────────────────────────────┘
-```
+
+Every `Fiber` carries `clock_id: Clock_ID`. Child fibers created in `sync`, `race`, or `rush` automatically inherit their parent's `clock_id` (`CLOCK_INHERIT`).
 
 ### Accessor Matrix
 
 | Clock Domain | Yield Primitive | Spawning Primitive | Time Query | Delta Query |
 | :--- | :--- | :--- | :--- | :--- |
-| **Simulation** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc)` / `spawn_val` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
-| **Real-Time** | `coroutine.wait_real(f, seconds)` | `coroutine.spawn_real(&sched, proc)` / `spawn_real_val` | `coroutine.real_time(f)` | `coroutine.delta_real(f)` |
-| **Discrete Ticks** | `coroutine.wait_ticks(f, ticks)` | `coroutine.spawn(&sched, proc)` / `spawn_val` | `coroutine.current_ticks(f)` | $1 / f_{\text{tick}}$ |
-
-> **Inline By-Value Payloads on Real-Time Domain (`spawn_real_val`):**
-> Just like `spawn_val`, `spawn_real_val` copies structs or scalar values (up to 128 bytes) directly into `fiber.payload_storage` via `#assert(size_of(T) <= 128)`, guaranteeing zero allocations and lifetime safety during pause menus and UI modal overlays.
+| **Simulation** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc)` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
+| **Real-Time** | `coroutine.wait(f, seconds)` | `coroutine.spawn(&sched, proc, clock = CLOCK_REAL)` | `coroutine.current_time(f)` | `coroutine.delta_time(f)` |
+| **Fixed Physics** | `coroutine.wait_steps(f, count)` | `coroutine.spawn(&sched, proc, clock = CLOCK_PHYS)` | `coroutine.current_steps(f)` | `coroutine.delta_time(f)` |
 
 ---
 
-## 3. Pluggable Engine Drivers
+## 3. Explicit Stepping Pipeline
 
-The engine provides 4 specialized drivers to tick the scheduler depending on the game engine architecture:
+### A. `clock_advance(sched, clock_id, dt, steps = 1)`
+Advances a specific clock domain's timeline:
+1. Clamps `safe_dt = max(0.0, dt)` (immune to negative delta or NaN).
+2. Updates `c.delta = safe_dt`, `c.time += f64(safe_dt)`, `c.steps += steps`.
+3. Pops all expired timers from `c.timer_heap` (`wake_time <= c.time`) and pushes handles to `sched.ready_queue`.
+4. Wakes all step waiters with `wake_step <= c.steps` and pushes handles to `sched.ready_queue`.
 
-### A. `scheduler_step(sched, dt)`
-Standard variable frame delta driver.
-- Advances `real_time += dt`, `real_delta = dt`, `real_ticks += 1`.
-- If `!is_paused`:
-  - `sim_delta = dt * time_scale`
-  - Computes `sim_ticks` continuously from total accumulated simulation time to guarantee zero integer truncation drift over arbitrarily long gameplay sessions:
-    $$\text{target\_ticks} = \lfloor(\text{sim\_time} + \text{sim\_delta}) \times \text{tick\_rate\_hz}\rfloor$$
-    $$\text{sim\_ticks} = \text{target\_ticks} - \text{clock.sim\_ticks}$$
-  - `sim_time += sim_delta`
-  - Evaluates and wakes sleeping fibers from `timer_heap`.
-- Always evaluates and wakes sleeping fibers from `real_timer_heap`.
-- Evaluates `tick_waiters`, `frame_waiters`, and `condition_waiters`.
+### B. `scheduler_run(sched)`
+Drains all ready fibers in `sched.ready_queue` using generational handle validation, context switching into each fiber until it yields or terminates.
 
-```odin
-scheduler_step(&sched, rl.GetFrameTime())
-```
-
-### B. `scheduler_step_ticks(sched, ticks)`
-Advances the discrete simulation tick counter by `ticks` steps. Evaluates tick-based waiters registered via `wait_ticks(f, count)`.
-```odin
-// Fixed 60 Hz physics loop
-scheduler_step_ticks(&sched, 1)
-```
-
-### C. `scheduler_step_dual(sched, real_dt, sim_dt)`
-Explicit dual-clock driver for custom engines where the host simulation loop calculates scaled delta and unscaled delta independently.
-```odin
-scheduler_step_dual(&sched, raw_frame_delta, gameplay_delta)
-```
-
-### D. `scheduler_single_step(sched, dt)`
-Manual stepping driver for debuggers and step-frame analysis. Forces exactly one frame advancement regardless of pause state.
+### C. Convenience Wrapper: `scheduler_step(sched, dt, clock_id = CLOCK_SIM)`
+Calls `clock_advance(sched, clock_id, dt, 1)` followed by `scheduler_run(sched)`.
 
 ---
 
-## 4. Dual Min-Heap Architecture
+## 4. Per-Domain Binary Min-Heaps
 
-To guarantee $O(1)$ wake inspection without linear list scanning, the scheduler maintains **two independent binary min-heaps**:
-
-```
-                       ┌──────────────────────────────┐
-                       │       Scheduler Clocks       │
-                       └──────────────┬───────────────┘
-                                      │
-              ┌───────────────────────┴───────────────────────┐
-              ▼                                               ▼
-     [ sim_time / sim_delta ]                        [ real_time / real_delta ]
-              │                                               │
-              ▼                                               ▼
-    ┌───────────────────┐                           ┌───────────────────┐
-    │    timer_heap     │                           │  real_timer_heap  │
-    │  (Binary Min-Heap)│                           │ (Binary Min-Heap) │
-    ├───────────────────┤                           ├───────────────────┤
-    │ [Fiber 2: 4.12s]  │                           │ [Fiber 9: 1.05s]  │
-    │ [Fiber 5: 6.80s]  │                           │ [Fiber 7: 2.30s]  │
-    └───────────────────┘                           └───────────────────┘
-```
-
-### Min-Heap Invariants & Formulas:
-For any element at 0-indexed position $i$:
-- **Parent Index:** $\lfloor (i - 1) / 2 \rfloor$
-- **Left Child Index:** $2i + 1$
-- **Right Child Index:** $2i + 2$
-- **Heap Invariant:** `wake_time[parent(i)] <= wake_time[i]`
-
-### Operations & Complexity:
-1. **$O(1)$ Root Peek:** The root at index 0 always contains the fiber with the earliest `wake_time`.
-2. **$O(\log N)$ Insert:** Pushed to end of array and sifted upwards.
-3. **$O(\log N)$ Removal with Cached Indices:**
-   Each fiber stores its current heap array index (`heap_index` or `real_heap_index`). When a sleeping fiber is aborted via `fiber_cancel` or `race`, it is swapped with the last element and sifted in $O(\log N)$ time without full heap scanning.
+Each `Clock_Domain` maintains its own independent binary min-heap (`timer_heap: [dynamic]^Fiber`):
+- Insertions and removals are $O(\log N)$.
+- Fibers store their heap index in `f.heap_index`, allowing $O(1)$ lookup and instant $O(\log N)$ deletion upon cancellation without linear searches.
+- Fibers sleeping on steps live in an unordered array (`step_waiters: [dynamic]^Fiber`), partitioned in $O(N)$ and pruned in-place upon expiration or abort.

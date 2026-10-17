@@ -105,7 +105,7 @@ When switching between fibers:
 ---
 
 ### D. Symbolic Resume Label Capture Across Architectures
-Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_frames`, `scheduler_step`), no `call`/`bl`/`jal` instruction is emitted at the call site. To resume cleanly at the end of the template when switched back in, all three architectures capture the address of the trailing `.switch_done:` label using high-level symbolic instructions:
+Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_steps`, `scheduler_step`), no `call`/`bl`/`jal` instruction is emitted at the call site. To resume cleanly at the end of the template when switched back in, all three architectures capture the address of the trailing `.switch_done:` label using high-level symbolic instructions:
 * **AMD64 (`asm_amd64.odin`)**: `lea %rax, [.switch_done]; push %rax` pushes the RIP-relative resume address onto the stack (`0` `#byte` directives across the entire file).
 * **ARM64 (`asm_arm64.odin`)**: `adr %x30, .switch_done` loads the PC-relative address of `.switch_done:` into `%x30` (LR) before `stp %x29, %x30, [%sp, 0]`, so `ret` jumps directly to `.switch_done:` on the restored fiber's stack.
 * **RISC-V 64 (`asm_riscv64.odin`)**: `lla %ra, .switch_done` expands to `auipc + addi` to load `.switch_done:` into `%ra` before `sd %ra, [%sp + 0]`, so `jalr %zero, %ra, 0` jumps directly to `.switch_done:` on the restored fiber's stack.

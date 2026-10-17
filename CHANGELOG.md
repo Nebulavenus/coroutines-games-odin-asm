@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Minimal Verse/SkookumScript Core Refactoring & Indexed Clock_Domain Architecture] - 2026-10-17
+
+### Changed
+- **Indexed `Clock_Domain` Architecture (`config.odin`, `types.odin`, `scheduler.odin`, `api.odin`)**:
+  - Replaced the hardcoded 3-tier `Scheduler_Clock` (`Real_Time`, `Sim_Scaled`, `Fixed_Tick`) and duplicate `*_real` / `*_ticks` procedures with a generic array `clocks: [MAX_CLOCKS]Clock_Domain` (`MAX_CLOCKS :: 4`; `CLOCK_SIM = 0`, `CLOCK_REAL = 1`, `CLOCK_PHYS = 2`, `CLOCK_INHERIT = -1`).
+  - Each `Clock_Domain` encapsulates its own `time: f64`, `dt: f32`, `steps: u64`, `time_scale: f32`, `timer_heap: [dynamic]^Fiber`, and `step_waiters: [dynamic]^Fiber`.
+  - Every `Fiber` carries `clock_id: Clock_ID`. Child branches in `sync()`, `race()`, `rush()`, and `fallback()` automatically inherit `parent.clock_id` unless overridden via `branch(..., clock = ...)`.
+  - Unified timing & yielding API: `yield(f)`, `wait(f, seconds)`, `wait_steps(f, count)`, `ticker_wait(f, interval)` / `wait_ticker(f, interval)`, `ticker_rebase(f)`, `delta_time(f)`, `current_time(f)`, `current_step(f)`, `clock_advance(sched, clock_id, dt)`, `clock_set_scale(sched, clock_id, scale)`, `scheduler_run(sched)`, and `scheduler_step(sched, dt)`.
+- **Unified `Signal` and `Event(T)` (`types.odin`, `api.odin`)**:
+  - Defined `Signal :: Event(struct{})` as a zero-size payload specialization of `Event(T)`, unifying 1-to-many broadcast notifications.
+  - Overloaded `event_emit(sched, &ev)` (0-arg for `Signal`) and `event_emit(sched, &ev, payload)` (for `Event(T)`), alongside `signal_init`, `signal_destroy`, `signal_wait`, `signal_emit`, and `signal_waiter_count`.
+- **Simplified `Async_Token` (`types.odin`, `api.odin`)**:
+  - Reduced `Async_Token` to `{ state: Async_State }` and simplified `await_async(f, token)` to a lightweight atomic check loop yielding one step per check, removing `Scheduler.condition_waiters`.
+- **Extracted Optional `coroutine/sync` Subpackage (`sync/sync.odin`, `sync/sync_test.odin`)**:
+  - Moved Go/OS-style concurrency primitives (`Fiber_Mutex`, `with_mutex`, `Fiber_Semaphore`, `with_semaphore`, `Channel(T)`, `chan_send`, `chan_recv`, `chan_try_send`, `chan_try_recv`, `chan_select_recv`) out of the core package into `sync/` (`package coroutine_sync`).
+
+### Removed
+- **Cut Gameplay & Redundant Primitives from Core (`api.odin`, `types.odin`, `scheduler.odin`)**:
+  - Removed `tween_*` and `ease_*` easing helpers from core (moved to local user helpers in examples).
+  - Removed `Phase_Director` state-machine wrapper from core (replaced by direct `Fiber_Scope` usage in examples).
+  - Removed `Generator(T)` from core (which previously spun up an entire `Scheduler` instance per generator).
+  - Removed external `Ticker` struct (`ticker_init`) in favor of the fiber-embedded zero-drift `ticker_wait(f, interval)`.
+  - Removed per-frame closure polling `wait_until` / `wait_while` (+ `_timeout` overloads) and `Scheduler.condition_waiters`.
+  - Removed `Fiber_Latch` (redundant with structured `sync()` and `scope_wait()`).
+  - Removed `simulate_until` test helper from public API.
+  - Reduced `api.odin` from ~1,452 lines to 531 lines (~63% reduction) and amalgamated `dist/coroutine.odin` to 2,783 lines.
+
 ## [WebAssembly Shadow-Stack Hardening & WASM_LIMITATIONS Architecture] - 2026-09-08
 
 ### Added

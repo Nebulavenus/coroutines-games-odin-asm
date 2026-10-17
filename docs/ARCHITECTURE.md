@@ -66,7 +66,7 @@ To switch between the **Scheduler Stack** and a **Coroutine Fiber Stack**, we on
   - Stack frame: Strictly 16-byte aligned, 208 bytes.
 
 ### B. Inlined Template Expansion & Symbolic Resume Label Capture
-In Odin, `asm(...)` templates are inlined directly into callers (`wait_frames`, `scheduler_step`). Because no `call`/`bl`/`jal` instruction is emitted at the call site, the context switcher explicitly captures the address of the trailing `.switch_done:` label (`lea %rax, [.switch_done]` on AMD64, `adr %x30, .switch_done` on ARM64, `lla %ra, .switch_done` on RISC-V 64) before saving registers.
+In Odin, `asm(...)` templates are inlined directly into callers (`wait_steps`, `scheduler_step`). Because no `call`/`bl`/`jal` instruction is emitted at the call site, the context switcher explicitly captures the address of the trailing `.switch_done:` label (`lea %rax, [.switch_done]` on AMD64, `adr %x30, .switch_done` on ARM64, `lla %ra, .switch_done` on RISC-V 64) before saving registers.
 
 ### C. Caller-Saved Register Clobber Directives
 Because context switching transfers execution between fibers, all caller-saved registers (`%x2`..`%x17`, `%v0`..`%v7`, `%v16`..`%v31` on ARM64; `%t0`..`%t6`, `%a2`..`%a7` on RISC-V 64) are explicitly declared with individual `#clobber` specifications, forcing the Odin register allocator to safely spill local variables to memory across yields.
@@ -105,7 +105,9 @@ boss_behavior :: proc(fiber: ^Fiber, boss: ^Boss) {
     // Phase 1: Race between health threshold and attacks
     fiber_race(fiber, 
         proc(f: ^Fiber, b: ^Boss) {
-            wait_until(f, proc(b: ^Boss) -> bool { return b.hp < 400 }, b)
+            for b.hp >= 400 {
+                yield(f)
+            }
         },
         proc(f: ^Fiber, b: ^Boss) {
             fiber_sync(f,
@@ -550,12 +552,11 @@ Fiber_Status :: enum u8 {
     Unused,            // In stack pool / free list
     Ready,             // In ready queue, ready to be dispatched
     Running,           // Currently active on the CPU
-    Sleeping_Time,     // Sleeping in timer min-heap (wait_seconds)
-    Sleeping_Frames,   // Sleeping in frame-counter queue (wait_frames)
-    Waiting_Condition, // Polling a predicate each frame (wait_until)
-    Suspended_Join,    // Suspended waiting for children (sync / race)
+    Sleeping_Time,     // Sleeping in timer min-heap (wait)
+    Sleeping_Steps,    // Sleeping in step queue (wait_steps / yield)
+    Suspended_Join,    // Suspended waiting for children (sync / race) or async token
     Completed,         // Naturally finished execution
-    Failed,            // Encountered error / explicitly failed
+    Failed,            // Encountered error / explicitly failed via fail(f)
     Aborted,           // Cancelled by parent or sibling race winner
 }
 ```
@@ -668,75 +669,54 @@ Join_Coordinator :: struct {
 ┌────────────────────────────────────────────────────────────────────────┐
 │                               SCHEDULER                                │
 ├────────────────────────────────────────────────────────────────────────┤
-│ 1. Ready Queue        : [ Fiber 1 ] -> [ Fiber 4 ] -> [ Fiber 7 ]      │
-│    (O(1) Ring Buffer)                                                  │
+│ 1. Ready Queue        : [ Handle 1 ] -> [ Handle 4 ] -> [ Handle 7 ]   │
+│    (O(1) Generational Array)                                           │
 │                                                                        │
-│ 2. Timer Min-Heap     : Wake Time Sorted (Min element at index 0)       │
-│    (wait_seconds)       [ 0.15s: Fiber 2 ]                             │
+│ 2. Timer Min-Heap     : Wake Time Sorted Min-Heap per Clock Domain     │
+│    (wait)               [ 0.15s: Fiber 2 ]                             │
 │                        /                  \                            │
 │              [ 0.80s: Fiber 3 ]      [ 1.20s: Fiber 5 ]                │
 │                                                                        │
-│ 3. Frame Queue        : Array of fibers waiting for specific frames    │
-│    (wait_frames)        [ Target: 120, Fiber 6 ]                       │
-│                                                                        │
-│ 4. Condition Watchlist: Array of fibers with polling predicates        │
-│    (wait_until)         [ proc(), Fiber 8 ]                            │
+│ 3. Step Waiters       : Array of fibers waiting for specific steps     │
+│    (wait_steps)         [ Target Step: 120, Fiber 6 ]                  │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### A. The `Scheduler` & `Scheduler_Clock` Structs
+### A. The `Scheduler` & `Clock_Domain` Structs
 ```odin
-Time_Clock :: enum u8 {
-    Sim_Scaled,  // Scaled by time_scale and halted by is_paused (Default for gameplay)
-    Real_Time,   // Always runs at 1.0x real wall-clock speed (UI, menus, network)
-    Fixed_Tick,  // Driven by fixed integer discrete ticks (Physics, rollback netcode)
-}
+Clock_ID :: distinct int
 
-Scheduler_Clock :: struct {
-    // --- 1. Real / Wall Clock (Unscaled & Unpaused) ---
-    real_time:         f64,     // Absolute real-world seconds since start
-    real_delta:        f32,     // Real-world frame delta (seconds)
-    real_ticks:        u64,     // Real-world millisecond integer timestamp
+CLOCK_INHERIT :: Clock_ID(-1)
+CLOCK_SIM     :: Clock_ID(0)
+CLOCK_REAL    :: Clock_ID(1)
+CLOCK_PHYS    :: Clock_ID(2)
 
-    // --- 2. Simulation Clock (Scaled & Pausable) ---
-    sim_time:          f64,     // Scaled simulation seconds since start
-    sim_delta:         f32,     // Scaled delta for this step
-    time_scale:        f32,     // Multiplier (1.0 = normal, 0.5 = slow-mo, 2.0 = fast)
-    is_paused:         bool,    // Freeze sim_time when true
-
-    // --- 3. Discrete Simulation Ticks (Deterministic Integer Clock) ---
-    sim_ticks:         u64,     // Integer simulation ticks (zero drift)
-    tick_rate_hz:      u32,     // e.g. 60 Hz physics or 1000 Hz ms clock
-    frame_count:       u64,     // Total scheduler steps executed
+Clock_Domain :: struct {
+    time:         f64,
+    delta:        f32,
+    steps:        u64,
+    timer_heap:   [dynamic]^Fiber,
+    step_waiters: [dynamic]^Fiber,
 }
 
 Scheduler :: struct {
-    // Queues & Heaps
-    ready_queue:       [dynamic]^Fiber,
-    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)
-    real_timer_heap:   [dynamic]^Fiber, // Min-Heap sorted by wake_time (Real/Wall Clock)
-    tick_waiters:      [dynamic]^Fiber, // Waiting on discrete integer simulation ticks
-    frame_waiters:     [dynamic]^Fiber, // Waiting on frame count
-    condition_waiters: [dynamic]^Fiber, // Waiting on boolean predicates
-    
-    // Stack Allocator & Pool
-    fiber_pool:        Fiber_Pool,
-    
-    // 3-Tier Multi-Domain Engine Clock
-    clock:             Scheduler_Clock,
-
-    // Execution Context
-    scheduler_sp:      rawptr, // Saved %rsp of the scheduler main thread
-    current_fiber:     ^Fiber, // Currently executing fiber
+    allocator:             mem.Allocator,
+    ready_queue:           [dynamic]Fiber_Handle,
+    clocks:                [MAX_CLOCKS]Clock_Domain,
+    fiber_pool:            Fiber_Pool,
+    scheduler_sp:          rawptr,
+    current_fiber:         ^Fiber,
+    watchdog_enabled:      bool,
+    watchdog_max_slice_ms: f64,
 }
 ```
 
 ### B. Multi-Domain Dispatch Loop Pipeline
 
-The scheduler supports **three pluggable engine drivers**:
-1. `scheduler_step(sched, dt)`: Standard variable frame delta step.
-2. `scheduler_step_ticks(sched, ticks)`: Deterministic integer tick step.
-3. `scheduler_single_step(sched, dt)`: Debugger freeze step.
+The scheduler supports explicit clock progression and execution:
+1. `clock_advance(sched, clock_id, dt, steps)`: Advances a specific clock domain timeline and wakes expired timers/steps.
+2. `scheduler_run(sched)`: Dispatches all ready fibers in the FIFO queue.
+3. `scheduler_step(sched, dt, clock_id)`: Convenience wrapper calling `clock_advance` followed by `scheduler_run`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -794,27 +774,42 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
         child = next
     }
 
-    // 2. Remove THIS fiber from wherever it is suspended in the scheduler
+    // 2. Remove root from scheduler clock domain queues
+    cid := int(root.clock_id)
+    if cid < 0 || cid >= MAX_CLOCKS do cid = 0
+    c := &sched.clocks[cid]
+
     switch root.status {
     case .Ready:
-        remove_by_swap(sched.ready_queue, root)
+        // Already marked aborted; ready dispatch loop skips aborted fibers
     case .Sleeping_Time:
-        timer_heap_remove(sched, root.heap_index) // O(log N) using stored index
-    case .Sleeping_Frames:
-        unordered_remove_fiber(&sched.frame_waiters, root)
-    case .Waiting_Condition:
-        unordered_remove_fiber(&sched.condition_waiters, root)
+        if root.heap_index >= 0 {
+            clock_heap_remove(c, root.heap_index) // O(log N) using stored heap_index
+        }
+    case .Sleeping_Steps:
+        for i in 0 ..< len(c.step_waiters) {
+            if c.step_waiters[i] == root {
+                unordered_remove(&c.step_waiters, i)
+                break
+            }
+        }
     case .Suspended_Join, .Running, .Completed, .Failed, .Aborted, .Unused:
-        // No queue removal needed
+        // No queue removal required
     }
 
-    // 3. Execute optional cleanup callback (destructor)
+    // 3. If fiber is sitting in an intrusive synchronization Wait_Queue, safely unlink it in O(1)
+    if root.current_wait_queue != nil {
+        wait_queue_remove(root.current_wait_queue, root)
+        root.current_wait_queue = nil
+    }
+
+    // 4. Execute optional cleanup callback (destructor)
     if root.cleanup_proc != nil {
         root.cleanup_proc(root.user_data)
         root.cleanup_proc = nil
     }
 
-    // 4. Update status & reclaim stack memory
+    // 5. Update status & reclaim stack memory
     root.status = .Aborted
     fiber_pool_recycle(&sched.fiber_pool, root)
 }
@@ -901,20 +896,15 @@ Suspends the calling fiber and yields execution back to the scheduler.
 
 ```odin
 // Time-based waits
-wait        :: proc(f: ^Fiber, seconds: f32)
-wait_ptr    :: proc(f: ^Fiber, seconds_ptr: ^f32)
+wait          :: proc(f: ^Fiber, seconds: f32)
 
-// Frame-based waits
-wait_frames :: proc(f: ^Fiber, frames: int)
-yield_frame :: proc(f: ^Fiber) // Equivalent to wait_frames(f, 1)
+// Step/frame-based waits
+wait_steps    :: proc(f: ^Fiber, steps: int)
+yield         :: proc(f: ^Fiber) // Equivalent to wait_steps(f, 1)
 
-// Predicate-based wait (unified proc group)
-wait_until_typed :: proc(f: ^Fiber, condition: proc(data: ^$T) -> bool, data: ^T)
-wait_until_nil   :: proc(f: ^Fiber, condition: proc() -> bool)
-wait_until       :: proc{wait_until_typed, wait_until_nil}  // Call wait_until(...) for both
-
-// Smooth interpolation over time (blocks until completed)
-tween       :: proc(f: ^Fiber, output: ^f32, start, target: f32, duration: f32, ease: Ease_Proc = nil)
+// Precision zero-drift interval ticking (fiber-owned, 100% Wasm-safe)
+ticker_wait   :: proc(f: ^Fiber, interval: f64)
+ticker_rebase :: proc(f: ^Fiber)
 ```
 
 ---
@@ -926,16 +916,17 @@ tween       :: proc(f: ^Fiber, output: ^f32, start, target: f32, duration: f32, 
 
 ```odin
 // Creates a branch descriptor with strongly-typed payload (unified proc group)
-branch_typed :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "") -> Branch_Desc
-branch_nil   :: proc(entry: proc(f: ^Fiber), name: string = "") -> Branch_Desc
-branch       :: proc{branch_typed, branch_nil}  // Call branch(...) for both
+branch_typed :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch_val   :: proc(entry: proc(f: ^Fiber, data: $T), data: T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch_nil   :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch       :: proc{branch_typed, branch_val, branch_nil}
 ```
 
 ### B. `sync` (Join All)
-Spawns $N$ branches in parallel and suspends the parent fiber. **Resumes only when all branches finish.**
+Spawns $N$ branches in parallel and suspends the parent fiber. **Resumes only when all branches finish.** Returns `true` if all succeeded, `false` if any failed via `fail(f)`.
 
 ```odin
-sync :: proc(f: ^Fiber, branches: ..Branch_Desc)
+sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> bool
 ```
 
 ### C. `race` (First to Finish Wins)
@@ -1010,14 +1001,11 @@ Using native Odin `defer`, resource cleanup (such as releasing a charge slot or 
 
 ```odin
 elite_charge_behavior :: proc(f: ^Fiber, ctx: ^Enemy_Ctx) {
-    // 1. Wait until a charge slot is available (Semaphore)
-    wait_until(f, proc(g: ^Game_World) -> bool {
-        if g.active_charges < 2 {
-            g.active_charges += 1
-            return true
-        }
-        return false
-    }, ctx.game)
+    // 1. Wait until a charge slot is available
+    for ctx.game.active_charges >= 2 {
+        yield(f)
+    }
+    ctx.game.active_charges += 1
 
     // Guaranteed cleanup on return OR unexpected abort/cancellation!
     defer ctx.game.active_charges -= 1
@@ -1051,9 +1039,11 @@ boss_ai_timeline :: proc(f: ^Fiber, boss: ^Boss) {
     // PHASE 1: Attack and Patrol until HP < 400
     // ==========================================
     race(f,
-        // Trigger condition to end Phase 1
+        // Trigger condition to end Phase 1 (straight-line condition polling)
         branch(proc(f: ^Fiber, b: ^Boss) {
-            wait_until(f, proc(b: ^Boss) -> bool { return b.health < 400 }, b)
+            for b.health >= 400 {
+                yield(f)
+            }
         }, boss, "Wait HP < 400"),
 
         // Active Phase 1 behaviors (both run simultaneously)
@@ -1136,58 +1126,48 @@ boss_spiral_shoot_loop :: proc(f: ^Fiber, boss: ^Boss) {
 
 # 6. Modern Architectural Expansions
 
-### A. The 3-Tier Multi-Domain Engine Clock
-The engine provides three distinct temporal domains:
-1. **Simulation Clock (`sim_time: f64`, `sim_delta: f32`, `time_scale: f32`, `is_paused: bool`)**: Pausable, scaleable clock for AI, combat, and tweens.
-2. **Real Clock (`real_time: f64`, `real_delta: f32`, `real_ticks: u64`)**: Unscaled wall-clock time for UI menus, pause screens, and diagnostics (`wait_real`, `spawn_real`).
-3. **Discrete Ticks (`sim_ticks: u64`, `tick_rate_hz: u32`, `frame_count: u64`)**: Zero-drift integer clock for deterministic physics and rollback netcode (`wait_ticks`, `scheduler_step_ticks`).
+### A. Indexed `Clock_Domain` Architecture (`clocks: [MAX_CLOCKS]Clock_Domain`)
+Instead of baking hardcoded simulation, real-time, and tick clocks with duplicated API procedures (`wait_real`, `wait_ticks`, `spawn_real`), the scheduler maintains an array of generic, orthogonal clock domains (`MAX_CLOCKS :: 4`; `CLOCK_SIM = 0`, `CLOCK_REAL = 1`, `CLOCK_PHYS = 2`, `CLOCK_INHERIT = -1`):
+1. **Per-Domain State (`Clock_Domain`)**: Each domain has its own `time: f64`, `dt: f32`, `steps: u64`, `time_scale: f32`, `timer_heap: [dynamic]^Fiber`, and `step_waiters: [dynamic]^Fiber`.
+2. **Fiber Clock Affinity (`f.clock_id`)**: Every fiber executes within a specific `Clock_ID`. Calling `wait(f, seconds)`, `wait_steps(f, count)`, `yield(f)`, or `ticker_wait(f, interval)` automatically schedules against `sched.clocks[f.clock_id]`.
+3. **Hierarchical Inheritance**: Child branches spawned via `sync()`, `race()`, `rush()`, or `fallback()` automatically inherit `parent.clock_id` when `desc.clock_id == CLOCK_INHERIT`, or can override their clock domain explicitly (`branch(..., clock = CLOCK_REAL)`).
+4. **Independent Advancement**: Host game loops advance any clock domain independently with `clock_advance(&sched, clock_id, dt)` and drain ready fibers with `scheduler_run(&sched)` (or use the convenience `scheduler_step(&sched, dt)` which advances `CLOCK_SIM` and runs).
 
-### B. Dual Min-Heap Architecture
-- `timer_heap`: $O(\log N)$ min-heap for simulation timers.
-- `real_timer_heap`: $O(\log N)$ min-heap for unpaused real-time timers.
-- Sleeping fibers store cached heap indices, allowing $O(\log N)$ cancellation without linear scans.
+### B. $O(\log N)$ Intrusive Min-Heap Timers
+- Each `Clock_Domain` maintains an $O(\log N)$ min-heap (`timer_heap`) for time-sleeping fibers.
+- Sleeping fibers store their cached `timer_heap_index: int`, allowing $O(\log N)$ cancellation and removal without linear scans.
 
-### C. $O(1)$ Ring Buffer Channel & 16KB Generator Memory
-- `Channel(T)` utilizes a circular ring buffer (`head`, `tail`, `count`) for $O(1)$ push/pop operations.
-- `Generator(T)` allocates lightweight 16KB stacks, reducing per-generator footprint by 64x compared to full 1MB engine slabs.
+### C. Minimal Verse / SkookumScript Core vs. Optional `coroutine/sync` Package
+- **Core Package (`package coroutine`)**: Focused strictly on multi-ISA stack switching, slab/guard-page memory pools, structured concurrency combinators (`sync`, `race`, `rush`, `fallback`, `with_timeout`, `fail`), `Fiber_Scope`, unified `Event(T)` / `Signal :: Event(struct{})`, and `Async_Token`.
+- **Optional Sync Subpackage (`sync/` — `package coroutine_sync`)**: Houses Go/OS-style concurrency primitives (`Fiber_Mutex`, `with_mutex`, `Fiber_Semaphore`, `with_semaphore`, `Channel(T)` ring-buffer CSP channels, and `chan_select_recv`), keeping the core runtime minimal while preserving full CSP and lock primitives for applications that need them.
 
-### D. Inline 128-Byte By-Value Payloads (`spawn_val`)
+### D. Inline 128-Byte By-Value Payloads (`spawn_val` / `branch_val`)
 - Transient parameters are copied into `fiber.payload: [128]u8`, validated via `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
 - Eliminates dangling stack pointers when spawning from transient procedures without dynamic heap allocations.
 
-### E. Phase Director FSM (`Phase_Director`)
-- Clean state machine for boss fights and cutscenes. Switching phases via `phase_switch` automatically cancels and cleans up all active coroutines belonging to the previous phase.
-
-### F. Pure Concurrency Primitives (`fiber_join`, `Event(T)`, `Fiber_Semaphore`, `Fiber_Latch`)
+### E. Pure Concurrency Primitives (`fiber_join`, `Event(T)` / `Signal`, `Async_Token`)
 - **Dynamic Task Join (`fiber_join(f, handle)`)**: Allows any fiber to await the terminal completion of an independent task handle (returning `true` on `.Completed` and `false` on abort/failure).
-- **Typed Multicast Broadcast (`Event(T)`)**: 1-to-many publish-subscribe mechanism that broadcasts typed data across decoupled systems in a single tick without CPU polling.
-- **Counting Semaphores (`Fiber_Semaphore`)**: Cooperative Dijkstra semaphore allowing up to $N$ concurrent permits for resource throttling (e.g. limiting simultaneous pathfinding queries or audio voices).
-- **Countdown Latches (`Fiber_Latch`)**: Multi-system rendezvous barrier unblocking all waiting fibers once counted down $N$ times.
+- **Unified Multicast Broadcast (`Event(T)` & `Signal :: Event(struct{})`)**: 1-to-many publish-subscribe mechanism that broadcasts typed data (or zero-size signals) across decoupled systems in a single step with zero heap allocations.
+- **Cross-Thread Async Bridge (`Async_Token`, `await_async`)**: Allows background OS worker threads to signal completion atomically without locking the cooperative scheduler.
 
-### G. Loading-Screen Pre-Warming & Diagnostics (`scheduler_prewarm`, `Pool_Stats`)
+### F. Loading-Screen Pre-Warming & Diagnostics (`scheduler_prewarm`, `Pool_Stats`)
 - **`scheduler_prewarm(sched, count)`**: Pre-allocates slab capacity during loading screens or boot, guaranteeing zero mid-game allocation spikes.
-- **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ circular handle history queries (`fiber_is_alive`, `fiber_status`).
+- **`scheduler_pool_stats(sched)` & Introspection**: Provides real-time pool metrics (active fibers, free stacks, memory in KB) and $O(1)$ generational slot queries (`fiber_is_alive`, `fiber_status`).
 
-### H. Multi-Channel Select (`chan_select_recv`)
-- **Multi-Channel Select (`chan_select_recv`, `chan_try_select_recv`)**: Go-style CSP multiplexer that checks an arbitrary slice of typed channels (`[]^Channel(T)`) and suspends the calling fiber until any channel has a message available or is closed.
-
-### I. 100% Pure Structured Concurrency & POSIX Guard Page Parity (`Fiber_Scope`, `race`, `mprotect`)
-- **100% Pure Structured Concurrency**: Zero unstructured escape hatches. Hierarchical lifetimes are managed via `Fiber_Scope` and component sub-scopes (`scope_cancel`), and status preemption (EMP, Stun, Silence) is managed via `race` + `Signal` / `rush`.
+### G. 100% Pure Structured Concurrency & POSIX Guard Page Parity (`Fiber_Scope`, `race`, `mprotect`)
+- **100% Pure Structured Concurrency**: Hierarchical lifetimes are managed via `Fiber_Scope` (`scope_cancel`, `scope_wait`), and status preemption (EMP, Stun, Phase transitions) is managed via `race` + `Signal` / `rush` or `scope_cancel`.
 - **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_GUARD`.
 
-### J. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
+### H. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
 - **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs > 100ms without yielding.
-- **Channel Auto-Wake & Timeouts**: `chan_destroy` automatically closes channels before memory deallocation to wake pending senders and receivers with `ok = false`, and `chan_recv_timeout` enables deadline-based message reception without hanging.
 - **Footguns Prevention Guide**: Documented in [`docs/guides/GUIDE_FOOTGUNS.md`](guides/GUIDE_FOOTGUNS.md).
 
-### K. Zero-Shift Dispatch & Hardware Cache Physics (`docs/tech/TECH_MEMORY.md`, `docs/guides/GUIDE_PERFORMANCE.md`)
-- **Zero-Shift Ready Queue Index Cursor**: Replaces $O(N^2)$ `pop_front` dynamic slice shifting with an $O(N)$ linear index cursor (`for i := 0; i < len(ready_queue); i += 1`), eliminating 50,000,000 memory moves per frame under high load and concluding with an $O(1)$ `clear(&sched.ready_queue)`.
-- **In-Place Linear Waiter Partitioning**: Waking `frame_waiters`, `tick_waiters`, and `condition_waiters` uses a single-pass `write_idx` filter that streams through contiguous memory with maximum L1/L2 cache prefetching efficiency.
-- **CPU Cache Hierarchy & Memory Wall**: Explains the physical memory latency barrier of 10,000 fibers ($320\text{ MB}$ exceeding L3 cache by $5\times\text{--}10\times$ and incurring ~50–80ns DRAM miss latency) vs. standard game production workloads ($1,000\text{ fibers} = 32\text{ MB}$, fitting 100% inside on-die L3 cache for sub-0.35ms frame step latency).
+### I. Zero-Shift Dispatch & Hardware Cache Physics (`docs/tech/TECH_MEMORY.md`, `docs/guides/GUIDE_PERFORMANCE.md`)
+- **Zero-Shift Ready Queue Index Cursor**: Replaces $O(N^2)$ `pop_front` dynamic slice shifting with an $O(N)$ linear index cursor (`for i := 0; i < len(ready_queue); i += 1`), concluding with an $O(1)$ `clear(&sched.ready_queue)`.
+- **In-Place Linear Waiter Partitioning**: Waking `step_waiters` uses a single-pass `write_idx` filter that streams through contiguous memory with maximum L1/L2 cache prefetching efficiency.
 
-### L. Centralized Configuration, Packed Generational Handles & Intrusive Futex Queues ([`docs/tech/TECH_SDS_AND_HANDLES.md`](tech/TECH_SDS_AND_HANDLES.md))
-- **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary arenas, canaries, and tick rates) are unified using Odin's `#config` directive, allowing zero-source-modification build overrides via `-define:KEY=VALUE`.
-- **Packed Generational Handles ($O(1)$ Direct Slot Resolution)**: `Fiber_Handle` packs `u16 slot_index | u16 generation` into a 32-bit integer, transforming $O(N)$ linear handle searches into instant $O(1)$ direct array index lookups with 100% ABA and use-after-free protection.
-- **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**: Synchronization primitives (`Fiber_Mutex`, `Signal`, `Fiber_Semaphore`, `Fiber_Latch`, `Event(T)`, `Channel(T)`) embed doubly-linked intrusive links inside `Fiber` (`next_waiter`, `prev_waiter`). Delivers 100% zero heap allocations, unbounded waiter capacity, true Zero Is Initialization (ZII), and $O(1)$ in-place node removals (`wait_queue_remove`).
-- **Complete Deep-Dive**: Documented in [`docs/tech/TECH_SDS_AND_HANDLES.md`](tech/TECH_SDS_AND_HANDLES.md).
+### J. Centralized Configuration, Packed Generational Handles & Intrusive Futex Queues ([`docs/tech/TECH_SDS_AND_HANDLES.md`](tech/TECH_SDS_AND_HANDLES.md))
+- **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary arenas, canaries, and `MAX_CLOCKS`) are unified using Odin's `#config` directive.
+- **Packed Generational Handles ($O(1)$ Direct Slot Resolution)**: `Fiber_Handle` packs `u16 slot_index | u16 generation` into a 32-bit integer for $O(1)$ direct array index lookups with 100% ABA and use-after-free protection.
+- **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**: Synchronization primitives (`Event(T)`/`Signal` in core, plus `Fiber_Mutex`, `Fiber_Semaphore`, `Channel(T)` in `sync/`) embed doubly-linked intrusive links inside `Fiber` (`next_waiter`, `prev_waiter`). Delivers 100% zero heap allocations, unbounded waiter capacity, true Zero Is Initialization (ZII), and $O(1)$ in-place node removals (`wait_queue_remove`).
 

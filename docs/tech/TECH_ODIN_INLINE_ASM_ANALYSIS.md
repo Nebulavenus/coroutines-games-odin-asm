@@ -159,6 +159,6 @@ Three upstream compiler limitations explain the remaining `#byte` instructions i
 
 Because `fiber_context_switch` preserves all **callee-saved** registers (`%xmm6`..`%xmm15` on Win64, `d8`..`d15` on ARM64, `fs0`..`fs11` on RISC-V 64, and non-volatile GPRs across all platforms), while **caller-saved** scratch registers remain volatile across procedure calls:
 1. **Never `#force_inline` procedures that suspend a fiber**:
-   Keeping `wait_frames`, `wait`, and `yield_frame` as standard procedure calls ensures the platform ABI spills any live caller-saved registers before entering the yield function.
+   Keeping `wait_steps`, `wait`, and `yield` as standard procedure calls ensures the platform ABI spills any live caller-saved registers before entering the yield function.
 2. **Explicit `#volatile` and `#clobber memory`**:
    Every context switch template is marked `#volatile` and `#clobber memory`, preventing LLVM from caching memory loads across a fiber suspension point.

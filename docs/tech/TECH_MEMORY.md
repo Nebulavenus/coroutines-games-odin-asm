@@ -53,10 +53,12 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 ├────────────────────────────────┼────────────────────────────┤
 │ payload_storage: [128]u8       │ Inline by-value copy buffer│
 ├────────────────────────────────┼────────────────────────────┤
-│ wake_time: f64                 │ Absolute simulation wake   │
-│ real_wake_time: f64            │ Absolute real-clock wake   │
+│ clock_id: Clock_ID             │ Assigned Clock Domain      │
+│ wake_time: f64                 │ Absolute domain wake time  │
+│ wake_step: u64                 │ Absolute domain wake step  │
 │ heap_index: int                │ Cached index in timer_heap │
-│ real_heap_index: int           │ Cached in real_timer_heap  │
+│ ticker_interval: f32           │ Periodic ticker interval   │
+│ ticker_next_wake: f64          │ Periodic next timestamp    │
 └────────────────────────────────┴────────────────────────────┘
 ```
 
@@ -131,7 +133,7 @@ In standard Odin programs, `context.temp_allocator` is typically a global ring b
 ### Solution: Embedded 4KB Per-Fiber Arena
 - Every `Fiber` contains an embedded 4KB `mem.Arena` buffer (`temp_arena`).
 - When a fiber is activated during context switch, `context.temp_allocator` is bound to the fiber's isolated arena.
-- Temporary allocations created within a fiber survive across multiple `yield_frame`, `wait`, or `sync` suspensions.
+- Temporary allocations created within a fiber survive across multiple `yield`, `wait`, or `sync` suspensions.
 - When the fiber completes, the arena is reset in $O(1)$ time without fragmentation.
 
 ---

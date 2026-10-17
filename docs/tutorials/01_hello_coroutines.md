@@ -52,19 +52,19 @@ main :: proc() {
         coroutine.wait(f, 1.0)
         fmt.println("[Step 2] Resumed after 1.0s of simulation time!")
 
-        // Yield for 3 consecutive engine frames
-        coroutine.wait_frames(f, 3)
-        fmt.println("[Step 3] Resumed after waiting 3 frames!")
+        // Yield for 3 consecutive engine steps
+        coroutine.wait_steps(f, 3)
+        fmt.println("[Step 3] Resumed after waiting 3 steps!")
 
-        // Yield for a single frame
-        coroutine.yield_frame(f)
+        // Yield for a single step
+        coroutine.yield(f)
         fmt.println("[Step 4] Final step executed! Fiber finishing naturally.")
     })
 
     // 3. Drive the Game Loop with Delta Time
     dt: f32 = 0.5
     for i := 0; i < 6; i += 1 {
-        fmt.printf("\n--- Engine Tick %d (sim_time: %.2fs) ---\n", i, sched.clock.sim_time)
+        fmt.printf("\n--- Engine Tick %d (sim_time: %.2fs) ---\n", i, sched.clocks[coroutine.CLOCK_SIM].time)
         coroutine.scheduler_step(&sched, dt)
     }
 }
@@ -93,16 +93,25 @@ main :: proc() {
 
 ## 3. Comprehensive Suspension Primitives Reference
 
-The engine provides 6 fundamental yield primitives to pause execution:
+The engine provides an orthogonal set of yield primitives to pause execution:
 
 | Primitive | Description | Typical Use Case |
 | :--- | :--- | :--- |
-| **`coroutine.wait(f, seconds: f64)`** | Sleeps for $N$ seconds in **simulation time**. Halts if `sched.is_paused = true`. | Combat cooldowns, spell casting, entity timelines. |
-| **`coroutine.wait_real(f, seconds: f64)`** | Sleeps for $N$ seconds in **unpaused wall-clock time**. Continues ticking when paused. | Pause menu animations, UI banners, HUD notifications. |
-| **`coroutine.yield_frame(f)`** | Suspends execution until the next scheduler step. | Per-frame physics updates, continuous motion loops. |
-| **`coroutine.wait_frames(f, count: u64)`** | Suspends execution for exactly $N$ consecutive engine frames. | Frame-accurate invulnerability windows, hit-stop. |
-| **`coroutine.wait_until(f, cond_proc, data)`** | Suspends and re-evaluates the boolean predicate every frame until `true`. | Waiting for player health drop, objective triggers. |
-| **`coroutine.wait_while(f, cond_proc, data)`** | Suspends and continues waiting as long as the predicate remains `true`. | Waiting while enemy is stunned or frozen. |
+| **`coroutine.wait(f, seconds: f32)`** | Sleeps for $N$ seconds in the fiber's **Clock Domain** (defaults to `CLOCK_SIM`). | Combat cooldowns, spell casting, entity timelines. |
+| **`coroutine.yield(f)`** *(alias: `yield_frame`)* | Suspends execution until the next step of the fiber's clock domain. | Continuous per-frame motion loops, game logic updates. |
+| **`coroutine.wait_steps(f, count: int)`** *(alias: `wait_frames`)* | Suspends execution for exactly $N$ consecutive clock steps. | Hit-stop frames, invulnerability flickers, fixed physics ticks. |
+| **`coroutine.ticker_wait(f, interval: f32)`** | Zero-drift periodic timer embedded directly in the fiber state. | Status effect ticks, periodic network pings, DOT pulses. |
+
+> [!TIP]
+> **Condition Waiting in Odin**: Rather than hidden per-frame closure allocations (`wait_until`/`wait_while`), condition waiting in the minimal core is simply written as an explicit, zero-allocation loop:
+> ```odin
+> for !condition_met() {
+>     coroutine.yield(f)
+> }
+> ```
+> For event-driven waits without polling, use [`coroutine.Signal`](05_synchronization.md) or [`coroutine.Event(T)`](05_synchronization.md).
+>
+> **Unpaused UI / Real-Time**: To make a fiber run on unpaused wall-clock time, pass `clock = coroutine.CLOCK_REAL` to `spawn()` or call `coroutine.fiber_set_clock(f, coroutine.CLOCK_REAL)`. See [Tutorial 8: Multi-Domain Clocks](08_multi_domain_clocks.md).
 
 ---
 
@@ -138,7 +147,7 @@ In standard Odin, `context.temp_allocator` is a global ring buffer reset at the 
 ### The Engine's Embedded Arena Solution
 - Every `Fiber` contains an embedded 4KB `mem.Arena`.
 - When a fiber is scheduled, `context.temp_allocator` is automatically bound to the fiber's isolated arena.
-- Temporary allocations created within a fiber survive across multiple `yield_frame`, `wait`, or `sync` suspensions!
+- Temporary allocations created within a fiber survive across multiple `yield`, `wait`, or `sync` suspensions!
 
 ```odin
 coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
@@ -159,7 +168,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
 
 > [!CAUTION]
 > **Infinite Loop Without Yield:**
-> Never write `for { /* heavy work */ }` without calling a yield primitive (`coroutine.yield_frame` or `coroutine.wait`). Because coroutines are cooperative, a fiber that never yields will hang the main thread permanently.
+> Never write `for { /* heavy work */ }` without calling a yield primitive (`coroutine.yield` or `coroutine.wait`). Because coroutines are cooperative, a fiber that never yields will hang the main thread permanently.
 
 > [!TIP]
 > **Stack Size Awareness:**

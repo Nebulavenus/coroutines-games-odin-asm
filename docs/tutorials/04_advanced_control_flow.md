@@ -42,7 +42,7 @@ NPC :: struct {
 }
 
 npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
-    fmt.Printf("[AI] %s started decision loop.\n", npc.name)
+    fmt.printf("[AI] %s started decision loop.\n", npc.name)
 
     for {
         // Fallback executes sequentially until the FIRST successful branch!
@@ -59,7 +59,7 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
                     return
                 }
 
-                fmt.Printf("[AI] %s executing Heavy Melee Slam!\n", n.name)
+                fmt.printf("[AI] %s executing Heavy Melee Slam!\n", n.name)
                 coroutine.wait(f, 0.5)
             }, npc, name = "Melee Priority"),
 
@@ -71,13 +71,13 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
                     return
                 }
 
-                fmt.Printf("[AI] %s executing Ranged Sniper Shot!\n", n.name)
+                fmt.printf("[AI] %s executing Ranged Sniper Shot!\n", n.name)
                 coroutine.wait(f, 0.8)
             }, npc, name = "Ranged Priority"),
 
             // Priority 3: Fallback Patrol
             coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
-                fmt.Printf("[AI] %s patrolling to waypoint %d.\n", n.name, n.patrol_index)
+                fmt.printf("[AI] %s patrolling to waypoint %d.\n", n.name, n.patrol_index)
                 n.patrol_index = (n.patrol_index + 1) % 4
                 coroutine.wait(f, 1.0)
             }, npc, name = "Patrol Fallback"),
@@ -187,50 +187,53 @@ if winner == 1 {
 
 ---
 
-## 5. Zero-Drift Loops with `Ticker`
+## 5. Zero-Drift Loops with Fiber-Owned Tickers (`ticker_wait`)
 
-When running periodic actions, replace naive `wait()` loops with `Ticker` to eliminate cumulative floating-point drift:
+When running periodic actions, avoid naive `wait()` loops which accumulate frame quantization error. Instead, use the built-in fiber-owned ticker to eliminate cumulative timing drift:
 
 ```odin
-ticker: coroutine.Ticker
-coroutine.ticker_init(&ticker, interval_seconds = 0.5)
-
-for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds
-    coroutine.ticker_wait(f, &ticker)
+for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds with zero cumulative drift
+    coroutine.ticker_wait(f, interval_seconds = 0.5)
     fmt.println("Heartbeat pulse!")
 }
 ```
 
+- **Zero Allocations & True ZII**: Timestamps (`ticker_interval`, `ticker_next_wake`) live directly on the `Fiber` struct in memory.
+- **WebAssembly Hardened**: Fully immune to Asyncify shadow-stack clobbering across yields.
+- **Interruption Rebase**: If a fiber is stunned or paused, call `coroutine.ticker_rebase(f)` to reset schedule timestamps cleanly.
+
 ---
 
-## 6. Time-Bounded Condition Waiting (`wait_until_timeout` & `wait_while_timeout`)
+## 6. Time-Bounded Actions with `with_timeout`
 
-When awaiting a game condition that must abort if not met within a deadline (e.g. waiting for an elevator to arrive or an enemy to enter range), use the 1-line condition timeout combinators:
+In structured concurrency, bounding any action by a deadline is done cleanly using `coroutine.with_timeout`:
 
 ```odin
 Elevator :: struct {
-    floor:      int,
-    door_open:  bool,
+    floor:     int,
+    door_open: bool,
 }
 
 elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
     fmt.println("Calling elevator to floor 5...")
 
-    // Suspends until elevator reaches floor 5 OR 4.0 seconds elapse:
-    reached, timed_out := coroutine.wait_until_timeout(f, 4.0, proc(e: ^Elevator) -> bool {
-        return e.floor == 5 && e.door_open
-    }, e)
+    // Runs the branch with a 4.0 second deadline:
+    arrived := coroutine.with_timeout(f, 4.0, coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Elevator) {
+        for !(e.floor == 5 && e.door_open) {
+            coroutine.yield(f)
+        }
+    }, e))
 
-    if reached {
+    if arrived {
         fmt.println("Elevator arrived on time! Boarding...")
-    } else if timed_out {
+    } else {
         fmt.println("Elevator timed out! Taking the stairs!")
     }
 }
 ```
 
-- **Zero Leaks**: Automatically cleans up the internal race branches upon either condition fulfillment or timeout expiry.
-- **Overloaded Ergonomics**: Supports pointer state (`_ptr`), by-value inline payloads (`_val`), and parameterless predicates (`_nil`).
+- **Zero Leaks**: Automatically cancels and prunes the workload branch if the timeout expires first.
+- **Cross-Clock Timeouts**: An optional `timeout_clock` parameter allows racing simulation workloads against unpaused wall-clock time (`coroutine.with_timeout(f, 5.0, task, coroutine.CLOCK_REAL)`).
 
 ---
 

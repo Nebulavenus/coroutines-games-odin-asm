@@ -42,7 +42,7 @@ By convention in the Binaryen runtime:
 
 ## 3. The Leaf Unwind/Rewind Protocol
 
-In typical Asyncify usage from C/C++ (Emscripten), `asyncify_start_unwind` is invoked from host JavaScript or an uninstrumented foreign function. In our Odin native runtime, however, fibers yield from deep inside pure Odin code (`coroutine.wait`, `coroutine.yield_frame`, or `coroutine.ticker_wait`).
+In typical Asyncify usage from C/C++ (Emscripten), `asyncify_start_unwind` is invoked from host JavaScript or an uninstrumented foreign function. In our Odin native runtime, however, fibers yield from deep inside pure Odin code (`coroutine.wait`, `coroutine.yield`, or `coroutine.ticker_wait`).
 
 ### The Architectural Challenge
 If `asyncify_start_unwind` is called from inside an uninstrumented leaf function, the WebAssembly engine begins unwinding immediately. However, upon **rewind**, the engine re-invokes the top-level procedure. If the leaf procedure itself is not instrumented or does not stop the rewind state, execution traps with:
@@ -50,12 +50,12 @@ If `asyncify_start_unwind` is called from inside an uninstrumented leaf function
 RuntimeError: unreachable (or asyncify state corrupted)
 ```
 
-### The Solution: The Symmetric Leaf Protocol in `api.odin`
-To achieve clean resumption from arbitrary nested procedures, `yield_frame` implements the **Symmetric Leaf Protocol**:
+### The Solution: The Symmetric Leaf Protocol in `asm_wasm32.odin`
+To achieve clean resumption from arbitrary nested procedures, the leaf switcher implements the **Symmetric Leaf Protocol**:
 
 ```odin
-// api.odin (when ODIN_ARCH == .wasm32)
-yield_frame :: proc(f: ^Fiber) {
+// asm_wasm32.odin / api.odin (when ODIN_ARCH == .wasm32)
+yield :: proc(f: ^Fiber) {
     if f == nil || f.sched == nil do return
 
     // 1. Mark fiber status as Ready and enqueue in scheduler ready queue
@@ -85,7 +85,7 @@ yield_frame :: proc(f: ^Fiber) {
     └───────────┬─────────────┘             └───────────▲─────────────┘
                 │ wait()                                │ resumes!
     ┌───────────▼─────────────┐             ┌───────────┴─────────────┐
-    │    yield_frame(f)       │             │    yield_frame(f)       │
+    │       yield(f)          │             │       yield(f)          │
     │  asyncify_start_unwind  │             │  asyncify_stop_rewind   │
     └───────────┬─────────────┘             └───────────▲─────────────┘
                 │ unwinds stack                         │ fast-forwards

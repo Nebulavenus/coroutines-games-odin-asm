@@ -67,7 +67,6 @@ Boss :: struct {
     shield_alpha: f32,
     color:        rl.Color,
     scope:        coroutine.Fiber_Scope,
-    director:     coroutine.Phase_Director,
     stun_signal:  coroutine.Signal,
     alive:        bool,
 }
@@ -85,6 +84,7 @@ Game :: struct {
     particle_count:          int,
     camera_offset:           rl.Vector2,
     game_time:               f32,
+    is_paused:               bool,
     show_coroutine_debugger: bool,
     game_over:               bool,
     victory:                 bool,
@@ -100,6 +100,46 @@ Game :: struct {
 g_game: ^Game
 
 g_rng_state: u32 = 0x853c49e6
+
+ease_out_back :: proc(t: f32) -> f32 {
+    c1: f32 = 1.70158
+    c3 := c1 + 1.0
+    tm1 := t - 1.0
+    return 1.0 + c3 * tm1 * tm1 * tm1 + c1 * tm1 * tm1
+}
+
+ease_in_out_quad :: proc(t: f32) -> f32 {
+    return t < 0.5 ? 2.0 * t * t : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 2.0
+}
+
+ease_in_out_cubic :: proc(t: f32) -> f32 {
+    return t < 0.5 ? 4.0 * t * t * t : 1.0 - (-2.0 * t + 2.0) * (-2.0 * t + 2.0) * (-2.0 * t + 2.0) / 2.0
+}
+
+tween_f32 :: proc(f: ^coroutine.Fiber, target: ^f32, from, to, duration: f32, ease: proc(f32) -> f32 = nil) {
+    if duration <= 0 { target^ = to; return }
+    elapsed: f32 = 0
+    for elapsed < duration {
+        coroutine.yield(f)
+        elapsed += coroutine.delta_time(f)
+        t := clamp(elapsed / duration, 0.0, 1.0)
+        target^ = from + (to - from) * (ease != nil ? ease(t) : t)
+    }
+    target^ = to
+}
+
+tween_vec2 :: proc(f: ^coroutine.Fiber, target: ^[2]f32, from, to: [2]f32, duration: f32, ease: proc(f32) -> f32 = nil) {
+    if duration <= 0 { target^ = to; return }
+    elapsed: f32 = 0
+    for elapsed < duration {
+        coroutine.yield(f)
+        elapsed += coroutine.delta_time(f)
+        t := clamp(elapsed / duration, 0.0, 1.0)
+        et := ease != nil ? ease(t) : t
+        target^ = from + (to - from) * et
+    }
+    target^ = to
+}
 
 game_rand_f32 :: proc(min_val, max_val: f32) -> f32 {
     g_rng_state = g_rng_state * 1664525 + 1013904223
@@ -188,7 +228,7 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
         coroutine.yield_frame(f)
         elapsed += coroutine.delta_time(f)
         t := clamp(elapsed / dur, 0.0, 1.0)
-        eased_t := coroutine.ease_out_back(t)
+        eased_t := ease_out_back(t)
         curr_ft.pos.y = start_y + (target_y - start_y) * eased_t
         curr_ft.alpha = 1.0 - t
         (cast(^Floating_Text)&f.payload_storage[0])^ = curr_ft
@@ -237,11 +277,11 @@ player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 boss_patrol_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     center_x := f32(SCREEN_WIDTH) / 2.0
     for {
-        coroutine.tween(f, &b.pos.x, center_x, center_x + 350.0, 2.0, coroutine.ease_in_out_quad)
+        tween_f32(f, &b.pos.x, center_x, center_x + 350.0, 2.0, ease_in_out_quad)
         coroutine.wait(f, 0.3)
-        coroutine.tween(f, &b.pos.x, center_x + 350.0, center_x - 350.0, 4.0, coroutine.ease_in_out_quad)
+        tween_f32(f, &b.pos.x, center_x + 350.0, center_x - 350.0, 4.0, ease_in_out_quad)
         coroutine.wait(f, 0.3)
-        coroutine.tween(f, &b.pos.x, center_x - 350.0, center_x, 2.0, coroutine.ease_in_out_quad)
+        tween_f32(f, &b.pos.x, center_x - 350.0, center_x, 2.0, ease_in_out_quad)
         coroutine.wait(f, 0.3)
     }
 }
@@ -388,9 +428,9 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     coroutine.race(f,
         // Condition branch: End Phase 1 when HP < 700
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
-                return b.hp > 700.0 && b.alive
-            }, b)
+            for b.hp > 700.0 && b.alive {
+                coroutine.yield(f)
+            }
         }, b, "HP < 700 Trigger"),
 
         coroutine.branch(boss_patrol_subloop, b, "Patrol Loop"),
@@ -410,14 +450,14 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     trigger_camera_shake(10.0)
 
     // 1. Move to Center
-    coroutine.tween(f, &b.pos, b.pos, [2]f32{f32(SCREEN_WIDTH) / 2.0, 180.0}, 1.0, coroutine.ease_in_out_cubic)
+    tween_vec2(f, &b.pos, b.pos, [2]f32{f32(SCREEN_WIDTH) / 2.0, 180.0}, 1.0, ease_in_out_cubic)
 
     // 2. Shield Charge Cinematic
     coroutine.sync(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.tween(f, &b.shield_alpha, 0.0, 0.85, 1.2, coroutine.ease_in_out_quad)
+            tween_f32(f, &b.shield_alpha, 0.0, 0.85, 1.2, ease_in_out_quad)
             coroutine.wait(f, 0.5)
-            coroutine.tween(f, &b.shield_alpha, 0.85, 0.0, 0.3)
+            tween_f32(f, &b.shield_alpha, 0.85, 0.0, 0.3)
         }, b, "Shield Tween"),
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
             for _ in 0 ..< 10 {
@@ -439,9 +479,9 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // 4. Phase 2 Combat Loop until HP < 350
     coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
-                return b.hp > 350.0 && b.alive
-            }, b)
+            for b.hp > 350.0 && b.alive {
+                coroutine.yield(f)
+            }
         }, b, "HP < 350 Trigger"),
 
         coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
@@ -462,9 +502,9 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
     coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-            coroutine.wait_while(f, proc(b: ^Boss) -> bool {
-                return b.alive
-            }, b)
+            for b.alive {
+                coroutine.yield(f)
+            }
         }, b, "Boss Death Trigger"),
 
         coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
@@ -510,19 +550,18 @@ game_init :: proc(g: ^Game) {
     g.particle_count = 0
     g.camera_offset = {0, 0}
     g.game_time = 0.0
+    g.is_paused = false
     g.game_over = false
     g.victory = false
 
     g_game = g
 
-    // Initialize Boss Phase Director & Spawn Boss AI timeline coroutine
-    coroutine.phase_director_init(&g.boss.director, &g.sched)
+    // Spawn Boss AI timeline coroutine
     coroutine.spawn(&g.sched, boss_master_ai, &g.boss, scope = &g.boss.scope, name = "Boss AI Timeline")
 }
 
 game_destroy :: proc(g: ^Game) {
     coroutine.signal_destroy(&g.boss.stun_signal)
-    coroutine.phase_director_destroy(&g.boss.director)
     coroutine.scope_destroy(&g.sched, &g.player.scope)
     coroutine.scope_destroy(&g.sched, &g.boss.scope)
     coroutine.scheduler_destroy(&g.sched)
@@ -537,7 +576,7 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     // Debug & Inspection Controls (P / Esc: Pause, H / Tab: Hierarchy)
     if rl.IsKeyPressed(.P) || rl.IsKeyPressed(.ESCAPE) || rl.IsKeyPressed(.F3) {
-        coroutine.scheduler_set_paused(&g.sched, !coroutine.scheduler_is_paused(&g.sched))
+        g.is_paused = !g.is_paused
     }
     if rl.IsKeyPressed(.H) || rl.IsKeyPressed(.TAB) || rl.IsKeyPressed(.F1) {
         g.show_coroutine_debugger = !g.show_coroutine_debugger
@@ -545,7 +584,7 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     sim_dt: f32 = 0.0
 
-    if !coroutine.scheduler_is_paused(&g.sched) {
+    if !g.is_paused {
         sim_dt = dt
         g.step_flash_timer = 0.0
     } else {
@@ -592,19 +631,21 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
     if sim_dt <= 0.0 {
-        coroutine.scheduler_advance_real(&g.sched, dt)
+        coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
+        coroutine.scheduler_run(&g.sched)
         return
     }
 
-    if !coroutine.scheduler_is_paused(&g.sched) {
+    if !g.is_paused {
         g.game_time += sim_dt
     }
 
-    // Step Coroutines Engine (Dual-Clock Driven)
-    if coroutine.scheduler_is_paused(&g.sched) {
-        coroutine.scheduler_single_step(&g.sched, sim_dt)
+    // Step Coroutines Engine (Multi-Clock Driven)
+    coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
+    if g.is_paused {
+        coroutine.scheduler_single_step(&g.sched, sim_dt, coroutine.CLOCK_SIM)
     } else {
-        coroutine.scheduler_step(&g.sched, sim_dt)
+        coroutine.scheduler_step(&g.sched, sim_dt, coroutine.CLOCK_SIM)
     }
 
     if g.game_over || g.victory {
@@ -876,12 +917,12 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("FPS: %d", rl.GetFPS()), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Active Fibers (Coroutines): %d", active_fibers), SCREEN_WIDTH - 280, diag_y, 16, rl.YELLOW); diag_y += 22
     rl.DrawText(fmt.ctprintf("Boss Stun Signal: [B / X: EMP]"), SCREEN_WIDTH - 280, diag_y, 16, g.boss.color == rl.DARKGRAY ? rl.GRAY : rl.ORANGE); diag_y += 22
-    rl.DrawText(fmt.ctprintf("Timer Min-Heap: %d items", len(g.sched.timer_heap)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
+    rl.DrawText(fmt.ctprintf("Timer Min-Heap: %d items", len(g.sched.clocks[coroutine.CLOCK_SIM].timer_heap)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
     // Instructions & Pause Banner
-    if coroutine.scheduler_is_paused(&g.sched) {
+    if g.is_paused {
         flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | N / .: 1-Frame | M: 10-Frames | Hold N: Slow-Mo | P: Resume", g.step_count, g.last_step_dt, g.game_time)
         rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 900, 24, {15, 18, 30, 220})
@@ -902,7 +943,7 @@ game_render :: proc(g: ^Game) {
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
         pause_header := ""
-        if coroutine.scheduler_is_paused(&g.sched) {
+        if g.is_paused {
             pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | N: 1F, M: 10F]", g.step_count, g.game_time)
         }
         rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (H / TAB) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
@@ -931,6 +972,7 @@ game_render :: proc(g: ^Game) {
 
             status_str := ""
             status_col := rl.RAYWHITE
+            cid := f.clock_id >= 0 && int(f.clock_id) < coroutine.MAX_CLOCKS ? f.clock_id : coroutine.CLOCK_SIM
             #partial switch f.status {
             case .Running:
                 status_str = "Running"
@@ -939,24 +981,14 @@ game_render :: proc(g: ^Game) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - f.sched.clock.sim_time)
-                status_str = fmt.tprintf("Sleeping_Sim (%.2fs left)", left)
+                left := max(0.0, f.wake_time - f.sched.clocks[cid].time)
+                status_str = fmt.tprintf("Sleeping_Time [C%d] (%.2fs left)", cid, left)
+                status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
+            case .Sleeping_Steps:
+                cur_s := f.sched.clocks[cid].steps
+                left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
+                status_str = fmt.tprintf("Sleeping_Steps [C%d] (%d steps)", cid, left)
                 status_col = rl.SKYBLUE
-            case .Sleeping_Real_Time:
-                left := max(0.0, f.wake_time - f.sched.clock.real_time)
-                status_str = fmt.tprintf("Sleeping_Real (%.2fs left)", left)
-                status_col = rl.PINK
-            case .Sleeping_Ticks:
-                left := f.wake_ticks > f.sched.clock.sim_ticks ? f.wake_ticks - f.sched.clock.sim_ticks : 0
-                status_str = fmt.tprintf("Sleeping_Ticks (%d left)", left)
-                status_col = rl.MAGENTA
-            case .Sleeping_Frames:
-                left := f.wake_frame > f.sched.clock.frame_count ? f.wake_frame - f.sched.clock.frame_count : 0
-                status_str = fmt.tprintf("Sleeping_Frames (%d frames)", left)
-                status_col = rl.SKYBLUE
-            case .Waiting_Condition:
-                status_str = "Waiting_Condition"
-                status_col = rl.ORANGE
             case .Suspended_Join:
                 kind := "Sync"
                 switch f.active_coord.kind {
@@ -1018,7 +1050,7 @@ when ODIN_OS == .JS {
         rl.SetTargetFPS(60)
         game_init(&g_wasm_game)
         g_wasm_game_ready = true
-        fmt.println("[Game Wasm] game_init complete! Active game set:", &g_wasm_game != nil, "| Ready Queue:", len(g_wasm_game.sched.ready_queue), "| Timer Heap:", len(g_wasm_game.sched.timer_heap))
+        fmt.println("[Game Wasm] game_init complete! Active game set:", &g_wasm_game != nil, "| Ready Queue:", len(g_wasm_game.sched.ready_queue), "| Timer Heap:", len(g_wasm_game.sched.clocks[coroutine.CLOCK_SIM].timer_heap))
         return true
     }
 

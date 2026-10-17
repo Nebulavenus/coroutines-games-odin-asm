@@ -1,29 +1,27 @@
 # The Odin Coroutine Gameplay Cookbook
 
-A curated collection of production-ready, copy-pasteable gameplay architectures built with the `coroutine` library.
+A curated collection of production-ready, copy-pasteable gameplay architectures built with the `coroutine` library and its modular `coroutine/sync` subpackage.
 
 ---
 
 ## Table of Contents
 1. [Recipe 1: Ability Channeling & Casting with Cancel Preemption (`race`)](#recipe-1-ability-channeling--casting-with-cancel-preemption-race)
-2. [Recipe 2: Interactive Dialogue & Cutscene Tree (`Channel` + `Generator`)](#recipe-2-interactive-dialogue--cutscene-tree-channel--generator)
-3. [Recipe 3: Multi-Wave Enemy Spawner (`Phase_Director` + `scope_wait`)](#recipe-3-multi-wave-enemy-spawner-phase_director--scope_wait)
+2. [Recipe 2: Interactive Dialogue & Cutscene Tree (`coroutine/sync` Channel)](#recipe-2-interactive-dialogue--cutscene-tree-coroutinesync-channel)
+3. [Recipe 3: Multi-Wave Enemy Spawner (`Fiber_Scope` + `scope_wait`)](#recipe-3-multi-wave-enemy-spawner-fiber_scope--scope_wait)
 4. [Recipe 4: AI Behavior Priority Fallbacks & Rush Objectives (`fallback` + `rush`)](#recipe-4-ai-behavior-priority-fallbacks--rush-objectives-fallback--rush)
-5. [Recipe 5: Damped Smooth Spring Follower (`tween`)](#recipe-5-damped-smooth-spring-follower-tween)
-6. [Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)](#recipe-6-unpausable-real-time-pause-menus--hud-animations-wait_real--spawn_real)
-7. [Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)](#recipe-7-lockstep-fixed-tick-physics--rollback-netcode-wait_ticks)
-8. [Recipe 8: Multi-Phase Boss AI with `Phase_Director`](#recipe-8-multi-phase-boss-ai-with-phase_director)
+5. [Recipe 5: Damped Smooth Spring Follower (Tween Pattern)](#recipe-5-damped-smooth-spring-follower-tween-pattern)
+6. [Recipe 6: Unpausable Real-Time Pause Menus (`CLOCK_REAL`)](#recipe-6-unpausable-real-time-pause-menus-clock_real)
+7. [Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`CLOCK_PHYS`)](#recipe-7-lockstep-fixed-tick-physics--rollback-netcode-clock_phys)
+8. [Recipe 8: Multi-Phase Boss AI with Hierarchical Scopes (`Fiber_Scope`)](#recipe-8-multi-phase-boss-ai-with-hierarchical-scopes-fiber_scope)
 9. [Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints](#recipe-9-rts-unit-action-queue-with-command-preemption--waypoints)
 10. [Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)](#recipe-10-multi-channel-network--input-multiplexer-chan_select_recv)
 11. [Recipe 11: Decoupled Stage Transition Signals (`Signal` / `Event(T)`)](#recipe-11-decoupled-stage-transition-signals-signal--eventt)
 12. [Recipe 12: Entity Sub-Scopes & Localized EMP Stun (`Fiber_Scope`)](#recipe-12-entity-sub-scopes--localized-emp-stun-fiber_scope)
 13. [Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)](#recipe-13-channel-timeout--deadlock-free-message-polling-chan_recv_timeout)
-14. [Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`Ticker`)](#recipe-14-zero-drift-periodic-heartbeats--damage-over-time-ticker)
+14. [Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`ticker_wait`)](#recipe-14-zero-drift-periodic-heartbeats--damage-over-time-ticker_wait)
 15. [Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)](#recipe-15-deadlock-proof-scoped-mutex--semaphore-locks-with_mutex--with_semaphore)
 16. [Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)](#recipe-16-structured-emergency-task-abort-race--signal)
 17. [Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)](#recipe-17-custom-in-engine-hierarchy-tree-debuggers-scheduler_walk_tree)
-
-> 💡 *See also: [`docs/guides/GUIDE_FOOTGUNS.md`](guides/GUIDE_FOOTGUNS.md) for the 11 real-world cooperative fiber traps, engine mitigations, and the Gameplay Programmer's Golden Rules.*
 
 ---
 
@@ -34,14 +32,13 @@ A player starts casting a powerful spell over 2.5 seconds. If the player moves, 
 
 ### Solution
 Use `coroutine.race` with two parallel branches:
-* **Branch A (The Workload):** Tweens the cast bar from 0% to 100%, plays audio, and fires the spell.
-* **Branch B (The Watcher):** Waits until a cancel condition occurs (damage taken or movement).
+* **Branch A (The Workload):** Animates the cast bar from 0% to 100%, plays audio, and fires the spell.
+* **Branch B (The Watcher):** Suspends and monitors whether a cancel condition occurs (damage taken or movement).
 
 ```odin
 package gameplay
 
-import "core:math"
-import "src/coroutine"
+import "coroutine"
 
 Player_Cast :: struct {
     is_casting:    bool,
@@ -51,27 +48,38 @@ Player_Cast :: struct {
     pos:           [2]f32,
 }
 
+tween_f32 :: proc(f: ^coroutine.Fiber, val: ^f32, start, target, duration: f32) {
+    elapsed: f32 = 0
+    for elapsed < duration {
+        elapsed += coroutine.delta_time(f)
+        t := clamp(elapsed / duration, 0.0, 1.0)
+        val^ = start + (target - start) * (t * t) // Ease-in quad
+        coroutine.yield(f)
+    }
+    val^ = target
+}
+
 cast_fireball_coroutine :: proc(f: ^coroutine.Fiber, player: ^Player_Cast) {
     player.is_casting = true
     player.cast_progress = 0.0
     player.took_damage = false
 
-    // Race workload vs cancellation triggers
-    winner := coroutine.race(f, {
+    // Race workload vs cancellation triggers:
+    winner := coroutine.race(f,
         // Branch 0: Casting Workload
         coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
-            coroutine.tween_f32(f, &p.cast_progress, 0.0, 1.0, 2.5, coroutine.ease_in_quad)
+            tween_f32(f, &p.cast_progress, 0.0, 1.0, 2.5)
             // Cast completed! Fire missile!
             spawn_fireball_projectile(p.pos)
         }, player),
 
         // Branch 1: Cancellation Watchdog
         coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
-            coroutine.wait_until(f, proc(p: ^Player_Cast) -> bool {
-                return p.took_damage || p.is_moving
-            }, p)
+            for !(p.took_damage || p.is_moving) {
+                coroutine.yield(f)
+            }
         }, player),
-    })
+    )
 
     player.is_casting = false
     if winner == 1 {
@@ -84,19 +92,19 @@ cast_fireball_coroutine :: proc(f: ^coroutine.Fiber, player: ^Player_Cast) {
 
 ---
 
-## Recipe 2: Interactive Dialogue & Cutscene Tree (`Channel` + `Generator`)
+## Recipe 2: Interactive Dialogue & Cutscene Tree (`coroutine/sync` Channel)
 
 ### Problem
 A cutscene displays typewriter text, waits for the player to select a choice from a menu, and branches into the appropriate response without blocking the 60 FPS render loop.
 
 ### Solution
-Use a `coroutine.Channel(int)` for player menu choice responses and a pull-based `Generator` to stream sentences.
+Use a `sync.Channel(Dialogue_Choice)` from `coroutine/sync` for player menu choice responses.
 
 ```odin
 package gameplay
 
-import "core:fmt"
-import "src/coroutine"
+import "coroutine"
+import sync "coroutine/sync"
 
 Dialogue_Choice :: enum {
     Accept_Quest,
@@ -107,7 +115,7 @@ Dialogue_Choice :: enum {
 Dialogue_Context :: struct {
     npc_name:       string,
     current_line:   string,
-    choice_channel: coroutine.Channel(Dialogue_Choice),
+    choice_channel: sync.Channel(Dialogue_Choice),
 }
 
 dialogue_tree_coroutine :: proc(f: ^coroutine.Fiber, ctx: ^Dialogue_Context) {
@@ -119,7 +127,7 @@ dialogue_tree_coroutine :: proc(f: ^coroutine.Fiber, ctx: ^Dialogue_Context) {
     coroutine.wait(f, 1.5)
 
     // 2. Open Choice UI & Await Player Input (Suspends fiber until player clicks)
-    choice, ok := coroutine.chan_recv(f, &ctx.choice_channel)
+    choice, ok := sync.chan_recv(f, &ctx.choice_channel)
     if !ok do return
 
     // 3. Branching response
@@ -141,29 +149,29 @@ dialogue_tree_coroutine :: proc(f: ^coroutine.Fiber, ctx: ^Dialogue_Context) {
 
 ---
 
-## Recipe 3: Multi-Wave Enemy Spawner (`Phase_Director` + `scope_wait`)
+## Recipe 3: Multi-Wave Enemy Spawner (`Fiber_Scope` + `scope_wait`)
 
 ### Problem
-An arena encounter spawns waves of enemies. Wave 2 must **only** start after **all** enemies in Wave 1 are defeated. When the boss appears, it transitions through distinct combat phases.
+An arena encounter spawns waves of enemies. Wave 2 must **only** start after **all** enemies in Wave 1 are defeated. Transitioning between phases must abort previous phase fibers.
 
 ### Solution
-Use `coroutine.scope_wait` to block until an entire wave's `Fiber_Scope` empties, and `coroutine.Phase_Director` to drive the boss lifecycle.
+Use `coroutine.scope_wait` to block until an entire wave's `Fiber_Scope` empties, and `coroutine.scope_cancel` to clean up combat subtrees upon transition.
 
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
 
 Wave_Manager :: struct {
     sched:      ^coroutine.Scheduler,
     wave_scope: coroutine.Fiber_Scope,
-    director:   coroutine.Phase_Director,
+    boss_scope: coroutine.Fiber_Scope,
 }
 
 spawn_enemy :: proc(sched: ^coroutine.Scheduler, scope: ^coroutine.Fiber_Scope, pos: [2]f32) {
     coroutine.spawn(sched, proc(f: ^coroutine.Fiber) {
         for is_enemy_alive() {
-            coroutine.yield_frame(f)
+            coroutine.yield(f)
             // AI behavior...
         }
     }, scope = scope)
@@ -184,8 +192,8 @@ arena_master_timeline :: proc(f: ^coroutine.Fiber, wm: ^Wave_Manager) {
     }
     coroutine.scope_wait(f, &wm.wave_scope)
 
-    // === BOSS ENCOUNTER via Phase_Director ===
-    coroutine.phase_switch(&wm.director, 1, boss_phase1_timeline, wm)
+    // === BOSS ENCOUNTER ===
+    coroutine.spawn_ptr(wm.sched, boss_phase1_timeline, wm, scope = &wm.boss_scope)
 }
 ```
 
@@ -205,7 +213,7 @@ Use `coroutine.fallback` and `coroutine.fail`.
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
 
 Enemy_AI :: struct {
     pos:        [2]f32,
@@ -216,7 +224,7 @@ Enemy_AI :: struct {
 enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
     for {
         // Executes sequentially until first SUCCESS
-        coroutine.fallback(f, {
+        coroutine.fallback(f,
             // 1. Priority: Melee Slam
             coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                 dist := distance(e.pos, e.player_pos)
@@ -238,7 +246,7 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
             coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
                 patrol_routine(f, e)
             }, e),
-        })
+        )
 
         coroutine.wait(f, 0.5)
     }
@@ -247,30 +255,44 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
 
 ---
 
-## Recipe 5: Damped Smooth Spring Follower (`tween`)
+## Recipe 5: Damped Smooth Spring Follower (Tween Pattern)
 
 ### Problem
-A camera or floating pet needs to follow a target with juicy, springy overshoot without writing custom integration math.
+A camera or floating pet needs to follow a target with smooth interpolation over time.
 
 ### Solution
-Use `coroutine.tween_vector2` with `coroutine.ease_out_back`.
+Write a 5-line property tween loop using `coroutine.yield(f)`:
 
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
 
 Camera_Rig :: struct {
     pos:        [2]f32,
     target_pos: [2]f32,
 }
 
+tween_vec2 :: proc(f: ^coroutine.Fiber, val: ^[2]f32, target: [2]f32, duration: f32) {
+    start := val^
+    elapsed: f32 = 0
+    for elapsed < duration {
+        elapsed += coroutine.delta_time(f)
+        t := clamp(elapsed / duration, 0.0, 1.0)
+        // Smooth cubic ease-out
+        t = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
+        val^ = start + (target - start) * t
+        coroutine.yield(f)
+    }
+    val^ = target
+}
+
 camera_follower_coroutine :: proc(f: ^coroutine.Fiber, cam: ^Camera_Rig) {
     for {
         if cam.pos != cam.target_pos {
-            coroutine.tween_vector2(f, &cam.pos, cam.pos, cam.target_pos, 0.4, coroutine.ease_out_back)
+            tween_vec2(f, &cam.pos, cam.target_pos, 0.4)
         } else {
-            coroutine.yield_frame(f)
+            coroutine.yield(f)
         }
     }
 }
@@ -278,18 +300,18 @@ camera_follower_coroutine :: proc(f: ^coroutine.Fiber, cam: ^Camera_Rig) {
 
 ---
 
-## Recipe 6: Unpausable Real-Time Pause Menus & HUD Animations (`wait_real` + `spawn_real`)
+## Recipe 6: Unpausable Real-Time Pause Menus (`CLOCK_REAL`)
 
 ### Problem
-When the player opens the pause menu, gameplay simulation halts (`sched.is_paused = true`). UI transitions and button hover wobbles must continue animating smoothly in real wall-clock time.
+When the player opens the pause menu, gameplay simulation halts (`CLOCK_SIM` is paused). UI transitions and button hover wobbles must continue animating smoothly in real wall-clock time.
 
 ### Solution
-Use `coroutine.spawn_real` and `coroutine.wait_real`.
+Spawn UI animations with `clock = coroutine.CLOCK_REAL`:
 
 ```odin
 package ui
 
-import "src/coroutine"
+import "coroutine"
 
 Pause_Menu :: struct {
     is_open:      bool,
@@ -301,45 +323,41 @@ Pause_Menu :: struct {
 open_pause_menu :: proc(menu: ^Pause_Menu) {
     menu.is_open = true
 
-    // 1. Freeze gameplay simulation clock (all standard `wait` fibers halt)
-    coroutine.scheduler_set_paused(menu.sched, true)
-
-    // 2. Spawn unpausable real-time UI animation fiber
-    coroutine.spawn_real(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
+    // Spawn unpausable real-time UI animation fiber on CLOCK_REAL:
+    coroutine.spawn(menu.sched, proc(f: ^coroutine.Fiber, m: ^Pause_Menu) {
         elapsed: f32 = 0.0
         duration: f32 = 0.30
 
         for elapsed < duration {
-            dt := coroutine.delta_real(f)
+            dt := coroutine.delta_time(f)
             elapsed += dt
             t := min(1.0, elapsed / duration)
 
-            m.backdrop_dim = coroutine.ease_out_quad(t) * 0.75
-            m.banner_scale = coroutine.ease_out_back(t)
-
-            coroutine.yield_frame(f)
+            m.backdrop_dim = t * 0.75
+            m.banner_scale = 1.0 + (1.0 - t) * 0.2
+            coroutine.yield(f)
         }
 
         m.backdrop_dim = 0.75
         m.banner_scale = 1.0
-    }, menu)
+    }, menu, clock = coroutine.CLOCK_REAL)
 }
 ```
 
 ---
 
-## Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`wait_ticks`)
+## Recipe 7: Lockstep Fixed-Tick Physics & Rollback Netcode (`CLOCK_PHYS`)
 
 ### Problem
 Multiplayer fighting games and physics engines require exact deterministic tick progression without floating point accumulation errors.
 
 ### Solution
-Use integer ticks (`coroutine.wait_ticks` and `coroutine.scheduler_step_ticks`).
+Use `coroutine.CLOCK_PHYS` and `coroutine.wait_steps(f, 1)`.
 
 ```odin
 package physics
 
-import "src/coroutine"
+import "coroutine"
 
 Physics_Object :: struct {
     pos: [2]f32,
@@ -348,33 +366,46 @@ Physics_Object :: struct {
 
 projectile_sim :: proc(f: ^coroutine.Fiber, obj: ^Physics_Object) {
     for i := 0; i < 60; i += 1 {
-        // Wait exactly 1 integer tick
-        coroutine.wait_ticks(f, 1)
+        // Wait exactly 1 integer physics tick
+        coroutine.wait_steps(f, 1)
 
         obj.pos += obj.vel
-        obj.vel.y += 0.98 // Fixed gravity
+        obj.vel.y += 0.98 // Fixed gravity step
     }
+}
+
+spawn_projectile :: proc(sched: ^coroutine.Scheduler, obj: ^Physics_Object) {
+    coroutine.spawn(sched, projectile_sim, obj, clock = coroutine.CLOCK_PHYS)
 }
 ```
 
 ---
 
-## Recipe 8: Multi-Phase Boss AI with `Phase_Director`
+## Recipe 8: Multi-Phase Boss AI with Hierarchical Scopes (`Fiber_Scope`)
 
 ### Problem
-A raid boss dynamically shifts behavior across 3 distinct phases (Phase 1: Melee, Phase 2: Bullet Hell, Phase 3: Enrage). Transitioning phases must abort all active phase-1 spell channels cleanly before starting phase 2.
+A raid boss dynamically shifts behavior across 3 distinct phases. Transitioning phases must abort all active phase-1 spell channels cleanly before starting phase 2.
 
 ### Solution
-Use `coroutine.Phase_Director` to safely switch states and auto-cancel previous phase fibers:
+Use `coroutine.Fiber_Scope` with `coroutine.scope_cancel` to cleanly prune previous phase fibers:
 
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
 
 Boss_Entity :: struct {
-    hp:       int,
-    director: coroutine.Phase_Director,
+    hp:          int,
+    phase_scope: coroutine.Fiber_Scope,
+    sched:       ^coroutine.Scheduler,
+}
+
+boss_switch_phase :: proc(b: ^Boss_Entity, phase_proc: proc(^coroutine.Fiber, ^Boss_Entity)) {
+    // 1. Instantly abort all active fibers from the previous phase!
+    coroutine.scope_cancel(b.sched, &b.phase_scope)
+
+    // 2. Spawn the new phase routine into the fresh scope:
+    coroutine.spawn(b.sched, phase_proc, b, scope = &b.phase_scope)
 }
 
 boss_phase_1 :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
@@ -392,14 +423,15 @@ boss_phase_2 :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
 }
 
 boss_lifecycle_controller :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
-    // Start in Phase 1
-    coroutine.phase_switch(&b.director, 1, boss_phase_1, b)
+    boss_switch_phase(b, boss_phase_1)
 
     // Wait until HP drops below 50%
-    coroutine.wait_until(f, proc(b: ^Boss_Entity) -> bool { return b.hp < 50 }, b)
+    for b.hp >= 50 {
+        coroutine.yield(f)
+    }
 
-    // Seamlessly cancel Phase 1 and launch Phase 2!
-    coroutine.phase_switch(&b.director, 2, boss_phase_2, b)
+    // Seamlessly cancel Phase 1 attacks and launch Phase 2!
+    boss_switch_phase(b, boss_phase_2)
 }
 ```
 
@@ -408,7 +440,7 @@ boss_lifecycle_controller :: proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
 ## Recipe 9: RTS Unit Action Queue with Command Preemption & Waypoints
 
 ### Problem
-An RTS game (like *Warcraft 3* or *StarCraft*) requires units to process a queue of commands (Move $\rightarrow$ Attack $\rightarrow$ Build). When a player issues a new immediate order (right-clicking without Shift), the current action must abort instantly. When Shift-queuing orders, actions execute in sequence.
+An RTS game requires units to process a queue of commands (Move $\rightarrow$ Attack $\rightarrow$ Build). When a player issues a new immediate order, the current action must abort instantly.
 
 ### Solution
 Use `coroutine.Fiber_Scope` to manage unit action lifecycles and a dynamic action queue:
@@ -416,7 +448,7 @@ Use `coroutine.Fiber_Scope` to manage unit action lifecycles and a dynamic actio
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
 
 Command_Kind :: enum { Move, Attack_Target, Build_Structure }
 
@@ -433,7 +465,6 @@ RTS_Unit :: struct {
     sched:        ^coroutine.Scheduler,
 }
 
-// Issue a brand-new immediate order (Cancels existing action immediately!)
 unit_issue_immediate_order :: proc(unit: ^RTS_Unit, cmd: Unit_Command) {
     // 1. Instantly abort current executing action fiber
     coroutine.scope_cancel(unit.sched, &unit.action_scope)
@@ -441,35 +472,23 @@ unit_issue_immediate_order :: proc(unit: ^RTS_Unit, cmd: Unit_Command) {
 
     // 2. Start new action fiber
     append(&unit.cmd_queue, cmd)
-    coroutine.spawn_ptr(unit.sched, unit_action_processor, unit, scope = &unit.action_scope)
+    coroutine.spawn(unit.sched, unit_action_processor, unit, scope = &unit.action_scope)
 }
 
-// Issue a shift-queued order (Appends to queue)
-unit_queue_order :: proc(unit: ^RTS_Unit, cmd: Unit_Command) {
-    append(&unit.cmd_queue, cmd)
-    if coroutine.scope_is_empty(&unit.action_scope) {
-        coroutine.spawn_ptr(unit.sched, unit_action_processor, unit, scope = &unit.action_scope)
-    }
-}
-
-// Action Queue Processor Fiber
 unit_action_processor :: proc(f: ^coroutine.Fiber, unit: ^RTS_Unit) {
     for len(unit.cmd_queue) > 0 {
         cmd := pop_front(&unit.cmd_queue)
 
         switch cmd.kind {
         case .Move:
-            // Tween position towards waypoint
-            coroutine.tween_vector2(f, &unit.pos, unit.pos, cmd.target_pos, 2.0, coroutine.ease_linear)
+            tween_vec2(f, &unit.pos, cmd.target_pos, 2.0)
 
         case .Attack_Target:
-            // Combat animation loop
             for i := 0; i < 3; i += 1 {
                 coroutine.wait(f, 0.8) // Attack swing timer
             }
 
         case .Build_Structure:
-            // Construction channel
             coroutine.wait(f, 5.0) // 5s construction time
         }
     }
@@ -481,16 +500,17 @@ unit_action_processor :: proc(f: ^coroutine.Fiber, unit: ^RTS_Unit) {
 ## Recipe 10: Multi-Channel Network & Input Multiplexer (`chan_select_recv`)
 
 ### Problem
-A multiplayer game client needs a single unified actor processing loop that consumes commands arriving from multiple decoupled streams: local player keypresses, authoritative server network packets, and background pathfinder solutions.
+A multiplayer game client needs a single unified actor loop consuming commands arriving from multiple decoupled streams: local player keypresses and server network packets.
 
 ### Solution
-Use `coroutine.chan_select_recv` to suspend until *any* channel produces an event:
+Use `sync.chan_select_recv` from `coroutine/sync`:
 
 ```odin
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
+import sync "coroutine/sync"
 
 Command_Packet :: struct {
     sender_id: u32,
@@ -499,14 +519,14 @@ Command_Packet :: struct {
 
 actor_input_multiplexer :: proc(
     f: ^coroutine.Fiber,
-    local_input_chan: ^coroutine.Channel(Command_Packet),
-    network_recv_chan: ^coroutine.Channel(Command_Packet),
+    local_input_chan: ^sync.Channel(Command_Packet),
+    network_recv_chan: ^sync.Channel(Command_Packet),
 ) {
-    channels := []^coroutine.Channel(Command_Packet){local_input_chan, network_recv_chan}
+    channels := []^sync.Channel(Command_Packet){local_input_chan, network_recv_chan}
 
     for {
         // Suspends until either local input or server packet arrives:
-        ready_idx, packet, ok := coroutine.chan_select_recv(f, channels)
+        ready_idx, packet, ok := sync.chan_select_recv(f, channels)
         if !ok do break
 
         switch ready_idx {
@@ -524,7 +544,7 @@ actor_input_multiplexer :: proc(
 ## Recipe 11: Decoupled Stage Transition Signals (`Signal` / `Event(T)`)
 
 ### Problem
-When a cutscene triggers or the player dies, dozens of independent entities across completely different systems (background particle spawners, ambient wildlife AI, combat encounter scripts) must react immediately without needing to share a monolithic `Fiber_Scope`.
+When a cutscene triggers or the player dies, dozens of independent entities must react immediately without needing to share a monolithic `Fiber_Scope`.
 
 ### Solution
 Use `coroutine.Signal` or `coroutine.Event(T)` as a lightweight, zero-polling broadcast handle:
@@ -533,20 +553,18 @@ Use `coroutine.Signal` or `coroutine.Event(T)` as a lightweight, zero-polling br
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
 
 Game_Session :: struct {
     sched:              coroutine.Scheduler,
     stage_clear_signal: coroutine.Signal,
 }
 
-// Any entity can suspend waiting on the transition signal:
 wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
     coroutine.signal_wait(f, sig) // Zero-polling suspension!
     fmt.println("[Wildlife AI] Stage cleared; smoothly despawning ambient fauna.")
 }
 
-// When level completes or player reaches extraction:
 session_end_stage :: proc(session: ^Game_Session) {
     // Unblocks all signal listeners instantly in one tick:
     coroutine.signal_emit(&session.sched, &session.stage_clear_signal)
@@ -558,7 +576,7 @@ session_end_stage :: proc(session: ^Game_Session) {
 ## Recipe 12: Entity Sub-Scopes & Localized EMP Stun (`Fiber_Scope`)
 
 ### Problem
-An in-game EMP bomb detonates within a radius. It must immediately disrupt and cancel all `combat_scope` and `shield_scope` coroutines on affected enemies, while leaving entity `movement_scope` and physics running unaffected in clean $O(1)$ time without global pool scans.
+An in-game EMP bomb detonates within a radius. It must immediately disrupt and cancel all `combat_scope` coroutines on affected enemies, while leaving entity `movement_scope` running unaffected in clean $O(1)$ time.
 
 ### Solution
 Structure entity behaviors with dedicated sub-scopes:
@@ -567,12 +585,11 @@ Structure entity behaviors with dedicated sub-scopes:
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
 
 Drone :: struct {
     entity_scope: coroutine.Fiber_Scope, // Death cancels all
     combat_scope: coroutine.Fiber_Scope, // Stun / EMP cancels attacks
-    shield_scope: coroutine.Fiber_Scope, // EMP cancels shields
     is_alive:     bool,
 }
 
@@ -585,13 +602,6 @@ spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) {
         }
     }, drone, scope = &drone.combat_scope)
 
-    // Shield loop (Bounded to shield_scope)
-    coroutine.spawn(sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
-        for d.is_alive {
-            coroutine.wait(f, 0.1)
-        }
-    }, drone, scope = &drone.shield_scope)
-
     // Movement patrol loop (Bounded to entity_scope - Immune to EMP!)
     coroutine.spawn(sched, proc(f: ^coroutine.Fiber, d: ^Drone) {
         for d.is_alive {
@@ -601,12 +611,10 @@ spawn_enemy_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) {
     }, drone, scope = &drone.entity_scope)
 }
 
-// EMP Detonation Event on target drone:
 detonate_emp_blast_on_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) {
-    // Cancels only combat and shield sub-scopes instantly in O(1) time:
+    // Cancels only combat sub-scope instantly in O(1) time:
     coroutine.scope_cancel(sched, &drone.combat_scope)
-    coroutine.scope_cancel(sched, &drone.shield_scope)
-    fmt.println("EMP DISRUPTION: Stunned drone combat and shield sub-scopes!")
+    fmt.println("EMP DISRUPTION: Stunned drone combat sub-scope!")
 }
 ```
 
@@ -615,26 +623,26 @@ detonate_emp_blast_on_drone :: proc(sched: ^coroutine.Scheduler, drone: ^Drone) 
 ## Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)
 
 ### Problem
-A receiver fiber needs to read telemetry or heartbeat signals from a remote producer or network socket. If the producer terminates, crashes, or stalls, the consumer must not block forever.
+A receiver fiber reads messages from a remote producer. If the producer stalls, the consumer must not block forever.
 
 ### Solution
-Use `coroutine.chan_recv_timeout(f, ch, timeout_seconds)` to specify a maximum wait deadline.
+Use `sync.chan_recv_timeout(f, ch, timeout_seconds)` from `coroutine/sync`:
 
 ```odin
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
+import sync "coroutine/sync"
 
 Telemetry_Packet :: struct {
     sender_id: int,
     ping_ms:   f32,
 }
 
-telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(Telemetry_Packet)) {
+telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^sync.Channel(Telemetry_Packet)) {
     for {
-        // Wait at most 1.5 seconds for the next packet
-        packet, ok, timed_out := coroutine.chan_recv_timeout(f, ch, timeout_seconds = 1.5)
+        packet, ok, timed_out := sync.chan_recv_timeout(f, ch, timeout_seconds = 1.5)
 
         if timed_out {
             fmt.println("[WARN] Remote sensor heartbeat lost! Falling back to autonomous navigation.")
@@ -653,27 +661,23 @@ telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^coroutine.Channel(Tele
 
 ---
 
-## Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`Ticker`)
+## Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`ticker_wait`)
 
 ### Problem
-When executing periodic gameplay actions with naive `wait(f, interval)`, frame execution delays compound over time. A poison DoT intended to tick exactly once every 0.5s over 60 seconds may only tick 100 times instead of 120 due to cumulative delta-time drift.
+When executing periodic gameplay actions with naive `wait(f, interval)`, frame execution delays compound over time. A poison DoT intended to tick once every 0.5s over 60 seconds may only tick 100 times instead of 120 due to cumulative frame-rate drift.
 
 ### Solution
-Use `coroutine.Ticker` with `ticker_init` and `ticker_wait`. The ticker tracks absolute target timestamps (`target_time += interval`), eliminating drift across long match sessions.
+Use built-in fiber-owned `coroutine.ticker_wait(f, interval)`.
 
 ```odin
 package gameplay
 
-import "core:fmt"
-import "src/coroutine"
+import "coroutine"
 
 apply_poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
-    ticker: coroutine.Ticker
-    coroutine.ticker_init(&ticker, interval_seconds = 0.5)
-
-    // Exactly 10 ticks over 5.0 seconds with zero drift:
+    // Exactly 10 ticks over 5.0 seconds with zero cumulative drift:
     for _ in 0 ..< 10 {
-        coroutine.ticker_wait(f, &ticker)
+        coroutine.ticker_wait(f, interval_seconds = 0.5)
         enemy.hp -= 12.0
         spawn_poison_vfx(enemy.pos)
     }
@@ -685,26 +689,27 @@ apply_poison_dot_fiber :: proc(f: ^coroutine.Fiber, enemy: ^Enemy) {
 ## Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)
 
 ### Problem
-Fibers acquiring cooperative mutexes or counting semaphores may fail to call `mutex_unlock` or `semaphore_release` if an early `return` or error branch is taken, causing permanent subsystem deadlocks.
+Fibers acquiring cooperative mutexes or counting semaphores may fail to call `mutex_unlock` or `semaphore_release` if an early `return` or error branch is taken.
 
 ### Solution
-Use `coroutine.with_mutex` and `coroutine.with_semaphore` procedure groups. They guarantee defer unlock upon body completion or early exit.
+Use `sync.with_mutex` and `sync.with_semaphore` from `coroutine/sync`:
 
 ```odin
 package gameplay
 
-import "src/coroutine"
+import "coroutine"
+import sync "coroutine/sync"
 
 Drone_Task :: struct {
-    pad_mutex: ^coroutine.Fiber_Mutex,
+    pad_mutex: ^sync.Fiber_Mutex,
     drone_id:  int,
     pos:       [2]f32,
 }
 
 drone_recharge_fiber :: proc(f: ^coroutine.Fiber, task: ^Drone_Task) {
     // Guarantees unlock on return or abort:
-    coroutine.with_mutex(f, task.pad_mutex, proc(f: ^coroutine.Fiber, t: ^Drone_Task) {
-        coroutine.tween_v2(f, &t.pos, t.pos, {400, 300}, 0.5)
+    sync.with_mutex(f, task.pad_mutex, proc(f: ^coroutine.Fiber, t: ^Drone_Task) {
+        tween_vec2(f, &t.pos, {400, 300}, 0.5)
         coroutine.wait(f, 1.2) // Charge battery
     }, task)
 }
@@ -715,7 +720,7 @@ drone_recharge_fiber :: proc(f: ^coroutine.Fiber, task: ^Drone_Task) {
 ## Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)
 
 ### Problem
-An interactive player action (hacking a terminal, channeling a portal, reviving an ally) needs to be preempted immediately if an emergency alarm signal trips, aborting cleanly without orphan fibers.
+An interactive player action (hacking a terminal) needs to be preempted immediately if an emergency alarm signal trips.
 
 ### Solution
 Use `coroutine.race` combining the primary workload with a `coroutine.signal_wait` branch:
@@ -724,12 +729,12 @@ Use `coroutine.race` combining the primary workload with a `coroutine.signal_wai
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
 
 hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
     winner := coroutine.race(f,
         coroutine.branch(proc(f: ^coroutine.Fiber, t: ^Terminal) {
-            coroutine.tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
+            tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
             t.is_hacked = true
         }, term, name = "Hack Workload"),
 
@@ -759,7 +764,7 @@ Use `coroutine.scheduler_walk_tree` with a `coroutine.Fiber_Visitor` procedure:
 package gameplay
 
 import "core:fmt"
-import "src/coroutine"
+import "coroutine"
 
 Draw_Context :: struct {
     start_y: i32,

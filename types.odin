@@ -18,12 +18,9 @@ Fiber_Status :: enum u8 {
     Unused,            // In pool free list
     Ready,             // In ready queue, ready to be dispatched
     Running,           // Currently active on the CPU
-    Sleeping_Time,     // Sleeping in timer min-heap (wait / wait_seconds)
-    Sleeping_Real_Time,// Sleeping in real-time min-heap (wait_real)
-    Sleeping_Ticks,    // Sleeping in integer tick waiter queue (wait_ticks)
-    Sleeping_Frames,   // Sleeping in frame-counter queue (wait_frames)
-    Waiting_Condition, // Polling a predicate each frame (wait_until)
-    Suspended_Join,    // Suspended waiting for children (sync / race / rush / fallback)
+    Sleeping_Time,     // Sleeping in clock domain timer min-heap (wait)
+    Sleeping_Steps,    // Sleeping in clock domain step-counter queue (wait_steps / yield)
+    Suspended_Join,    // Suspended waiting for children or events (sync / race / rush / event_wait)
     Completed,         // Naturally finished execution
     Failed,            // Encountered error / explicitly failed
     Aborted,           // Cancelled by parent or sibling race winner
@@ -44,28 +41,20 @@ fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
     return u16((u32(h) >> 16) & 0xFFFF)
 }
 
-Time_Clock :: enum u8 {
-    Sim_Scaled,  // Scaled by time_scale and halted by is_paused (Default for gameplay)
-    Real_Time,   // Always runs at 1.0x real wall-clock speed (UI, menus, network)
-    Fixed_Tick,  // Driven by fixed integer discrete ticks (Physics, replays, netcode)
-}
+// Indexed User-Driven Clock Domains
+Clock_ID :: distinct int
 
-Scheduler_Clock :: struct {
-    // --- Real / Wall Clock (Unscaled & Unpaused) ---
-    real_time:         f64,     // Absolute real-world seconds since start
-    real_delta:        f32,     // Real-world frame delta (seconds)
-    real_ticks:        u64,     // Real-world millisecond integer timestamp
+CLOCK_INHERIT :: Clock_ID(-1) // Inherit parent fiber's clock_id (Default for branches)
+CLOCK_SIM     :: Clock_ID(0)  // Default simulation timeline
+CLOCK_REAL    :: Clock_ID(1)  // Unpaused wall-clock timeline (UI, menus, network)
+CLOCK_PHYS    :: Clock_ID(2)  // Fixed-timestep physics / discrete tick timeline
 
-    // --- Simulation Clock (Scaled & Pausable) ---
-    sim_time:          f64,     // Scaled simulation seconds since start
-    sim_delta:         f32,     // Scaled delta for this step
-    time_scale:        f32,     // Multiplier (1.0 = normal, 0.5 = slow-mo, 2.0 = fast)
-    is_paused:         bool,    // Freeze sim_time when true
-
-    // --- Discrete Simulation Ticks (Deterministic Integer Clock) ---
-    sim_ticks:         u64,     // Integer simulation ticks (e.g. 1 tick = 1 ms or 1 fixed tick)
-    tick_rate_hz:      u32,     // e.g. 60 Hz, 120 Hz, or 1000 Hz (default: 1000 = 1 tick per ms)
-    frame_count:       u64,     // Total scheduler steps executed
+Clock_Domain :: struct {
+    time:         f64,            // Accumulated seconds on this clock domain
+    delta:        f32,            // Last step delta (seconds) on this clock domain
+    steps:        u64,            // Total discrete steps/frames advanced on this clock domain
+    timer_heap:   [dynamic]^Fiber,// Min-Heap sorted by wake_time
+    step_waiters: [dynamic]^Fiber,// Fibers waiting on wake_step
 }
 
 Join_Kind :: enum u8 {
@@ -95,13 +84,6 @@ Fiber_Scope :: struct {
     count: int,
 }
 
-Phase_Director :: struct {
-    sched:         ^Scheduler,
-    current_scope: Fiber_Scope,
-    current_phase: int,
-    phase_name:    string,
-}
-
 FIBER_PAYLOAD_SIZE :: PAYLOAD_SIZE
 
 Branch_Desc :: struct {
@@ -111,6 +93,7 @@ Branch_Desc :: struct {
     payload_storage: [FIBER_PAYLOAD_SIZE]byte,
     has_payload:     bool,
     name:            string,
+    clock_id:        Clock_ID,
 }
 
 // ============================================================================
@@ -178,20 +161,14 @@ Fiber :: struct {
     branch_index:     int,               // Index in parent's branch array
 
     // --- Wait / Wake Triggers ---
-    wake_time:        f64,               // Target absolute timestamp for Sleeping_Time / Sleeping_Real_Time
-    wake_ticks:       u64,               // Target absolute tick count for Sleeping_Ticks
-    wake_frame:       u64,               // Target engine frame for Sleeping_Frames
-    wake_clock:       Time_Clock,        // Target clock domain (.Sim_Scaled, .Real_Time, .Fixed_Tick)
-    heap_index:       int,               // Index in Timer Min-Heap (for O(log N) deletion on abort)
+    clock_id:         Clock_ID,          // Target clock domain (default CLOCK_SIM = 0)
+    wake_time:        f64,               // Target absolute timestamp for Sleeping_Time
+    wake_step:        u64,               // Target step count for Sleeping_Steps
+    heap_index:       int,               // Index in Clock_Domain.timer_heap (for O(log N) deletion on abort)
 
     // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe on WebAssembly) ---
     ticker_interval:  f32,
     ticker_next_wake: f64,
-    ticker_use_real:  bool,
-
-    // Condition polling
-    condition_fn:     proc(user_data: rawptr) -> bool,
-    condition_data:   rawptr,
 
     // --- User Entry & State ---
     entry_proc:       proc(f: ^Fiber, user_data: rawptr),
@@ -215,36 +192,11 @@ Fiber :: struct {
 // Synchronization & Concurrency Primitives (Intrusive / 100% Zero-Allocation)
 // ============================================================================
 
-Signal :: struct {
-    waiters: Wait_Queue,
-}
-
-Fiber_Mutex :: struct {
-    locked:  bool,
-    owner:   Fiber_Handle,
-    waiters: Wait_Queue,
-}
-
-// --- 1-to-Many Typed Multicast Event ---
-
 Event :: struct($T: typeid) {
     waiters: Wait_Queue,
 }
 
-// --- Counting Semaphore (Up to N Concurrent Permits) ---
-
-Fiber_Semaphore :: struct {
-    permits:     int,
-    max_permits: int,
-    waiters:     Wait_Queue,
-}
-
-// --- Countdown Latch / Barrier ---
-
-Fiber_Latch :: struct {
-    count:   int,
-    waiters: Wait_Queue,
-}
+Signal :: Event(struct{})
 
 // --- Pool Memory Telemetry ---
 
@@ -266,42 +218,7 @@ Async_State :: enum u8 {
 }
 
 Async_Token :: struct {
-    state:        Async_State, // Read and stored atomically
-    waiter_fiber: ^Fiber,
-}
-
-// --- CSP Typed Channels ---
-
-Channel :: struct($T: typeid) {
-    buffer:       []T,              // Fixed circular ring buffer slice
-    head:         int,              // Pop/read index
-    tail:         int,              // Push/write index
-    count:        int,              // Number of active items in ring buffer
-    capacity:     int,              // Configured capacity (0 for unbuffered rendezvous)
-    send_waiters: Wait_Queue,       // Fibers blocked on chan_send
-    recv_waiters: Wait_Queue,       // Fibers blocked on chan_recv
-    is_closed:    bool,             // Closed state flag
-    allocator:    mem.Allocator,    // Backing memory allocator
-}
-
-// --- Zero-Drift Periodic Ticker ---
-
-Ticker :: struct {
-    interval:  f32,
-    next_wake: f64,
-    use_real:  bool,
-}
-
-// --- Stateful Pull Generators ---
-
-Generator :: struct($T: typeid) {
-    sched:         Scheduler,
-    handle:        Fiber_Handle,
-    current_value: T,
-    has_value:     bool,
-    is_done:       bool,
-    entry:         proc(f: ^Fiber, g: ^Generator(T)),
-    user_data:     rawptr,
+    state: Async_State, // Read and stored atomically
 }
 
 // ============================================================================
@@ -346,21 +263,14 @@ Fiber_Pool :: struct {
 
 Scheduler :: struct {
     // Allocator Reference
-    allocator:         mem.Allocator,
+    allocator:             mem.Allocator,
 
-    // Queues
-    ready_queue:       [dynamic]Fiber_Handle,
-    timer_heap:        [dynamic]^Fiber, // Min-Heap sorted by wake_time (Simulation Clock)
-    real_timer_heap:   [dynamic]^Fiber, // Min-Heap sorted by wake_time (Real/Wall Clock)
-    tick_waiters:      [dynamic]^Fiber, // Waiting on integer simulation ticks
-    frame_waiters:     [dynamic]^Fiber, // Waiting on frame count
-    condition_waiters: [dynamic]^Fiber, // Waiting on boolean predicates
+    // Ready Queue & Indexed Clock Domains
+    ready_queue:           [dynamic]Fiber_Handle,
+    clocks:                [MAX_CLOCKS]Clock_Domain,
 
     // Stack Allocator & Pool
-    fiber_pool:        Fiber_Pool,
-
-    // 3-Tier Multi-Domain Clock
-    clock:             Scheduler_Clock,
+    fiber_pool:            Fiber_Pool,
 
     // Execution Context
     scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread

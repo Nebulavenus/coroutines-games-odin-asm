@@ -66,12 +66,13 @@ Turn 3: Fiber A wakes up.
 In our browser game demo (`examples/game/main.odin`), the Boss AI executed a spiral projectile barrage:
 
 ```odin
-// DANGEROUS ANTI-PATTERN ON WEBASSEMBLY:
+// HISTORICAL ANTI-PATTERN (Why external Ticker structs were removed from the engine):
 boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
-    ticker: coroutine.Ticker // <-- Local struct allocated on shared shadow stack!
-    coroutine.ticker_init(&ticker, 0.08)
+    // Local struct previously allocated on shared shadow stack:
+    ticker: Local_Ticker // <-- Local struct allocated on shared shadow stack!
+    local_ticker_init(&ticker, 0.08)
     for {
-        coroutine.ticker_wait(f, &ticker) // Passes '&ticker' across yield
+        local_ticker_wait(f, &ticker) // Passes '&ticker' across yield
         fire_spiral_bullet(b)
     }
 }
@@ -87,7 +88,7 @@ boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
    if t.next_wake <= 0.0 { ... }
    ```
    Because `interval` was `0`, the next wake time was identical to `now`.
-6. Instead of waiting 0.08s between shots, `ticker_wait` fell back to `yield_frame(f)`, firing **80 bullets in 10 frames** (an immediate boss projectile machine-gun burst).
+6. Instead of waiting 0.08s between shots, `ticker_wait` fell back to `yield(f)`, firing **80 bullets in 10 frames** (an immediate boss projectile machine-gun burst).
 
 ---
 
@@ -105,7 +106,7 @@ Fiber :: struct {
     // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe) ---
     ticker_interval:  f32,
     ticker_next_wake: f64,
-    ticker_use_real:  bool,
+    clock_id:         Clock_ID,
     // ...
 }
 ```
@@ -129,7 +130,7 @@ boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 - **Stun / Interruption Reset**: Calling `coroutine.ticker_rebase(f)` resets the next wake timestamp to start cleanly from `now + interval` without catch-up bursts.
 
 ### 2. Fiber Payload Storage (`f.payload_storage`)
-Each fiber contains an aligned 128-byte inline buffer (`[FIBER_PAYLOAD_SIZE]byte`). When using `spawn_val` or `spawn_real_val`, parameters are copied directly into the fiber's persistent memory, immune to stack overwrites.
+Each fiber contains an aligned 128-byte inline buffer (`[FIBER_PAYLOAD_SIZE]byte`). When using `spawn_val` or `branch_val`, parameters are copied directly into the fiber's persistent memory, immune to stack overwrites.
 
 ### 3. Fiber Isolated Temp Arena (`f.temp_arena`)
 Each fiber owns a private 4KB scratch arena (`f.temp_arena_buffer`). Memory allocated via `context.temp_allocator` inside a fiber:

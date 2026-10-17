@@ -104,7 +104,9 @@ boss_combat_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Entity) {
 
         // Branch 1: Health Threshold Trigger
         coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
-            coroutine.wait_until(f, proc(b: ^Boss_Entity) -> bool { return b.hp <= 50 }, boss)
+            for b.hp > 50 {
+                coroutine.yield(f)
+            }
             fmt.println("  >>> TRIGGER: Boss HP dropped to <= 50%! <<<")
         }, boss, name = "HP Trigger"),
 
@@ -171,7 +173,7 @@ main :: proc() {
 
 When a branch loses a `race` or is cancelled:
 1. The engine recursively traverses the losing fiber's child hierarchy bottom-up.
-2. Any sleeping child fibers are immediately removed from `timer_heap`, `real_timer_heap`, and `frame_waiters`.
+2. Any sleeping child fibers are immediately removed from their clock domain's `timer_heap` or `step_waiters`.
 3. Stacks are returned to the slab pool for $O(1)$ recycling.
 4. Native `defer` blocks execute cleanly.
 

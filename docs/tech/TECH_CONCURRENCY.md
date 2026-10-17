@@ -73,10 +73,10 @@ When a branch is cancelled (via `race` preemption, `fiber_cancel`, `with_timeout
 ### Unwinding Sequence:
 1. **Recursive Leaf Traversal:** The cancellation algorithm recursively navigates to the bottom-most leaf nodes of the fiber tree first.
 2. **Scheduler Queue Extraction:**
-   - If sleeping in `timer_heap` or `real_timer_heap`: Removed in $O(\log N)$ via cached heap indices.
-   - If queued in `frame_waiters`: Removed from the frame wait array.
-   - If waiting on `Signal`, `Fiber_Mutex`, or `Channel`: Removed from suspension waitlists.
-3. **State Transition:** Fiber state transitions to `.Aborted` or `.Cancelled`.
+   - If sleeping in `.Sleeping_Time`: Removed in $O(\log N)$ from `sched.clocks[root.clock_id].timer_heap` via cached heap indices.
+   - If queued in `.Sleeping_Steps`: Removed in-place from `sched.clocks[root.clock_id].step_waiters`.
+   - If waiting on an intrusive wait queue (`Wait_Queue`): Removed in $O(1)$ via `wait_queue_remove`.
+3. **State Transition:** Fiber state transitions to `.Aborted`.
 4. **Stack & Resource Recycling:** Fiber stacks are recycled back into the slab free list in $O(1)$ time, and parent child counters are decremented.
 5. **Native Odin `defer` Execution:** When the cancelled fiber resumes for cleanup, its stack unwinds cleanly through native `defer` blocks.
 
@@ -108,29 +108,27 @@ The engine provides 2 orthogonal cancellation models tailored to gameplay archit
 
 ---
 
-## 5. The 4-Stage Zero-Shift Scheduler Dispatch Pipeline
+## 5. The Zero-Shift Scheduler Dispatch Pipeline
 
-The engine executes all active fibers, timers, and synchronization queues in a deterministic 4-stage pipeline per frame step:
+The engine executes active fibers, timers, and synchronization queues in a deterministic two-phase pipeline per step:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    THE 4-STAGE DISPATCH PIPELINE                            │
+│                    THE SCHEDULER DISPATCH PIPELINE                          │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. Clock Updates: Absolute f64 Sim/Real Clocks + Discrete u64 Ticks.        │
-│ 2. Dual Min-Heaps: O(1) peek & O(log N) pop for expired timers.             │
-│ 3. Single-Pass Linear Partitioning: (Steps 5, 6, 7)                         │
-│    • Linear scan with single-pass write_idx filtering.                      │
-│    • Zero memory shifts during iteration + O(1) end-of-pass resize().       │
-│ 4. Zero-Shift Dynamic Cursor: (Step 8)                                      │
+│ 1. Clock Updates (clock_advance):                                           │
+│    • Advances timeline for target Clock_Domain (delta, time, steps).        │
+│    • O(1) peek & O(log N) pop for expired timers in domain's timer_heap.    │
+│    • In-place partition of step_waiters with O(1) resize.                   │
+│    • Appends awakened fiber handles to sched.ready_queue.                   │
+│ 2. Ready Queue Dispatch (scheduler_run):                                    │
 │    • Linear index loop: for i := 0; i < len(ready_queue); i += 1.           │
-│    • Eliminates 50,000,000 pointer shifts per frame!                        │
-│    • Automatically processes fibers spawned/unblocked during the same frame.│
+│    • Generational handle validation (f.handle == handle && f.status==.Ready)│
+│    • Context-switches into each fiber in ~18ns.                             │
 │    • O(1) clear(&ready_queue) keeps backing capacity for the next frame.    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Stage 1 (Clocks)**: Updates simulation time ($t_{\text{sim}} + dt \cdot \text{scale}$), real-world wall clock ($t_{\text{real}} + dt$), and discrete frame counters.
-2. **Stage 2 (Dual Min-Heaps)**: $O(1)$ peeks at root nodes of `timer_heap` and `real_timer_heap`. Expired timers are popped in $O(\log N)$ and appended to `ready_queue`.
-3. **Stage 3 (In-Place Linear Partitioning)**: Filters `tick_waiters`, `frame_waiters`, and `condition_waiters` in a cache-friendly single linear forward sweep. Expired waiters move to `ready_queue`, while active ones remain compacted at the head with a single $O(1)$ `resize(...)`.
-4. **Stage 4 (Zero-Shift Ready Execution)**: Steps sequentially through `ready_queue` using an index cursor (`i < len(ready_queue)`). Context-switches into each fiber in $18.4\text{ ns}$, processes volatile status reloads, auto-recycles completed fibers, and cleans the queue with an $O(1)$ `clear(&sched.ready_queue)`.
+1. **Clock Phase (`clock_advance`)**: Advances the domain timeline ($t_{\text{domain}} + \Delta t$), pops expired timers from `c.timer_heap` into `sched.ready_queue`, and partitions `c.step_waiters`.
+2. **Execution Phase (`scheduler_run`)**: Steps sequentially through `sched.ready_queue` using an index cursor (`i < len(ready_queue)`). Context-switches into each fiber, auto-recycles completed fibers, and cleans the queue with an $O(1)$ `clear(&sched.ready_queue)`.
 
