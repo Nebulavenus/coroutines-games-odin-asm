@@ -208,9 +208,9 @@ bench_structured_tree_churn :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^int) {
         for _ in 0 ..< TREES {
-            coroutine.sync(f,
-                coroutine.branch(proc(f: ^coroutine.Fiber, c: ^int) { c^ += 1 }, c, name = "Branch A"),
-                coroutine.branch(proc(f: ^coroutine.Fiber, c: ^int) { c^ += 1 }, c, name = "Branch B"),
+            coroutine.sync_with(f, c,
+                proc(f: ^coroutine.Fiber, c: ^int) { c^ += 1 },
+                proc(f: ^coroutine.Fiber, c: ^int) { c^ += 1 },
             )
         }
     }, &counter)

@@ -100,8 +100,16 @@ main :: proc() {
 
 ---
 
-## 3. Why This Is Superior to Callbacks
+## 3. Choosing Between `Task(T)` and `Async_Token`
 
+The engine provides two complementary patterns for asynchronous computations:
+
+| Construct | Execution Model | Concurrency Domain | Use Cases |
+| :--- | :--- | :--- | :--- |
+| **`Task(T)` & `spawn_task`** | Cooperative coroutine | **Single-thread / Fiber-level** | Multi-tick computations sliced across frames with `yield_now`, game logic futures, procedural generation that yields. |
+| **`Async_Token` & `await_async`** | Multi-core OS thread | **Cross-thread / OS-level** | CPU-heavy workloads (huge A* grids, mesh generation, asset decompression, physics baking) running in background thread pools (`core:thread`). |
+
+### Why This Bridge Is Superior to Callbacks
 1. **Local State Preservation:** All local variables, current loops, and execution stack frames remain valid across the suspension point.
 2. **Zero OS Thread Contention:** Fibers run cooperatively on the main thread; worker threads run in background pools. No mutex locks required during frame rendering.
 3. **No Garbage Collection:** `Async_Token` is allocated in the entity or job struct with zero heap fragmentation.

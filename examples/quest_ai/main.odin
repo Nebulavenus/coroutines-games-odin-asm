@@ -155,6 +155,45 @@ sentinel_switch_phase :: proc(sched: ^coroutine.Scheduler, s: ^Void_Sentinel, ph
 // Zone 1: AI Behavior Tree with Priority Fallbacks & Semaphore
 // ============================================================================
 
+// 1. Priority A: Execute Whirlwind Attack if player is very close and stamina is full
+knight_action_whirlwind :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+    dist := linalg.length(g_world.player.pos - k.pos)
+    if dist > 85.0 || k.stamina < 60.0 {
+        coroutine.fail(f) // Fallthrough to Priority B
+    }
+    coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
+    k.current_action = "Whirlwind Attack! (Priority A)"
+    k.action_color = rl.RED
+    k.stamina -= 50.0
+    coroutine.wait(f, 0.6)
+}
+
+// 2. Priority B: Shield Bash Dash if player is within medium range
+knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+    dist := linalg.length(g_world.player.pos - k.pos)
+    if dist > 180.0 || k.stamina < 30.0 {
+        coroutine.fail(f) // Fallthrough to Priority C
+    }
+    coroutine.fiber_set_name(f, "Knight AI: Shield Bash (B)")
+    k.current_action = "Shield Bash Dash! (Priority B)"
+    k.action_color = rl.ORANGE
+    k.stamina -= 30.0
+    target_pos := g_world.player.pos
+    tween_vec2(f, &k.pos, k.pos, target_pos, 0.4, ease_out_quad)
+    coroutine.wait(f, 0.5)
+}
+
+// 3. Priority C: Guaranteed Fallback (Patrol & Recover Stamina)
+knight_action_patrol_rest :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+    coroutine.fiber_set_name(f, "Knight AI: Tactical Patrol & Rest (C)")
+    k.current_action = "Tactical Patrol & Rest (Fallback C)"
+    k.action_color = rl.SKYBLUE
+    k.stamina = min(100.0, k.stamina + 20.0)
+    // Move towards home position
+    tween_vec2(f, &k.pos, k.pos, k.home_pos, 0.8, ease_in_out_quad)
+    coroutine.wait(f, 0.4)
+}
+
 knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     k.pos = k.home_pos
     k.stamina = 100.0
@@ -162,46 +201,11 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     for {
         coroutine.ticker_wait(f, 0.2)
 
-        // Evaluate dynamic behavioral fallback cascade every tick:
-        coroutine.fallback(f,
-            // 1. Priority A: Execute Whirlwind Attack if player is very close and stamina is full
-            coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
-                dist := linalg.length(g_world.player.pos - k.pos)
-                if dist > 85.0 || k.stamina < 60.0 {
-                    coroutine.fail(f) // Fallthrough to Priority B
-                }
-                coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
-                k.current_action = "Whirlwind Attack! (Priority A)"
-                k.action_color = rl.RED
-                k.stamina -= 50.0
-                coroutine.wait(f, 0.6)
-            }, k, "1. Whirlwind Attack Check"),
-
-            // 2. Priority B: Shield Bash Dash if player is within medium range
-            coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
-                dist := linalg.length(g_world.player.pos - k.pos)
-                if dist > 180.0 || k.stamina < 30.0 {
-                    coroutine.fail(f) // Fallthrough to Priority C
-                }
-                coroutine.fiber_set_name(f, "Knight AI: Shield Bash (B)")
-                k.current_action = "Shield Bash Dash! (Priority B)"
-                k.action_color = rl.ORANGE
-                k.stamina -= 30.0
-                target_pos := g_world.player.pos
-                tween_vec2(f, &k.pos, k.pos, target_pos, 0.4, ease_out_quad)
-                coroutine.wait(f, 0.5)
-            }, k, "2. Shield Bash Check"),
-
-            // 3. Priority C: Guaranteed Fallback (Patrol & Recover Stamina)
-            coroutine.branch(proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
-                coroutine.fiber_set_name(f, "Knight AI: Tactical Patrol & Rest (C)")
-                k.current_action = "Tactical Patrol & Rest (Fallback C)"
-                k.action_color = rl.SKYBLUE
-                k.stamina = min(100.0, k.stamina + 20.0)
-                // Move towards home position
-                tween_vec2(f, &k.pos, k.pos, k.home_pos, 0.8, ease_in_out_quad)
-                coroutine.wait(f, 0.4)
-            }, k, "3. Patrol Fallback"),
+        // Evaluate dynamic behavioral fallback cascade every tick with fallback_with:
+        coroutine.fallback_with(f, k,
+            knight_action_whirlwind,
+            knight_action_shield_bash,
+            knight_action_patrol_rest,
         )
     }
 }
@@ -209,6 +213,36 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
 // ============================================================================
 // Zone 2: Competitive Quest Objectives (rush & Event(T) Multicast)
 // ============================================================================
+
+// Objective 0: Hack Security Terminal (Hold near terminal)
+quest_obj_hack_terminal :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
+    for q.terminal_prog < 1.0 {
+        coroutine.yield_frame(f)
+        dist := linalg.length(g_world.player.pos - q.terminal_pos)
+        if dist < 45.0 {
+            q.terminal_prog += coroutine.delta_time(f) * 0.5
+        }
+    }
+}
+
+// Objective 1: Eliminate 2 Sentry Drones (Sequential combat timing)
+quest_obj_destroy_sentries :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
+    coroutine.wait(f, 1.8)
+    q.drones_defeated = 1
+    coroutine.wait(f, 1.8)
+    q.drones_defeated = 2
+}
+
+// Objective 2: Collect Hidden Keycard (Touch keycard position)
+quest_obj_retrieve_keycard :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
+    for !q.keycard_found {
+        coroutine.yield_frame(f)
+        dist := linalg.length(g_world.player.pos - q.keycard_pos)
+        if dist < 35.0 {
+            q.keycard_found = true
+        }
+    }
+}
 
 outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     q.is_active = true
@@ -223,40 +257,13 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     // Broadcast Quest Start via Event(T)
     coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{"Outpost Quest Started: Hack, Slay, or Retrieve!", rl.YELLOW})
 
-    // Run 3 objectives in parallel with Verse rush:
+    // Run 3 objectives in parallel with Verse rush_with:
     // First to SUCCEED unblocks the parent immediately!
     // Crucially: Losing branches are NOT cancelled; they continue executing concurrently in the background!
-    winner := coroutine.rush(f,
-        // Option 0: Hack Security Terminal (Hold near terminal)
-        coroutine.branch(proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
-            for q.terminal_prog < 1.0 {
-                coroutine.yield_frame(f)
-                dist := linalg.length(g_world.player.pos - q.terminal_pos)
-                if dist < 45.0 {
-                    q.terminal_prog += coroutine.delta_time(f) * 0.5
-                }
-            }
-            // Succeeded!
-        }, q, "Objective 0: Hack Terminal"),
-
-        // Option 1: Eliminate 2 Sentry Drones (Sequential combat timing)
-        coroutine.branch(proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
-            coroutine.wait(f, 1.8)
-            q.drones_defeated = 1
-            coroutine.wait(f, 1.8)
-            q.drones_defeated = 2
-        }, q, "Objective 1: Destroy Sentries"),
-
-        // Option 2: Collect Hidden Keycard (Touch keycard position)
-        coroutine.branch(proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
-            for !q.keycard_found {
-                coroutine.yield_frame(f)
-                dist := linalg.length(g_world.player.pos - q.keycard_pos)
-                if dist < 35.0 {
-                    q.keycard_found = true
-                }
-            }
-        }, q, "Objective 2: Retrieve Keycard"),
+    winner := coroutine.rush_with(f, q,
+        quest_obj_hack_terminal,
+        quest_obj_destroy_sentries,
+        quest_obj_retrieve_keycard,
     )
 
     names := [?]string{"Terminal Hacked!", "Sentries Destroyed!", "Keycard Retrieved!"}

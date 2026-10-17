@@ -23,39 +23,49 @@ Structured concurrency guarantees that concurrent branches are bounded by lexica
 | Primitive | Execution Model | Success Criterion | Failure / Cancellation Behavior |
 | :--- | :--- | :--- | :--- |
 | **`sync`** | Parallel Fork-Join | Resumes parent when **all** branches succeed (`state == .Completed`). | If any branch fails or is cancelled, all remaining sibling branches are immediately aborted. Parent marks failure. |
+| **`sync_with`** | Parallel Fork-Join (Shared Context) | Resumes parent when all branches succeed. Passes shared `^T` context without `branch` closures. | Sibling abort on failure; 16-slot inline buffer eliminates dynamic allocation. |
 | **`race`** | Parallel First-to-Succeed Preemption | Resumes parent as soon as **any** branch completes successfully (`.Completed`). | Sibling branches that call `fail(f)` drop out without winning. The first successful arm wins and recursively aborts all competing sibling subtrees. If all branches fail, parent fails (`winner_index = -1`). |
-| **`rush`** | Parallel First-to-Succeed Partial Join | Resumes parent as soon as the **first** branch completes successfully (`.Completed`). | Early failures are ignored. **Crucially: losing sibling arms are NOT aborted.** Their join coordinator is detached (`child.join_coord = nil`) and they continue executing concurrently in the background. If all branches fail, parent fails. |
+| **`race_with`** | Parallel Preemption (Shared Context) | Resumes parent as soon as any branch succeeds. Passes shared `^T` context. | First success aborts sibling subtrees; returns winner index or `-1` on total failure. |
+| **`rush`** | Parallel First-to-Succeed Partial Join | Resumes parent as soon as the **first** branch completes successfully (`.Completed`). | Early failures are ignored. **Crucially: losing sibling arms are NOT aborted.** Their join coordinator is detached (`child.join_coord = nil; child.join_coord_id = 0`) and they continue executing concurrently in the background. If all branches fail, parent fails. |
+| **`rush_with`** | Parallel Partial Join (Shared Context) | Resumes parent on first success with shared `^T` context. | Losers continue running detached in background bound to parent scope. |
 | **`fallback`** | Sequential Priority Execution | Executes branches sequentially ($A \rightarrow B \rightarrow C$). Stops at first success. | If branch $A$ succeeds, $B$ and $C$ never spawn. If branch $A$ fails, execution cascades to $B$. |
+| **`fallback_with`** | Sequential Priority (Shared Context) | Executes sequentially passing shared `^T` context. Stops at first success. | Cascades on `fail(f)`. Returns index of first succeeding branch or `-1`. |
 | **`branch_scoped`** | Parent-Bound Fire-and-Forget | Parent continues immediately without suspending. Subtask runs in background. | Scoped to parent lifetime: if the parent fiber completes, fails, or is cancelled, all attached scoped branches are automatically aborted bottom-up. |
+| **`with_signal`** | Interruptible Task Execution | Task completes normally before signal emits. Returns `interrupted: false`. | If signal emits while task runs, task is immediately aborted and combinator returns `interrupted: true`. |
+| **`with_timeout`** | Time-Bounded Scoped Execution | Branch finishes before deadline $t$. Returns `timed_out: false`. | If timer expires, child fiber subtree is cancelled and `with_timeout` returns `timed_out: true`. |
+| **`Task(T)` / `spawn_task`** | Typed Future Computation | Worker completes and delivers typed `T` payload via `Sticky_Event(T)`. | True-ZII; late awaiters receive result immediately even after worker fiber has finished and recycled. |
 | **`yield_now`** | In-Frame Cooperative Timeslice | Relinquishes timeslice to other ready fibers in the current frame. | Resumes before the current simulation tick finishes without waiting for the next clock step. |
-| **`with_timeout`** | Time-Bounded Scoped Execution | Branch finishes before deadline $t$. | If timer expires, child fiber subtree is cancelled and `with_timeout` returns `false`. |
 
 ---
 
 ## 2. Coordinator Lifecycle & Intrusive Tree Topology
 
-To achieve zero dynamic heap allocations during branch coordination, each `Fiber` contains an intrusive `Join_Coordinator` node.
+To achieve zero dynamic heap allocations during branch coordination, each `Fiber` contains an intrusive `Join_Coordinator` node (`f.active_coord`).
 
 ```
                          [ Parent Fiber ]
                     Join_Coordinator: .Sync / .Race / .Rush
+                     ├─ id: monotonic u64 generation ID
                      ├─ count: 3, completed: 0
                      └─ first_child: ──┐
                                        │
          ┌─────────────────────────────┼─────────────────────────────┐
          ▼                             ▼                             ▼
    [ Child Fiber A ]             [ Child Fiber B ]             [ Child Fiber C ]
+   join_coord_id: coord.id       join_coord_id: coord.id       join_coord_id: coord.id
    sibling_next: ──────────────► sibling_next: ──────────────► sibling_next: nil
    parent: ^Parent               parent: ^Parent               parent: ^Parent
 ```
 
-### Tree Topology Pointers:
+### Tree Topology & Monotonic Generation Tracking:
+- `id: u64`: Monotonically incrementing coordinator ID assigned on setup (`sched.next_coord_id += 1`).
+- `join_coord_id: u64`: Stored on each child fiber matching `coord.id`. Prevents stale background branches from an earlier `rush` from accidentally corrupting subsequent `sync`, `race`, or `rush` invocations on `parent.active_coord`.
 - `first_child`: Pointer to the first active child fiber.
 - `sibling_next`: Pointer to the next sibling in the linked list.
 - `parent`: Pointer back to the parent fiber.
 - `join_coord`: Intrusive struct managing join mode (`.Sync`, `.Race`, `.Rush`), active branch counts, and winner indices.
   - In `.Race`: the first completed arm wins, parent is unblocked, and all sibling branches are recursively aborted.
-  - In `.Rush`: the first completed arm wins and unblocks the parent; losing siblings have `join_coord` set to `nil` and continue executing concurrently in the background as scoped children of `parent`.
+  - In `.Rush`: the first completed arm wins and unblocks the parent; losing siblings have `join_coord` and `join_coord_id` zeroed out and continue executing concurrently in the background as scoped children of `parent`.
   - When `parent` terminates or cancels, `fiber_cleanup_and_recycle` sweeps `first_child` to cleanly drain and abort all background children bottom-up.
 
 ---
@@ -84,7 +94,7 @@ When a branch is cancelled (via `race` preemption, `fiber_cancel`, `with_timeout
    - If waiting on an intrusive wait queue (`Wait_Queue`): Removed in $O(1)$ via `wait_queue_remove`.
 3. **State Transition:** Fiber state transitions to `.Aborted`.
 4. **Stack & Resource Recycling:** Fiber stacks are recycled back into the slab free list in $O(1)$ time, and parent child counters are decremented.
-5. **Native Odin `defer` Execution:** When the cancelled fiber resumes for cleanup, its stack unwinds cleanly through native `defer` blocks.
+5. **LIFO Defer Stack Execution (`fiber_defer`)**: Because suspended fibers cancelled from the outside are not resumed on CPU instructions (their stacks are recycled directly), native Odin `defer` does NOT execute on external abort. Instead, the engine executes the fiber's registered 8-slot LIFO defer stack (`fiber_defer`) in strict reverse order (`for root.cleanup_count > 0`), ensuring guaranteed resource reclamation (mutex/semaphore unlocks, state resets, entity flags) across normal returns, failures, and external cancellations alike.
 
 ---
 

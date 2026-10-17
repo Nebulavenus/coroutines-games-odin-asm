@@ -196,6 +196,37 @@ on_boss_death :: proc(sched: ^coroutine.Scheduler, boss: ^Boss) {
 }
 ```
 
+### 11. Typed Task Futures (`Task(T)` & `spawn_task`)
+
+*Verse `spawn{}`*: Spawns an asynchronous worker that computes a typed value and automatically completes a `Task(T)` future. Any fiber can await the result—even after the worker has finished and its stack has been recycled:
+
+```odin
+heavy_calc: coroutine.Task(int)
+
+// One-liner spawn: entry proc simply returns the computed value!
+coroutine.spawn_task(&sched, &heavy_calc, proc(f: ^coroutine.Fiber) -> int {
+    coroutine.wait(f, 0.5)
+    return 42
+})
+
+// Await elsewhere:
+result, ok := coroutine.task_await(f, &heavy_calc) // Returns (42, true)
+```
+
+### 12. Guaranteed Interruption Cleanup (`fiber_defer`)
+
+*Verse cancel safety*: When a fiber is aborted externally (such as losing a `race`, scope cancellation, or parent destruction), its stack is not resumed on the CPU—meaning native Odin `defer` statements **do not run**. Register cleanup callbacks with `coroutine.fiber_defer` to guarantee state restoration on both normal exit and external abortion:
+
+```odin
+cast_divine_shield :: proc(f: ^coroutine.Fiber, hero: ^Hero) {
+    hero.is_invulnerable = true
+    coroutine.fiber_defer(f, proc(h: ^Hero) { h.is_invulnerable = false }, hero)
+
+    coroutine.wait(f, 3.0) // If aborted during wait, cleanup still runs!
+    coroutine.fiber_cleanup_pop(f)
+}
+```
+
 ---
 
 ## Interactive Demos
@@ -312,12 +343,12 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **182 / 182 Tests PASS (Native Host Windows)** |
-| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **182 / 182 Tests PASS (Native WSL2 Host CPU)** |
-| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **182 / 182 Tests PASS (WSL2 QEMU)** |
-| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **182 / 182 Tests PASS (WSL2 QEMU)** |
-| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **182 / 182 Tests PASS (AAPCS64 ABI Verified)** |
-| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **182 / 182 Tests PASS (SysV AMD64 ABI Verified)** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **187 / 187 Tests PASS (Native Host Windows)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **187 / 187 Tests PASS (WSL2 QEMU)** |
+| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (AAPCS64 ABI Verified)** |
+| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (SysV AMD64 ABI Verified)** |
 | **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **16 / 16 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
@@ -336,7 +367,7 @@ The cross-platform PowerShell build script [`build.ps1`](build.ps1) automates al
 # Run the AI & Quest Sandbox
 .\build.ps1 run-quest
 
-# Run All 182 Unit Tests (133 Core + 49 Sync) with 0 Leaks
+# Run All 187 Unit Tests (138 Core + 49 Sync) with 0 Leaks
 .\build.ps1 test
 
 # Cross-Check All 7 Multi-ISA & WebAssembly Targets

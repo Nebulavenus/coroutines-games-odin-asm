@@ -20,8 +20,10 @@ A curated collection of production-ready, copy-pasteable gameplay architectures 
 13. [Recipe 13: Channel Timeout & Deadlock-Free Message Polling (`chan_recv_timeout`)](#recipe-13-channel-timeout--deadlock-free-message-polling-chan_recv_timeout)
 14. [Recipe 14: Zero-Drift Periodic Heartbeats & Damage-over-Time (`ticker_wait`)](#recipe-14-zero-drift-periodic-heartbeats--damage-over-time-ticker_wait)
 15. [Recipe 15: Deadlock-Proof Scoped Mutex & Semaphore Locks (`with_mutex` / `with_semaphore`)](#recipe-15-deadlock-proof-scoped-mutex--semaphore-locks-with_mutex--with_semaphore)
-16. [Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)](#recipe-16-structured-emergency-task-abort-race--signal)
+16. [Recipe 16: Structured Emergency Task Abort (`with_signal`)](#recipe-16-structured-emergency-task-abort-with_signal)
 17. [Recipe 17: Custom In-Engine Hierarchy Tree Debuggers (`scheduler_walk_tree`)](#recipe-17-custom-in-engine-hierarchy-tree-debuggers-scheduler_walk_tree)
+18. [Recipe 18: Asynchronous Computations with Typed Task Futures (`Task(T)` & `spawn_task`)](#recipe-18-asynchronous-computations-with-typed-task-futures-taskt--spawn_task)
+19. [Recipe 19: Guaranteed State Restoration & Interruption Cleanup (`fiber_defer`)](#recipe-19-guaranteed-state-restoration--interruption-cleanup-fiber_defer)
 
 ---
 
@@ -64,21 +66,20 @@ cast_fireball_coroutine :: proc(f: ^coroutine.Fiber, player: ^Player_Cast) {
     player.cast_progress = 0.0
     player.took_damage = false
 
-    // Race workload vs cancellation triggers:
-    winner := coroutine.race(f,
+    // Race workload vs cancellation triggers via race_with:
+    winner := coroutine.race_with(f, player,
         // Branch 0: Casting Workload
-        coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
+        proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
             tween_f32(f, &p.cast_progress, 0.0, 1.0, 2.5)
             // Cast completed! Fire missile!
             spawn_fireball_projectile(p.pos)
-        }, player),
-
+        },
         // Branch 1: Cancellation Watchdog
-        coroutine.branch(proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
+        proc(f: ^coroutine.Fiber, p: ^Player_Cast) {
             for !(p.took_damage || p.is_moving) {
                 coroutine.yield(f)
             }
-        }, player),
+        },
     )
 
     player.is_casting = false
@@ -747,13 +748,13 @@ drone_recharge_fiber :: proc(f: ^coroutine.Fiber, task: ^Drone_Task) {
 
 ---
 
-## Recipe 16: Structured Emergency Task Abort (`race` & `Signal`)
+## Recipe 16: Structured Emergency Task Abort (`with_signal`)
 
 ### Problem
 An interactive player action (hacking a terminal) needs to be preempted immediately if an emergency alarm signal trips.
 
 ### Solution
-Use `coroutine.race` combining the primary workload with a `coroutine.signal_wait` branch:
+Use `coroutine.with_signal` to interrupt a workload whenever a cancellation signal fires:
 
 ```odin
 package gameplay
@@ -762,23 +763,19 @@ import "core:fmt"
 import "coroutine"
 
 hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
-    winner := coroutine.race(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, t: ^Terminal) {
-            tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
-            t.is_hacked = true
-        }, term, name = "Hack Workload"),
+    completed := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, t: ^Terminal) {
+        tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
+        t.is_hacked = true
+    }, term)
 
-        coroutine.branch(proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
-            coroutine.signal_wait(f, sig)
-        }, &g_lockdown_signal, name = "Lockdown Signal Watcher"),
-    )
-
-    if winner == 1 {
+    if !completed {
         fmt.println("Hacking aborted: Emergency lockdown alarm sounded!")
         term.hack_progress = 0.0
     }
 }
 ```
+
+*Tip:* Alternatively, combine `coroutine.race` with the pre-built primitive `coroutine.branch_signal(&g_lockdown_signal)` or `coroutine.branch_wait(3.0)`!
 
 ---
 
@@ -815,5 +812,95 @@ render_fiber_debugger_hud :: proc(sched: ^coroutine.Scheduler) {
         draw_hud_text(text, 20 + i32(indent), c.start_y)
         c.start_y += c.row_h
     }, &ctx)
+}
+```
+
+---
+
+## Recipe 18: Asynchronous Computations with Typed Task Futures (`Task(T)` & `spawn_task`)
+
+### Problem
+A gameplay system needs to launch a background computation (such as pathfinding or procedural loot generation) that computes a strongly-typed result over multiple ticks without blocking the caller, allowing the caller to await the result or check for completion.
+
+### Solution
+Use `coroutine.Task(T)` and `coroutine.spawn_task` with `task_await`:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "coroutine"
+
+Loot_Request :: struct {
+    player_level: int,
+    chest_rarity: int,
+}
+
+Loot_Reward :: struct {
+    gold:       int,
+    item_id:    u32,
+    is_legend:  bool,
+}
+
+compute_chest_loot :: proc(f: ^coroutine.Fiber, req: ^Loot_Request) -> Loot_Reward {
+    // Simulate multi-tick RNG roll and loot table lookup
+    coroutine.wait(f, 0.2)
+    return Loot_Reward{
+        gold      = req.player_level * 50,
+        item_id   = 1001,
+        is_legend = req.chest_rarity >= 3,
+    }
+}
+
+chest_interaction_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler) {
+    req := Loot_Request{player_level = 10, chest_rarity = 4}
+    task: coroutine.Task(Loot_Reward)
+
+    // Launch typed task on the scheduler
+    coroutine.spawn_task(sched, &task, compute_chest_loot, &req)
+
+    // Await completion with zero polling
+    reward := coroutine.task_await(f, &task)
+    fmt.printf("[Loot] Received %d gold (Legendary: %v)\n", reward.gold, reward.is_legend)
+}
+```
+
+---
+
+## Recipe 19: Guaranteed State Restoration & Interruption Cleanup (`fiber_defer`)
+
+### Problem
+Fibers frequently alter global or entity state (e.g., invulnerability flags, animation locks, combat stances). If a fiber is cancelled externally (such as losing a `race`, scope cancellation, or parent death), native Odin `defer` statements **do not run** because the stack is never resumed.
+
+### Solution
+Register cleanup callbacks via `coroutine.fiber_defer`. When the fiber finishes normally, pop and run the cleanup with `fiber_cleanup_pop`:
+
+```odin
+package gameplay
+
+import "core:fmt"
+import "coroutine"
+
+Hero :: struct {
+    is_invulnerable: bool,
+    attack_cooldown: f32,
+}
+
+restore_hero_state :: proc(h: ^Hero) {
+    h.is_invulnerable = false
+    fmt.println("[Hero] Invulnerability removed.")
+}
+
+cast_divine_shield :: proc(f: ^coroutine.Fiber, hero: ^Hero) {
+    hero.is_invulnerable = true
+
+    // Register cleanup callback immediately on the 8-slot LIFO defer stack:
+    coroutine.fiber_defer(f, restore_hero_state, hero)
+
+    // Perform spell channeling:
+    coroutine.wait(f, 3.0)
+
+    // Pop and execute cleanup upon normal completion:
+    coroutine.fiber_cleanup_pop(f)
 }
 ```

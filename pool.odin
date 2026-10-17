@@ -245,6 +245,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.prev_sibling = nil
     fiber.child_count = 0
     fiber.join_coord = nil
+    fiber.join_coord_id = 0
     fiber.active_coord = {}
     fiber.branch_index = 0
     fiber.clock_id = CLOCK_SIM
@@ -256,8 +257,10 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.entry_proc = nil
     fiber.user_data = nil
     fiber.user_fn = nil
-    fiber.cleanup_proc = nil
-    fiber.cleanup_data = nil
+    for i in 0 ..< MAX_FIBER_CLEANUPS {
+        fiber.cleanups[i] = {}
+    }
+    fiber.cleanup_count = 0
     fiber.debug_name = ""
     fiber.start_time = 0
     fiber.stack_high_water = 0
@@ -318,6 +321,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.prev_sibling = nil
     fiber.child_count = 0
     fiber.join_coord = nil
+    fiber.join_coord_id = 0
     fiber.active_coord = {}
     fiber.branch_index = 0
     fiber.clock_id = CLOCK_SIM
@@ -329,8 +333,10 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.entry_proc = nil
     fiber.user_data = nil
     fiber.user_fn = nil
-    fiber.cleanup_proc = nil
-    fiber.cleanup_data = nil
+    for i in 0 ..< MAX_FIBER_CLEANUPS {
+        fiber.cleanups[i] = {}
+    }
+    fiber.cleanup_count = 0
     fiber.scope = nil
     fiber.next_in_scope = nil
     fiber.prev_in_scope = nil
@@ -516,12 +522,14 @@ fiber_trampoline_entry :: proc "c" () {
         fiber.status = .Completed
     }
 
-    // 4. Run cleanup proc if registered
-    if fiber.cleanup_proc != nil {
-        fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
-        fiber.cleanup_proc = nil
-        fiber.cleanup_data = nil
+    // 4. Run cleanup procs in LIFO order if registered
+    for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
+        hook := fiber.cleanups[i]
+        if hook.proc_ptr != nil {
+            hook.proc_ptr(hook.user_data != nil ? hook.user_data : fiber.user_data)
+        }
     }
+    fiber.cleanup_count = 0
 
     // 5. Notify completion to coordinator & parent
     fiber_on_finish(fiber)

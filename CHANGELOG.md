@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Concurrency Hardening & Developer Ergonomics (Epic Verse Alignment)] - 2026-10-17
+
+### Added
+- **Monotonic Coordinator Generation Tracking (`types.odin`, `scheduler.odin`, `api.odin`)**:
+  - Added `id: u64` to `Join_Coordinator` and `join_coord_id: u64` to `Fiber`.
+  - Guarantees that when `rush` unblocks a parent fiber, background loser branches cannot accidentally match or corrupt subsequent `sync`, `race`, or `rush` calls on `parent.active_coord`.
+  - Airtight detachment: winning `rush` arms detach losers by clearing `join_coord = nil` and `join_coord_id = 0`, cleanly transitioning losers into scope-bound background tasks.
+- **LIFO Multi-Hook Defer Stack (`types.odin`, `api.odin`, `scheduler.odin`, `sync/sync.odin`)**:
+  - Upgraded fiber cleanups to a native 8-slot LIFO defer stack (`MAX_FIBER_CLEANUPS :: 8`) with zero runtime heap allocation.
+  - Added `fiber_defer(f, proc, user_data)` (with typed pointer overload) and `fiber_cleanup_pop(f)`.
+  - Executed in strict reverse order (LIFO) upon normal completion, failure, or cancellation.
+  - Replaced ad-hoc `SCOPED_CLEANUP_MAGIC` linked-list chaining across `sync/sync.odin` (`with_mutex`, `with_semaphore`, and `chan_send`) with standard `fiber_defer` and `fiber_cleanup_pop`.
+- **Shared-Context Combinator Helpers (`api.odin`)**:
+  - Added `sync_with(f, ctx, ..procs)`, `race_with(f, ctx, ..procs)`, `rush_with(f, ctx, ..procs)`, and `fallback_with(f, ctx, ..procs)`.
+  - Allows passing a shared context pointer (e.g. `^Boss`, `^Player`) directly to a list of typed procedures without wrapping each call in `branch(...)`.
+- **Direct Procedure Combinator Overloads (`api.odin`)**:
+  - Overloaded `sync`, `race`, `rush`, and `fallback` to accept parameterless `..proc(f: ^Fiber)` directly alongside `..Branch_Desc`.
+- **Synchronization Branch Constructors (`api.odin`)**:
+  - Added `branch_signal(sig, name)` and `branch_sticky_signal(sig, name)`: creates pre-built `Branch_Desc` awaiting signals.
+  - Added `branch_wait(seconds, name, clock)`: creates a pre-built `Branch_Desc` timer arm for `race` or `rush`.
+- **Interruptible Task Combinators (`with_signal` / `with_sticky_signal`) (`api.odin`)**:
+  - Added `with_signal(f, sig, task)` and `with_sticky_signal(f, sig, task)` (with pointer, value, nil, and descriptor overloads): runs a task until completion or aborts immediately if `sig` fires, returning `interrupted: bool`.
+- **Verse-Style Typed Task Futures (`Task(T)` & `spawn_task`) (`types.odin`, `api.odin`)**:
+  - Added lightweight, True-ZII `Task(T)` container backed by `Sticky_Event(T)` with zero dynamic allocation.
+  - Added `task_init(&task)`, `task_complete(f/sched, &task, value)`, `task_await(f, &task)`, and `task_is_ready(&task)`.
+  - Added `spawn_task(sched/f, &task, entry)` overloads: worker entry procedure returns `R` directly; engine automatically initializes the task, attaches the fiber handle, and delivers the result on completion.
+  - Guarantees immediate delivery even if awaited long after the worker fiber has finished and recycled.
+- **Unified `Sticky_Signal` as `Sticky_Event(struct{})` (`types.odin`, `api.odin`)**:
+  - Aliased `Sticky_Signal :: Sticky_Event(struct{})` (mirroring `Signal :: Event(struct{})`), eliminating redundant wait queue logic and enabling uniform `sticky_event_is_set`, `sticky_event_reset`, `sticky_event_waiter_count`, and `sticky_emit`.
+- **Standalone QEMU Test Runner (`run_all_coroutine_tests`) (`coroutine_test.odin`)**:
+  - Updated `run_all_coroutine_tests` to an array-driven test dispatcher returning `(passed, failed)` and supporting optional `verbose` logging.
+  - Runs all 138 core tests across native host and ARM64 / RISC-V 64 QEMU emulation harnesses.
+- **Unit Test Coverage Expansion (182 -> 187 Native Tests)**:
+  - Added Tests 169–173 in `coroutine_test.odin`: `test_rush_active_coord_reentry`, `test_fiber_defer_lifo_order`, `test_combinator_with_helpers`, `test_branch_primitives_and_with_signal`, and `test_task_future`.
+- **Repository-Wide Example Modernization (`examples/game`, `examples/quest_ai`, `examples/showcase`, `examples/bench`, `examples/dist_test`, `examples/wasm_test`)**:
+  - `examples/game/main.odin`: Modernized Boss Phase 1, Phase 2, and Phase 3 attack loops with `race_with(f, b, ...)`, `sync_with(f, b, ...)`, and `with_signal(f, &b.stun_signal, ...)`; added `fiber_defer` and `fiber_cleanup_pop` to `player_dash_coroutine` for guaranteed state restoration.
+  - `examples/quest_ai/main.odin`: Decomposed Knight AI decision tree into modular procs dispatched via `fallback_with(f, k, ...)`; refactored Outpost Quest objective tree via `rush_with(f, q, ...)`.
+  - `examples/showcase/main.odin`: Converted Capture Contest to `with_timeout(3.5)`; modernized Async Compute Lab to typed `Task(int)` spawned via `spawn_task` and awaited via `task_await`.
+  - `examples/bench/main.odin`: Modernized `bench_structured_tree_churn` to `sync_with(f, c, ...)`, verifying 10,000 structured trees in 237 ms with zero dynamic allocations.
+  - `examples/dist_test/main.odin`: Added verification for `spawn_task`, `task_await`, and `sync_with` on the amalgamated single-file library.
+  - `examples/wasm_test/main.odin`: Refactored Test 4 (`sync_with`), Test 5 (`race_with`), Test 10 (`sync_with` + `branch_signal`), Test 12 (`with_signal` + `sync_with`), and Test 13 (`rush_with`).
+- **WebAssembly Test Suite Expansion (16 -> 17 Test Suites) (`examples/wasm_test/main.odin`)**:
+  - Added Test 17: `test_task_futures_and_combinator_helpers` verifying `spawn_task`, `task_await`, `sync_with`, and `with_signal` under Binaryen Asyncify execution.
+  - Updated `docs/wasm/04_TESTING_AND_AUTOMATION.md` and `docs/wasm/README.md`.
+- **Documentation Suite Modernization (`docs/`)**:
+  - `docs/ARCHITECTURE.md`: Documented monotonic `coord.id` tracking, `child.join_coord_id`, and the 8-slot LIFO defer stack (`MAX_FIBER_CLEANUPS`).
+  - `docs/tech/TECH_CONCURRENCY.md` & `docs/tech/TECH_PRIMITIVES.md`: Updated combinator matrix and primitive specifications for `sync_with`, `race_with`, `rush_with`, `fallback_with`, `with_signal`, `Task(T)` / `spawn_task`, and `fiber_defer`.
+  - `docs/guides/GUIDE_FOOTGUNS.md`: Added Footgun 15 ("Relying on Native Odin defer for External Fiber Cancellation / Abort").
+  - `docs/COOKBOOK.md`: Modernized Recipe 16 (`with_signal`) and added Recipe 18 (`Task(T)` futures) and Recipe 19 (`fiber_defer`).
+  - `docs/tutorials/`: Modernized Tutorials 03, 04, 05, and 06 with shared-context combinator helpers, typed task futures, and interruption defer semantics.
+
 ## [Verse Structured Concurrency Realignment & Latched Primitives] - 2026-10-17
 
 ### Added

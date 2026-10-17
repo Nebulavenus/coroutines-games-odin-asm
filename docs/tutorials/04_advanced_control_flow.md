@@ -46,9 +46,10 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
     for {
         // Fallback executes sequentially until the FIRST successful branch!
-        coroutine.fallback(f,
+        // Using fallback_with passes ^NPC directly to all arms:
+        coroutine.fallback_with(f, npc,
             // Priority 1: Melee Slam
-            coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
+            proc(f: ^coroutine.Fiber, n: ^NPC) {
                 dx := n.pos.x - n.player_pos.x
                 dy := n.pos.y - n.player_pos.y
                 dist := math.sqrt(dx * dx + dy * dy)
@@ -61,10 +62,10 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
                 fmt.printf("[AI] %s executing Heavy Melee Slam!\n", n.name)
                 coroutine.wait(f, 0.5)
-            }, npc, name = "Melee Priority"),
+            },
 
             // Priority 2: Ranged Snipe
-            coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
+            proc(f: ^coroutine.Fiber, n: ^NPC) {
                 if !n.has_los {
                     // Obstacle in the way! Cascade to next branch!
                     coroutine.fail(f)
@@ -73,14 +74,14 @@ npc_ai_decision_tree :: proc(f: ^coroutine.Fiber, npc: ^NPC) {
 
                 fmt.printf("[AI] %s executing Ranged Sniper Shot!\n", n.name)
                 coroutine.wait(f, 0.8)
-            }, npc, name = "Ranged Priority"),
+            },
 
             // Priority 3: Fallback Patrol
-            coroutine.branch(proc(f: ^coroutine.Fiber, n: ^NPC) {
+            proc(f: ^coroutine.Fiber, n: ^NPC) {
                 fmt.printf("[AI] %s patrolling to waypoint %d.\n", n.name, n.patrol_index)
                 n.patrol_index = (n.patrol_index + 1) % 4
                 coroutine.wait(f, 1.0)
-            }, npc, name = "Patrol Fallback"),
+            },
         )
     }
 }
@@ -124,31 +125,33 @@ In Epic Verse semantics, `rush` runs arms in parallel and resumes the parent as 
 **Crucially, unlike `race`, `rush` does NOT cancel losing branches!** Losing branches have their join coordinator detached and continue running concurrently in the background as scoped children of the parent:
 
 ```odin
-// 3 Scouts search different cave entrances concurrently
+// 3 Scouts search different cave entrances concurrently using direct procedures:
 coroutine.rush(f,
-    coroutine.branch(proc(f: ^coroutine.Fiber) {
+    proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 0.5)
         fmt.println("[Scout North] Dead end!")
         coroutine.fail(f) // Dropped out! Ignored by rush.
-    }, name = "Scout North"),
+    },
 
-    coroutine.branch(proc(f: ^coroutine.Fiber) {
+    proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 1.0)
         fmt.println("[Scout East] Found the secret dungeon entrance!")
         // Finishes successfully! Wins rush and unblocks the parent!
-    }, name = "Scout East"),
+    },
 
-    coroutine.branch(proc(f: ^coroutine.Fiber) {
+    proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 2.5)
         fmt.println("[Scout West] Mapped underground treasure room!")
         // Loses rush, BUT NOT CANCELLED! Keeps running in background!
-    }, name = "Scout West"),
+    },
 )
 
 // Parent resumes immediately when Scout East succeeds at 1.0s.
 // Scout West continues mapping in the background.
 // If the parent exits or is cancelled, background children are safely aborted bottom-up!
 ```
+
+*Tip:* When all arms operate on shared data, `coroutine.rush_with(f, data, ...)` passes your context pointer without closures!
 
 ---
 
@@ -174,9 +177,25 @@ coroutine.wait(f, 1.0)
 
 ---
 
-## 4. Structured Task Preemption with `race` & `Signal`
+## 4. Structured Task Preemption with `with_signal` & `race`
 
-In pure Verse semantics, `race` executes arms concurrently. The **first arm to succeed** (`.Completed`) wins and immediately cancels and cleans up all competing sibling subtrees. Branches that call `fail(f)` drop out without winning:
+In pure Verse semantics, `race` executes arms concurrently. The **first arm to succeed** (`.Completed`) wins and immediately cancels and cleans up all competing sibling subtrees.
+
+For preemption triggered by external events, `coroutine.with_signal` wraps this pattern concisely:
+
+```odin
+// Preempt lockpicking if an alarm signal fires:
+completed := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, c: ^Chest) {
+    coroutine.wait(f, 3.0)
+    c.is_unlocked = true
+}, &chest)
+
+if !completed {
+    fmt.println("Lockpicking interrupted by emergency lockdown signal!")
+}
+```
+
+You can also use `coroutine.race` or `coroutine.race_with` with the pre-built `coroutine.branch_signal(&g_lockdown_signal)` primitive when competing against multiple conditions:
 
 ```odin
 winner := coroutine.race(f,
@@ -185,16 +204,8 @@ winner := coroutine.race(f,
         c.is_unlocked = true
     }, &chest, name = "Lockpicking"),
 
-    coroutine.branch(proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
-        coroutine.signal_wait(f, sig)
-    }, &g_lockdown_signal, name = "Lockdown Watcher"),
+    coroutine.branch_signal(&g_lockdown_signal, name = "Lockdown Watcher"),
 )
-
-if winner == 1 {
-    fmt.println("Lockpicking interrupted by emergency lockdown signal!")
-} else if winner == -1 {
-    fmt.println("All race branches failed!")
-}
 ```
 
 ---
@@ -260,12 +271,12 @@ Elevator :: struct {
 elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
     fmt.println("Calling elevator to floor 5...")
 
-    // Runs the branch with a 4.0 second deadline:
-    arrived := coroutine.with_timeout(f, 4.0, coroutine.branch(proc(f: ^coroutine.Fiber, e: ^Elevator) {
+    // Runs the branch with a 4.0 second deadline directly:
+    arrived := coroutine.with_timeout(f, 4.0, proc(f: ^coroutine.Fiber, e: ^Elevator) {
         for !(e.floor == 5 && e.door_open) {
             coroutine.yield(f)
         }
-    }, e))
+    }, e)
 
     if arrived {
         fmt.println("Elevator arrived on time! Boarding...")

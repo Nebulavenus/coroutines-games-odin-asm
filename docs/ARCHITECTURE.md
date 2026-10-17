@@ -585,22 +585,30 @@ Fiber :: struct {
     child_count:      int,
 
     // --- Concurrency & Join Coordination ---
-    join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race
+    join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race/rush
+    join_coord_id:    u64,               // Generation ID of join_coord (prevents stale rush interference)
     active_coord:     Join_Coordinator,  // Embedded coordinator for when THIS fiber spawns children
+    branch_index:     int,               // Index in parent's branch array
 
     // --- Wait / Wake Triggers ---
-    wake_time:        f64,             // Target absolute timestamp for Sleeping_Time
-    wake_frame:       u64,             // Target engine frame for Sleeping_Frames
-    heap_index:       int,             // Index in Timer Min-Heap (for O(log N) deletion on abort)
-    
-    // Condition polling
-    condition_fn:     proc(user_data: rawptr) -> bool,
-    condition_data:   rawptr,
+    clock_id:         Clock_ID,          // Target clock domain (default CLOCK_SIM = 0)
+    wake_time:        f64,               // Target absolute timestamp for Sleeping_Time
+    wake_step:        u64,               // Target step count for Sleeping_Steps
+    heap_index:       int,               // Index in Timer Min-Heap (for O(log N) deletion on abort)
+    ticker_interval:  f32,               // Built-in zero-drift ticker interval
+    ticker_next_wake: f64,
 
     // --- User Entry & State ---
     entry_proc:       proc(f: ^Fiber, user_data: rawptr),
     user_data:        rawptr,
-    cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
+    user_fn:          rawptr,            // Function pointer for generic/value entry thunks
+    payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
+    cleanups:         [MAX_FIBER_CLEANUPS]Fiber_Cleanup, // 8-slot LIFO defer stack executed on abort/finish
+    cleanup_count:    int,
+
+    // --- Isolated Temporary Allocator ---
+    temp_arena:        mem.Arena,
+    temp_arena_buffer: [TEMP_ARENA_SIZE]byte, // Private scratchpad per fiber
 
     // --- Diagnostics & Profiling ---
     debug_name:       string,
@@ -609,23 +617,25 @@ Fiber :: struct {
 }
 ```
 
-### C. The `Join_Coordinator` (Powers `sync` and `race`)
-A coordinator synchronizes a group of child fibers spawned by a parent. It lives inside the parent's `Fiber` struct (or on the parent's stack), requiring **zero heap allocations**.
+### C. The `Join_Coordinator` (Powers `sync`, `race`, and `rush`)
+A coordinator synchronizes a group of child fibers spawned by a parent. It lives inside the parent's `Fiber` struct (`parent.active_coord`), requiring **zero heap allocations**.
 
 ```odin
 Join_Kind :: enum u8 {
     Sync, // All children must finish; parent resumes when remaining == 0
-    Race, // First child to succeed wins; immediately aborts all siblings
-    Rush, // First child to succeed wins; losers continue running in background
+    Race, // First child to succeed wins; immediately aborts all siblings; failures ignored unless all fail
+    Rush, // First child to succeed wins; losers continue running in background (Verse rush)
 }
 
 Join_Coordinator :: struct {
+    id:              u64,             // Monotonic coordinator generation ID
     kind:            Join_Kind,
     parent:          ^Fiber,
     total_branches:  int,
     active_branches: int,
-    winner:          ^Fiber,      // Set in Race / Rush mode
-    has_failed:      bool,       // True if any child failed in Sync mode
+    winner:          ^Fiber,          // Set in Race / Rush mode
+    winner_index:    int,
+    has_failed:      bool,            // True if any child failed in Sync mode
     completed:       bool,
 }
 ```
@@ -817,10 +827,13 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
         root.current_wait_queue = nil
     }
 
-    // 4. Execute optional cleanup callback (destructor)
-    if root.cleanup_proc != nil {
-        root.cleanup_proc(root.user_data)
-        root.cleanup_proc = nil
+    // 4. Execute registered LIFO defer cleanups (destructors) in reverse order
+    for root.cleanup_count > 0 {
+        root.cleanup_count -= 1
+        c_hook := root.cleanups[root.cleanup_count]
+        if c_hook.proc_ptr != nil {
+            c_hook.proc_ptr(c_hook.user_data)
+        }
     }
 
     // 5. Update status & reclaim stack memory
@@ -978,6 +991,49 @@ Relinquishes the CPU timeslice to other ready fibers in the current frame withou
 yield_now :: proc(f: ^Fiber)
 ```
 
+### H. Shared-Context Combinator Helpers (`sync_with`, `race_with`, `rush_with`, `fallback_with`)
+Eliminates boilerplate `branch(...)` wrappers when all branches operate on a shared context pointer (e.g. `^Boss`, `^Player`). Uses an inline 16-slot stack buffer fast-path for 100% zero dynamic allocation.
+
+```odin
+sync_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> bool
+race_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
+rush_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
+fallback_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
+```
+
+### I. Pre-Built Branch Constructors (`branch_signal`, `branch_wait`)
+Allows directly passing signals and timers as racing or syncing branches without creating anonymous lambdas.
+
+```odin
+branch_signal        :: proc(sig: ^Signal, name: string = "") -> Branch_Desc
+branch_sticky_signal :: proc(sig: ^Sticky_Signal, name: string = "") -> Branch_Desc
+branch_wait          :: proc(seconds: f32, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+```
+
+### J. Interruptible & Time-Bounded Combinators (`with_signal`, `with_timeout`)
+Runs a task until completion or aborts immediately if a signal fires or a timeout expires.
+
+```odin
+with_signal   :: proc{with_signal_nil, with_signal_ptr, with_signal_val, with_signal_branch} // returns interrupted: bool
+with_timeout  :: proc{with_timeout_nil, with_timeout_ptr, with_timeout_val, with_timeout_branch} // returns timed_out: bool
+```
+
+### K. Verse-Style Typed Task Futures (`Task(T)` & `spawn_task`)
+Lightweight, True-ZII future container backed by `Sticky_Event(T)` with zero dynamic allocation. Spawns an asynchronous worker whose return value is automatically delivered to the task container; any fiber can await the result even after the worker fiber has finished and recycled.
+
+```odin
+Task :: struct($T: typeid) {
+    handle: Fiber_Handle,
+    result: Sticky_Event(T),
+}
+
+task_init     :: proc(task: ^Task($T), handle: Fiber_Handle = 0)
+task_complete :: proc{task_complete_sched, task_complete_fiber}
+task_await    :: proc(f: ^Fiber, task: ^Task($T)) -> (val: T, ok: bool)
+task_is_ready :: proc(task: ^Task($T)) -> bool
+spawn_task    :: proc{spawn_task_sched_nil, spawn_task_sched_ptr, spawn_task_sched_val, spawn_task_fiber_nil, spawn_task_fiber_ptr, spawn_task_fiber_val}
+```
+
 ---
 
 ## 4. Gameplay Code: Before vs. After
@@ -1037,9 +1093,11 @@ spawn(sched, wizard_attack, &enemy_ctx, scope = &enemy.scope)
 
 ---
 
-### Example 2: Elite Charge Attack with Semaphore & Guaranteed Cleanup
+### Example 2: Elite Charge Attack with Guaranteed Cancellation Cleanup (`fiber_defer`)
 
-Using native Odin `defer`, resource cleanup (such as releasing a charge slot or restoring speed) is **guaranteed to run**, even if the fiber is aborted mid-charge by a `race` or entity death.
+In stackful coroutines, when a fiber is cancelled externally (e.g. by losing a `race` or when its `Fiber_Scope` is destroyed upon entity death), its execution is not resumed on the CPU—its stack is recycled directly into the pool. Therefore, **native Odin `defer` does NOT run on external abort**.
+
+To guarantee that resources are cleaned up regardless of whether a fiber returns naturally or is aborted mid-flight, use `coroutine.fiber_defer(f, cleanup_proc, user_data)`:
 
 ```odin
 elite_charge_behavior :: proc(f: ^Fiber, ctx: ^Enemy_Ctx) {
@@ -1049,21 +1107,27 @@ elite_charge_behavior :: proc(f: ^Fiber, ctx: ^Enemy_Ctx) {
     }
     ctx.game.active_charges += 1
 
-    // Guaranteed cleanup on return OR unexpected abort/cancellation!
-    defer ctx.game.active_charges -= 1
+    // Register cleanup hook: guaranteed to run on return, fail, OR external cancellation!
+    coroutine.fiber_defer(f, proc(ctx: ^Enemy_Ctx) {
+        ctx.game.active_charges -= 1
+        if e := find_enemy(ctx.game, ctx.enemy_id); e != nil {
+            e.speed = 100.0 // Reset to base speed
+        }
+    }, ctx)
 
     enemy := find_enemy(ctx.game, ctx.enemy_id)
     if enemy == nil do return
 
     // 2. Perform Dash
+    orig_speed := enemy.speed
     enemy.speed *= 3.5
-    defer {
-        if e := find_enemy(ctx.game, ctx.enemy_id); e != nil {
-            e.speed /= 3.5
-        }
-    }
 
-    wait(f, 1.0) // Dash duration
+    wait(f, 1.0) // Dash duration (if aborted by stun/death here, fiber_defer executes!)
+
+    // 3. Normal completion: restore speed and pop cleanup hook
+    enemy.speed = orig_speed
+    ctx.game.active_charges -= 1
+    coroutine.fiber_cleanup_pop(f)
 }
 ```
 

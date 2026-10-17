@@ -128,6 +128,7 @@ Research_Job :: struct {
 Lab_Station :: struct {
     pos:            rl.Vector2,
     job:            Research_Job,
+    drone_task:     coroutine.Task(int),
     is_working:     bool,
     status_text:    string,
     status_color:   rl.Color,
@@ -331,28 +332,20 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
 
     coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW})
 
-    // Preemptive race: Capture task vs. 3.5s timeout
-    won_index := coroutine.race(f,
-        // Branch 0: Player must stay inside radius for 1.8 accumulated seconds
-        coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
-            for s.progress < 1.0 {
-                coroutine.yield_frame(f)
-                dist := linalg.length(g_world.player.pos - s.pos)
-                if dist < s.radius {
-                    s.progress += coroutine.delta_time(f) / 1.8
-                } else {
-                    s.progress = max(0.0, s.progress - coroutine.delta_time(f) * 0.8)
-                }
+    // Preemptive race via with_timeout combinator (3.5s limit)
+    timed_out := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
+        for s.progress < 1.0 {
+            coroutine.yield_frame(f)
+            dist := linalg.length(g_world.player.pos - s.pos)
+            if dist < s.radius {
+                s.progress += coroutine.delta_time(f) / 1.8
+            } else {
+                s.progress = max(0.0, s.progress - coroutine.delta_time(f) * 0.8)
             }
-        }, s, "Capture Accumulation"),
+        }
+    }, s, "Capture Accumulation")
 
-        // Branch 1: 3.5-second hard timeout
-        coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
-            coroutine.wait(f, 3.5)
-        }, s, "Contest Timeout"),
-    )
-
-    if won_index == 0 {
+    if !timed_out {
         s.capture_success = true
         s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
@@ -475,24 +468,25 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     ok := coroutine.await_async(f, &s.job.token)
 
     if ok {
-        s.status_text = fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (fiber_join)...", s.job.elapsed_worker)
+        s.status_text = fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (spawn_task)...", s.job.elapsed_worker)
         s.status_color = rl.SKYBLUE
 
-        // Spawn Analysis Drone task and await with fiber_join!
+        // Spawn Analysis Drone task and await with typed Task(int) future!
         s.drone_active = true
         s.drone_pos = s.pos + {0, -40}
 
-        drone_h := coroutine.spawn(f.sched, proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
+        coroutine.spawn_task(f, &s.drone_task, proc(child: ^coroutine.Fiber, s: ^Lab_Station) -> int {
             for i := 0; i < 4; i += 1 {
-                coroutine.wait(f, 0.4)
+                coroutine.wait(child, 0.4)
                 s.drone_pos.x += (i % 2 == 0 ? 25.0 : -25.0)
             }
             s.drone_active = false
-        }, s, name = "Analysis Drone (Task Join)")
+            return s.job.result_nodes
+        }, s, name = "Analysis Drone (Task Future)")
 
-        coroutine.fiber_join(f, drone_h)
+        found_nodes, _ := coroutine.task_await(f, &s.drone_task)
 
-        s.status_text = fmt.tprintf("Research & Drone Complete! Found %d nodes", s.job.result_nodes)
+        s.status_text = fmt.tprintf("Research & Drone Complete! Found %d nodes", found_nodes)
         s.status_color = rl.GREEN
         coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Analysis Complete", "Async job & Analysis Drone joined successfully!", rl.GREEN})
     } else {

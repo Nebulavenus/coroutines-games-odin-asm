@@ -266,12 +266,19 @@ player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
     trigger_camera_shake(5.0)
     spawn_particles(p.pos, 15, rl.SKYBLUE)
 
+    // Register LIFO cleanup hook: guarantees player state restoration if cancelled or interrupted
+    coroutine.fiber_defer(f, proc(p: ^Player) {
+        p.speed = 300.0
+        p.is_dashing = false
+    }, p)
+
     // Dash duration
     coroutine.wait(f, 0.18)
 
-    // Restore speed
+    // Restore speed normally and pop cleanup hook
     p.speed = orig_speed
     p.is_dashing = false
+    coroutine.fiber_cleanup_pop(f)
 
     // Dash Cooldown
     coroutine.wait(f, 0.8)
@@ -351,19 +358,12 @@ boss_enraged_laser_sweep :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.hp > 700.0 && b.alive && b.phase == 1 {
-        winner := coroutine.race(f,
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.sync(f,
-                    coroutine.branch(boss_spiral_shoot_subloop, b, "Spiral Shoot Loop"),
-                    coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst Loop"),
-                )
-            }, b, "Phase 1 Attacks"),
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.signal_wait(f, &b.stun_signal)
-            }, b, "Stun Signal Watcher"),
-        )
+        // Verse with_signal: runs combo attack until completed or interrupted by stun signal
+        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+            coroutine.sync_with(f, b, boss_spiral_shoot_subloop, boss_targeted_burst_subloop)
+        }, b, "Phase 1 Attacks")
 
-        if winner == 1 && b.hp > 700.0 && b.alive && b.phase == 1 {
+        if stunned && b.hp > 700.0 && b.alive && b.phase == 1 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.5)
@@ -374,19 +374,11 @@ boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase2 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.hp > 350.0 && b.alive && b.phase == 2 {
-        winner := coroutine.race(f,
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.sync(f,
-                    coroutine.branch(boss_enraged_laser_sweep, b, "Laser Sweep"),
-                    coroutine.branch(boss_targeted_burst_subloop, b, "Targeted Burst"),
-                )
-            }, b, "Phase 2 Attacks"),
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.signal_wait(f, &b.stun_signal)
-            }, b, "Stun Signal Watcher"),
-        )
+        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+            coroutine.sync_with(f, b, boss_enraged_laser_sweep, boss_targeted_burst_subloop)
+        }, b, "Phase 2 Attacks")
 
-        if winner == 1 && b.hp > 350.0 && b.alive && b.phase == 2 {
+        if stunned && b.hp > 350.0 && b.alive && b.phase == 2 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.5)
@@ -397,20 +389,11 @@ boss_attack_loop_phase2 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase3 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.alive && b.phase == 3 {
-        winner := coroutine.race(f,
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.sync(f,
-                    coroutine.branch(boss_spiral_shoot_subloop, b, "Enraged Spiral"),
-                    coroutine.branch(boss_enraged_laser_sweep, b, "Enraged Nova"),
-                    coroutine.branch(boss_targeted_burst_subloop, b, "Rapid Targeted Fire"),
-                )
-            }, b, "Phase 3 Attacks"),
-            coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
-                coroutine.signal_wait(f, &b.stun_signal)
-            }, b, "Stun Signal Watcher"),
-        )
+        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+            coroutine.sync_with(f, b, boss_spiral_shoot_subloop, boss_enraged_laser_sweep, boss_targeted_burst_subloop)
+        }, b, "Phase 3 Attacks")
 
-        if winner == 1 && b.alive && b.phase == 3 {
+        if stunned && b.alive && b.phase == 3 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.0)
@@ -433,16 +416,15 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     b.color = rl.GOLD
     spawn_floating_text("PHASE 1: ENGAGED", b.pos, rl.GOLD)
 
-    coroutine.race(f,
+    coroutine.race_with(f, b,
         // Condition branch: End Phase 1 when HP < 700
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+        proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.hp > 700.0 && b.alive {
                 coroutine.yield(f)
             }
-        }, b, "HP < 700 Trigger"),
-
-        coroutine.branch(boss_patrol_subloop, b, "Patrol Loop"),
-        coroutine.branch(boss_attack_loop_phase1, b, "Phase 1 Attack Loop"),
+        },
+        boss_patrol_subloop,
+        boss_attack_loop_phase1,
     )
 
     if !b.alive do return
@@ -460,19 +442,19 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     // 1. Move to Center
     tween_vec2(f, &b.pos, b.pos, [2]f32{f32(SCREEN_WIDTH) / 2.0, 180.0}, 1.0, ease_in_out_cubic)
 
-    // 2. Shield Charge Cinematic
-    coroutine.sync(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+    // 2. Shield Charge Cinematic (sync_with shared ^Boss context)
+    coroutine.sync_with(f, b,
+        proc(f: ^coroutine.Fiber, b: ^Boss) {
             tween_f32(f, &b.shield_alpha, 0.0, 0.85, 1.2, ease_in_out_quad)
             coroutine.wait(f, 0.5)
             tween_f32(f, &b.shield_alpha, 0.85, 0.0, 0.3)
-        }, b, "Shield Tween"),
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+        },
+        proc(f: ^coroutine.Fiber, b: ^Boss) {
             for _ in 0 ..< 10 {
                 spawn_particles(b.pos, 8, rl.SKYBLUE)
                 coroutine.wait(f, 0.15)
             }
-        }, b, "Charge Particles"),
+        },
     )
 
     // 3. Super Radial Blast
@@ -484,16 +466,15 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         spawn_projectile(b.pos, dir * 280.0, 10.0, rl.PURPLE, true)
     }
 
-    // 4. Phase 2 Combat Loop until HP < 350
-    coroutine.race(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+    // 4. Phase 2 Combat Loop until HP < 350 (race_with shared ^Boss context)
+    coroutine.race_with(f, b,
+        proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.hp > 350.0 && b.alive {
                 coroutine.yield(f)
             }
-        }, b, "HP < 350 Trigger"),
-
-        coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
-        coroutine.branch(boss_attack_loop_phase2, b, "Phase 2 Attack Loop"),
+        },
+        boss_patrol_subloop,
+        boss_attack_loop_phase2,
     )
 
     if !b.alive do return
@@ -508,15 +489,15 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     spawn_floating_text("PHASE 3: BERSERK MODE!", b.pos, rl.RED)
     trigger_camera_shake(20.0)
 
-    coroutine.race(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss) {
+    // Phase 3 Combat Loop (race_with shared ^Boss context)
+    coroutine.race_with(f, b,
+        proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.alive {
                 coroutine.yield(f)
             }
-        }, b, "Boss Death Trigger"),
-
-        coroutine.branch(boss_patrol_subloop, b, "Patrol Subloop"),
-        coroutine.branch(boss_attack_loop_phase3, b, "Phase 3 Attack Loop"),
+        },
+        boss_patrol_subloop,
+        boss_attack_loop_phase3,
     )
 }
 

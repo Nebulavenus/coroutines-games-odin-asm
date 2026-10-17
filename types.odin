@@ -68,6 +68,7 @@ Join_Kind :: enum u8 {
 // ============================================================================
 
 Join_Coordinator :: struct {
+    id:              u64,             // Monotonic coordinator generation ID
     kind:            Join_Kind,
     parent:          ^Fiber,
     total_branches:  int,
@@ -76,6 +77,13 @@ Join_Coordinator :: struct {
     winner_index:    int,
     has_failed:      bool,
     completed:       bool,
+}
+
+MAX_FIBER_CLEANUPS :: 8
+
+Fiber_Cleanup :: struct {
+    proc_ptr:  proc(user_data: rawptr),
+    user_data: rawptr,
 }
 
 Fiber_Scope :: struct {
@@ -157,6 +165,7 @@ Fiber :: struct {
 
     // --- Concurrency & Join Coordination ---
     join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race
+    join_coord_id:    u64,               // Generation ID of join_coord (prevents stale rush interference)
     active_coord:     Join_Coordinator,  // Embedded coordinator for when THIS fiber spawns children
     branch_index:     int,               // Index in parent's branch array
 
@@ -175,8 +184,8 @@ Fiber :: struct {
     user_data:        rawptr,
     user_fn:          rawptr,          // Function pointer for generic/value entry thunks
     payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
-    cleanup_proc:     proc(user_data: rawptr), // Run on abort/finish if registered
-    cleanup_data:     rawptr,                  // Dedicated user data pointer for cleanup proc
+    cleanups:         [MAX_FIBER_CLEANUPS]Fiber_Cleanup, // LIFO defer callbacks executed on abort/finish
+    cleanup_count:    int,
 
     // --- Isolated Temporary Allocator ---
     temp_arena:        mem.Arena,
@@ -198,15 +207,18 @@ Event :: struct($T: typeid) {
 
 Signal :: Event(struct{})
 
-Sticky_Signal :: struct {
-    waiters: Wait_Queue,
-    is_set:  bool,
-}
-
 Sticky_Event :: struct($T: typeid) {
     waiters:   Wait_Queue,
     has_value: bool,
     value:     T,
+}
+
+Sticky_Signal :: Sticky_Event(struct{})
+
+// Lightweight Verse-style task(T) container (True ZII, backed by Sticky_Event(T))
+Task :: struct($T: typeid) {
+    handle: Fiber_Handle,
+    result: Sticky_Event(T),
 }
 
 // --- Pool Memory Telemetry ---
@@ -286,6 +298,9 @@ Scheduler :: struct {
     // Execution Context
     scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread
     current_fiber:         ^Fiber, // Currently executing fiber
+
+    // Concurrency Coordinator Generation Counter
+    next_coord_id:         u64,
 
     // Debug Watchdog Timer (Detects non-yielding infinite loops)
     watchdog_enabled:      bool,

@@ -112,9 +112,8 @@ mutex_waiter_count :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> int 
 
 @(private="file")
 Scoped_Mutex_Cleanup_Ctx :: struct {
-    using node: coro.Scoped_Cleanup_Node,
-    sched:      ^coro.Scheduler,
-    m:          ^Fiber_Mutex,
+    sched: ^coro.Scheduler,
+    m:     ^Fiber_Mutex,
 }
 
 @(private="file")
@@ -122,9 +121,6 @@ cleanup_mutex_hook :: proc(user_data: rawptr) {
     ctx := (^Scoped_Mutex_Cleanup_Ctx)(user_data)
     if ctx != nil && ctx.sched != nil && ctx.m != nil {
         mutex_unlock(ctx.sched, ctx.m)
-        if ctx.prev_proc != nil {
-            ctx.prev_proc(ctx.prev_data)
-        }
     }
 }
 
@@ -132,15 +128,12 @@ with_mutex_ptr :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex, body: proc(f: ^coro.Fibe
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
     ctx := Scoped_Mutex_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         m     = m,
     }
-    f.cleanup_proc = cleanup_mutex_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         mutex_unlock(f.sched, m)
     }
     body(f, data)
@@ -156,15 +149,12 @@ with_mutex_val :: proc(
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
     ctx := Scoped_Mutex_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         m     = m,
     }
-    f.cleanup_proc = cleanup_mutex_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         mutex_unlock(f.sched, m)
     }
     body(f, data)
@@ -174,15 +164,12 @@ with_mutex_nil :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex, body: proc(f: ^coro.Fibe
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
     ctx := Scoped_Mutex_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         m     = m,
     }
-    f.cleanup_proc = cleanup_mutex_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         mutex_unlock(f.sched, m)
     }
     body(f)
@@ -265,9 +252,8 @@ semaphore_waiter_count :: #force_inline proc "contextless" (sem: ^Fiber_Semaphor
 
 @(private="file")
 Scoped_Sem_Cleanup_Ctx :: struct {
-    using node: coro.Scoped_Cleanup_Node,
-    sched:      ^coro.Scheduler,
-    sem:        ^Fiber_Semaphore,
+    sched: ^coro.Scheduler,
+    sem:   ^Fiber_Semaphore,
 }
 
 @(private="file")
@@ -275,9 +261,6 @@ cleanup_sem_hook :: proc(user_data: rawptr) {
     ctx := (^Scoped_Sem_Cleanup_Ctx)(user_data)
     if ctx != nil && ctx.sched != nil && ctx.sem != nil {
         semaphore_release(ctx.sched, ctx.sem)
-        if ctx.prev_proc != nil {
-            ctx.prev_proc(ctx.prev_data)
-        }
     }
 }
 
@@ -285,15 +268,12 @@ with_semaphore_ptr :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, body: proc(f: 
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
     ctx := Scoped_Sem_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         sem   = sem,
     }
-    f.cleanup_proc = cleanup_sem_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_sem_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         semaphore_release(f.sched, sem)
     }
     body(f, data)
@@ -309,15 +289,12 @@ with_semaphore_val :: proc(
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
     ctx := Scoped_Sem_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         sem   = sem,
     }
-    f.cleanup_proc = cleanup_sem_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_sem_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         semaphore_release(f.sched, sem)
     }
     body(f, data)
@@ -327,15 +304,12 @@ with_semaphore_nil :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, body: proc(f: 
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
     ctx := Scoped_Sem_Cleanup_Ctx{
-        node  = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
         sched = f.sched,
         sem   = sem,
     }
-    f.cleanup_proc = cleanup_sem_hook
-    f.cleanup_data = &ctx
+    coro.fiber_defer(f, cleanup_sem_hook, rawptr(&ctx))
     defer {
-        f.cleanup_proc = ctx.prev_proc
-        f.cleanup_data = ctx.prev_data
+        coro.fiber_cleanup_pop(f)
         semaphore_release(f.sched, sem)
     }
     body(f)
@@ -503,33 +477,18 @@ chan_send :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
                 ch.buffer[0] = value
                 ch.count = 1
 
-                Unbuf_Send_Cleanup_Ctx :: struct {
-                    using node: coro.Scoped_Cleanup_Node,
-                    ch:         ^Channel(T),
-                }
                 cleanup_unbuf_sender :: proc(user_data: rawptr) {
-                    ctx := (^Unbuf_Send_Cleanup_Ctx)(user_data)
-                    if ctx != nil {
-                        if ctx.ch != nil && ctx.ch.capacity == 0 && ctx.ch.count > 0 {
-                            ctx.ch.count = 0
-                        }
-                        if ctx.prev_proc != nil {
-                            ctx.prev_proc(ctx.prev_data)
-                        }
+                    ch := (^Channel(T))(user_data)
+                    if ch != nil && ch.capacity == 0 && ch.count > 0 {
+                        ch.count = 0
                     }
                 }
-                cleanup_ctx := Unbuf_Send_Cleanup_Ctx{
-                    node = {signature = coro.SCOPED_CLEANUP_MAGIC, prev_proc = f.cleanup_proc, prev_data = f.cleanup_data},
-                    ch   = ch,
-                }
-                f.cleanup_proc = cleanup_unbuf_sender
-                f.cleanup_data = &cleanup_ctx
+                coro.fiber_defer(f, cleanup_unbuf_sender, ch)
 
                 coro.wait_queue_push_back(&ch.send_waiters, f)
                 coro.fiber_suspend(f)
 
-                f.cleanup_proc = cleanup_ctx.prev_proc
-                f.cleanup_data = cleanup_ctx.prev_data
+                coro.fiber_cleanup_pop(f)
 
                 // If other unbuffered senders are queued, wake the next one to take its turn
                 for {

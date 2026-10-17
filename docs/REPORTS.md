@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 182-test coverage (133 core + 49 sync) plus 16 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 187-test coverage (138 core + 49 sync) plus 16 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -16,7 +16,7 @@ This document records the comprehensive verification matrix, architectural analy
 | **Stack Watermarking & High-Water Usage** | `pool.odin` — `0xAA` watermarked stacks and `fiber_calc_stack_usage` real-time profiler | **PASS** |
 | **Persistent Allocator & Re-Init Safety** | `pool.odin`, `scheduler.odin`, `api.odin`, `sync/sync.odin` — Persistent `allocator: mem.Allocator` storage and automatic cleanup on re-initialization (`scheduler_init`, `fiber_pool_init`, `chan_init`) with zero memory leaks | **PASS** |
 | **Indexed `Clock_Domain` Engine Architecture** | `scheduler.odin` — Array `clocks: [MAX_CLOCKS]Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`), per-domain timer heaps and step waiters, discrete integer ticks (`wait_steps`), zero-drift `ticker_wait`, and pause/dilation scaling | **PASS** |
-| **100% Pure Structured Concurrency Matrix** | `api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, and `branch` descriptors with zero unstructured escape hatches | **PASS** |
+| **100% Pure Structured Concurrency Matrix** | `api.odin` — `sync`, `race`, `rush`, `fallback`, `with_timeout`, `with_signal`, and `branch` descriptors with zero unstructured escape hatches | **PASS** |
 | **Dynamic Task Joining (`fiber_join`)** | `api.odin` — Dynamic task join awaiting independent fiber handles | **PASS** |
 | **Typed Multicast Events (`Event(T)` / `Signal`)** | `api.odin` — 1-to-many typed publish-subscribe broadcast with zero polling and compile-time `#assert` bounds checking (`Signal :: Event(struct{})`) | **PASS** |
 | **Counting Semaphores (`Fiber_Semaphore`)** | `sync/sync.odin` — Up to $N$ concurrent permits with zero heap allocations, True ZII, non-positive count guards, and chained cleanup hooks | **PASS** |
@@ -32,13 +32,13 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (182 Native Tests + 16 WebAssembly Tests)
+## 2. Test Suite Execution Results (187 Native Tests + 16 WebAssembly Tests)
 
-All **182 native unit tests** execute cleanly via `build.ps1 test`:
+All **187 native unit tests** execute cleanly via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 133 tests in ~290ms. All tests were successful.
+Finished 138 tests in ~300ms. All tests were successful.
 
 Testing coroutine/sync package ()...
 Finished 49 tests in ~16ms. All tests were successful.
@@ -48,7 +48,7 @@ Finished 49 tests in ~16ms. All tests were successful.
 
 And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
 
-### Complete 182-Test Catalog across 18 Test Suites:
+### Complete 187-Test Catalog across 18 Test Suites:
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -184,6 +184,11 @@ And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm`
 166. `test_yield_now_same_tick_interleave`: Validates in-frame cooperative `yield_now` timeslice sharing without tick boundary advancement.
 167. `test_race_preemption_ignoring_failures`: Validates `race` ignoring failed branches and completing with the first successful arm.
 168. `test_race_5_branches_and_all_failing`: Validates `race` failure handling returning `-1` when all arms fail.
+169. `test_rush_active_coord_reentry`: Validates monotonic `coord_id` isolation when parent enters a new `race` while previous `rush` background arms run.
+170. `test_fiber_defer_lifo_order`: Validates LIFO defer stack execution (3 -> 2 -> 1) on both clean exit and abnormal abort.
+171. `test_combinator_with_helpers`: Validates `sync_with`, `race_with`, and parameterless combinator proc overloads without manual `branch` descriptors.
+172. `test_branch_primitives_and_with_signal`: Validates `branch_signal`, `branch_wait`, and `with_signal` task interruption.
+173. `test_task_future`: Validates Verse-style `Task(T)` typed future completion and immediate return on late await.
 
 ---
 
@@ -225,15 +230,15 @@ All 12 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
-| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
+| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (187/187 tests, 0 leaks) |
 | `boss_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `bench_binary` | `-o:speed` | `native` | Headless Benchmark App | **PASS** (Zero Leaks) |

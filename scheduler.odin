@@ -70,11 +70,13 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
             if fiber.scope != nil {
                 fiber_scope_detach(fiber)
             }
-            if fiber.cleanup_proc != nil {
-                fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
-                fiber.cleanup_proc = nil
-                fiber.cleanup_data = nil
+            for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
+                hook := fiber.cleanups[i]
+                if hook.proc_ptr != nil {
+                    hook.proc_ptr(hook.user_data != nil ? hook.user_data : fiber.user_data)
+                }
             }
+            fiber.cleanup_count = 0
         }
     }
 
@@ -333,91 +335,96 @@ scheduler_single_step :: proc(sched: ^Scheduler, dt: f32, clock_id: Clock_ID = C
 fiber_on_finish :: proc(fiber: ^Fiber) {
     if fiber.join_coord != nil {
         coord := fiber.join_coord
-        coord.active_branches -= 1
+        if fiber.join_coord_id == coord.id {
+            coord.active_branches -= 1
 
-        if coord.kind == .Race {
-            if fiber.status == .Completed && !coord.completed {
-                // First SUCCESS wins!
-                coord.completed = true
-                coord.winner = fiber
-                coord.winner_index = fiber.branch_index
+            if coord.kind == .Race {
+                if fiber.status == .Completed && !coord.completed {
+                    // First SUCCESS wins!
+                    coord.completed = true
+                    coord.winner = fiber
+                    coord.winner_index = fiber.branch_index
 
-                // Abort sibling branches immediately
-                parent := coord.parent
-                if parent != nil {
-                    child := parent.first_child
-                    for child != nil {
-                        next := child.next_sibling
-                        if child != fiber && child.join_coord == coord {
-                            fiber_abort_tree(fiber.sched, child)
+                    // Abort sibling branches immediately
+                    parent := coord.parent
+                    if parent != nil {
+                        child := parent.first_child
+                        for child != nil {
+                            next := child.next_sibling
+                            if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
+                                fiber_abort_tree(fiber.sched, child)
+                            }
+                            child = next
                         }
-                        child = next
-                    }
 
-                    // Wake up parent if waiting
-                    if parent.status == .Suspended_Join {
+                        // Wake up parent if waiting
+                        if parent.status == .Suspended_Join {
+                            parent.status = .Ready
+                            append(&fiber.sched.ready_queue, parent.handle)
+                        }
+                    }
+                } else if coord.active_branches <= 0 && !coord.completed {
+                    // All branches finished without any success (or all failed/aborted)
+                    coord.completed = true
+                    coord.winner = nil
+                    coord.winner_index = -1
+                    parent := coord.parent
+                    if parent != nil && parent.status == .Suspended_Join {
                         parent.status = .Ready
                         append(&fiber.sched.ready_queue, parent.handle)
                     }
                 }
-            } else if coord.active_branches <= 0 && !coord.completed {
-                // All branches finished without any success (or all failed/aborted)
-                coord.completed = true
-                coord.winner = nil
-                coord.winner_index = -1
-                parent := coord.parent
-                if parent != nil && parent.status == .Suspended_Join {
-                    parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent.handle)
-                }
-            }
-        } else if coord.kind == .Rush {
-            if fiber.status == .Completed && !coord.completed {
-                // Verse rush: first SUCCESS wins; losers continue in background!
-                coord.completed = true
-                coord.winner = fiber
-                coord.winner_index = fiber.branch_index
+            } else if coord.kind == .Rush {
+                if fiber.status == .Completed && !coord.completed {
+                    // Verse rush: first SUCCESS wins; losers continue in background!
+                    coord.completed = true
+                    coord.winner = fiber
+                    coord.winner_index = fiber.branch_index
 
-                // Detach remaining branches from join_coord so parent can reuse active_coord
-                parent := coord.parent
-                if parent != nil {
-                    child := parent.first_child
-                    for child != nil {
-                        next := child.next_sibling
-                        if child != fiber && child.join_coord == coord {
-                            child.join_coord = nil
+                    // Detach remaining branches from join_coord so parent can reuse active_coord
+                    parent := coord.parent
+                    if parent != nil {
+                        child := parent.first_child
+                        for child != nil {
+                            next := child.next_sibling
+                            if child.join_coord == coord && child.join_coord_id == coord.id {
+                                child.join_coord = nil
+                                child.join_coord_id = 0
+                            }
+                            child = next
                         }
-                        child = next
-                    }
 
-                    // Wake up parent if waiting
-                    if parent.status == .Suspended_Join {
+                        // Wake up parent if waiting
+                        if parent.status == .Suspended_Join {
+                            parent.status = .Ready
+                            append(&fiber.sched.ready_queue, parent.handle)
+                        }
+                    }
+                } else if coord.active_branches <= 0 && !coord.completed {
+                    // All branches finished without any success
+                    coord.completed = true
+                    coord.winner = nil
+                    coord.winner_index = -1
+                    parent := coord.parent
+                    if parent != nil && parent.status == .Suspended_Join {
                         parent.status = .Ready
                         append(&fiber.sched.ready_queue, parent.handle)
                     }
                 }
-            } else if coord.active_branches <= 0 && !coord.completed {
-                // All branches finished without any success
-                coord.completed = true
-                coord.winner = nil
-                coord.winner_index = -1
-                parent := coord.parent
-                if parent != nil && parent.status == .Suspended_Join {
-                    parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent.handle)
-                }
-            }
-        } else if coord.kind == .Sync {
-            if fiber.status == .Failed || fiber.status == .Aborted do coord.has_failed = true
-            if coord.active_branches <= 0 && !coord.completed {
-                coord.completed = true
-                parent := coord.parent
-                if parent != nil && parent.status == .Suspended_Join {
-                    parent.status = .Ready
-                    append(&fiber.sched.ready_queue, parent.handle)
+            } else if coord.kind == .Sync {
+                if fiber.status == .Failed || fiber.status == .Aborted do coord.has_failed = true
+                if coord.active_branches <= 0 && !coord.completed {
+                    coord.completed = true
+                    parent := coord.parent
+                    if parent != nil && parent.status == .Suspended_Join {
+                        parent.status = .Ready
+                        append(&fiber.sched.ready_queue, parent.handle)
+                    }
                 }
             }
         }
+        fiber.join_coord = nil
+        fiber.join_coord_id = 0
     }
 }
 
@@ -431,12 +438,14 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
         fiber_abort_tree(sched, fiber.first_child)
     }
 
-    // 1. Run cleanup procedure if registered
-    if fiber.cleanup_proc != nil {
-        fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)
-        fiber.cleanup_proc = nil
-        fiber.cleanup_data = nil
+    // 1. Run cleanup procedures in LIFO order if registered
+    for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
+        hook := fiber.cleanups[i]
+        if hook.proc_ptr != nil {
+            hook.proc_ptr(hook.user_data != nil ? hook.user_data : fiber.user_data)
+        }
     }
+    fiber.cleanup_count = 0
 
     // 2. Unlink from intrusive Wait_Queue if still attached
     if fiber.current_wait_queue != nil {

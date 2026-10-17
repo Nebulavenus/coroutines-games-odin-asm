@@ -1,12 +1,12 @@
 # WebAssembly Testing & CI Automation
 
-This document catalogs the 16 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
+This document catalogs the 17 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
 
 ---
 
 ## 1. Automated Test Suite Catalog (`examples/wasm_test/main.odin`)
 
-The WebAssembly test runner validates every core engine primitive across 16 automated suites under `.\build.ps1 test-wasm`:
+The WebAssembly test runner validates every core engine primitive across 17 automated suites under `.\build.ps1 test-wasm`:
 
 | Suite # | Test Name | Target Subsystem | Key Verification |
 | :--- | :--- | :--- | :--- |
@@ -26,6 +26,7 @@ The WebAssembly test runner validates every core engine primitive across 16 auto
 | **Test 14** | **Verse `branch_scoped()`** | `branch_scoped` | Spawns parent-bound fire-and-forget subtask; automatically aborted when parent exits. |
 | **Test 15** | **Latched State (`Sticky_Event`)** | `Sticky_Event`, `Sticky_Signal` | Emits before await; late-joining fiber receives cached state immediately in $O(1)$. |
 | **Test 16** | **In-Frame Timeslice (`yield_now`)** | `yield_now` | Multiple fibers interleave cooperative timeslices in the same frame without advancing clock. |
+| **Test 17** | **Task Futures & Helpers** | `spawn_task`, `sync_with`, `with_signal` | Validates typed `Task(T)` future computation, shared context combinators, and signal interruption under Asyncify. |
 
 ---
 
@@ -97,8 +98,9 @@ Post-processing with Binaryen Asyncify...
   [Test 14] Verse branch_scoped(): Parent-Bound Lifecycle... OK
   [Test 15] Latched State: Sticky_Event & Sticky_Signal... OK
   [Test 16] In-Frame Timeslice: yield_now() Same-Tick Interleave... OK
+  [Test 17] Task Futures & Combinator Helpers... OK
 
 =================================================================================
-ALL 16 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
+ALL 17 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
 =================================================================================
 ```

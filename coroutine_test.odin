@@ -293,10 +293,10 @@ test_cleanup_proc_and_defer :: proc(t: ^testing.T) {
 
     cleaned_up := false
     handle := spawn(&sched, proc(f: ^Fiber, c: ^bool) {
-        f.cleanup_proc = proc(data: rawptr) {
+        fiber_defer(f, proc(data: rawptr) {
             ptr := (^bool)(data)
             ptr^ = true
-        }
+        }, c)
         wait_frames(f, 100)
     }, &cleaned_up)
 
@@ -625,11 +625,10 @@ test_race_loser_with_children_aborts_all_descendants :: proc(t: ^testing.T) {
             branch(proc(f: ^Fiber, s: ^Descendant_State) {
                 sync(f,
                     branch(proc(f: ^Fiber, s: ^Descendant_State) {
-                        f.cleanup_proc = proc(data: rawptr) {
+                        fiber_defer(f, proc(data: rawptr) {
                             ptr := (^Descendant_State)(data)
                             ptr.grandchild_cleaned_up = true
-                        }
-                        f.user_data = rawptr(s)
+                        }, s)
                         wait_frames(f, 10)
                         s.grandchild_1_done = true
                     }, s, "Grandchild 1"),
@@ -4745,7 +4744,7 @@ test_fuzz_scheduler_invariants :: proc(t: ^testing.T) {
         }
 
         // Clear cleanup if completing normally so `aborted` only counts aborts
-        f.cleanup_proc = nil
+        fiber_cleanup_pop(f)
         s.completed += 1
     }
 
@@ -4888,140 +4887,165 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
 // Standalone Test Runner (for cross-arch QEMU execution)
 // ============================================================================
 
-run_all_coroutine_tests :: proc(t: ^testing.T) {
-    test_basic_spawn_and_run(t)
-    test_stack_local_variables_across_yields(t)
-    test_wait_seconds_timer_heap(t)
-    test_wait_frames(t)
-    test_structured_sync(t)
-    test_structured_race(t)
-    test_scope_cancellation(t)
-    test_cleanup_proc_and_defer(t)
-    test_stack_canary_guard(t)
-    test_nested_race_with_sync_branch(t)
-    test_many_concurrent_fibers(t)
-    test_deep_nested_hierarchy_sync_race_sync(t)
-    test_sync_failure_propagation(t)
-    test_race_all_simultaneous_finish(t)
-    test_race_loser_with_children_aborts_all_descendants(t)
-    test_timer_heap_1000_random_sort(t)
-    test_timer_heap_random_cancellations(t)
-    test_pool_multi_slab_expansion_and_reclaim(t)
-    test_fiber_lifecycle_generation_reuse(t)
-    test_local_variable_isolation_many_fibers(t)
-    test_10k_yield_loop(t)
-    test_zero_and_negative_waits(t)
-    test_fiber_temp_allocator_isolation(t)
-    test_with_timeout_completion(t)
-    test_with_timeout_expired(t)
-    test_signal_broadcast(t)
-    test_stack_watermark_usage_calculation(t)
-    test_async_token_bridge(t)
-    test_virtual_memory_guard_pages(t)
-    test_spawn_by_value_primitives(t)
-    test_spawn_by_value_struct(t)
-    test_spawn_by_value_concurrency_no_crosstalk(t)
-    test_branch_by_value_sync(t)
-    test_branch_by_value_race(t)
-    test_spawn_by_value_ephemeral_stack_safety(t)
-    test_with_timeout_proc_overloads(t)
-    test_scope_query_helpers(t)
-    test_fiber_time_accessors(t)
-    test_scope_wait(t)
-    test_fallback_control_flow(t)
-    test_race_preemption_ignoring_failures(t)
-    test_fail_primitive(t)
-    test_fallback_all_failing_and_by_value(t)
-    test_race_5_branches_and_all_failing(t)
-    test_nested_concurrency_combinators(t)
-    test_fiber_join_normal_completion(t)
-    test_fiber_join_cancelled_target(t)
-    test_fiber_join_already_finished(t)
-    test_event_typed_multicast(t)
-    test_event_empty_emit(t)
-    test_scheduler_prewarm(t)
-    test_handle_introspection_and_status(t)
-    test_scheduler_pool_stats(t)
-    test_scope_hierarchy_multi_fiber_active_count(t)
-    test_signal_multicast_wait_and_broadcast(t)
-    test_scope_cancellation_preserves_independent_scopes(t)
-    test_race_stun_interruption_and_recovery(t)
-    test_scope_cancel_immediate_abort(t)
-    test_subscope_isolated_behavior_cancellation(t)
-    test_cancel_fiber_waiting_on_signal(t)
-    test_cancel_fiber_waiting_on_event(t)
-    test_scope_cancel_inside_nested_sync(t)
-    test_scope_cancel_inside_nested_race(t)
-    test_fallback_resilience_after_scope_cancellation(t)
-    test_branch_name_and_debug_tree_preservation(t)
-    test_signal_multicast_cascade_with_dynamic_waiters(t)
-    test_fiber_set_cleanup_deep_hierarchy_abort(t)
-    test_event_multicast_dynamic_subscribe_during_emit(t)
-    test_scheduler_prewarm_slab_expansion_under_load(t)
-    test_rush_and_fallback_with_signal_interruption(t)
-    test_watchdog_configuration_and_disable(t)
-    test_scope_destroy_prevents_stale_pointer_access(t)
-    test_temp_allocator_isolation_invariants(t)
-    test_event_multicast_broadcast_and_clear(t)
-    test_generational_handle_history_capacity(t)
-    test_scheduler_walk_tree_traversal(t)
-    test_structured_task_preemption_via_race_and_signal(t)
-    test_fiber_dynamic_renaming(t)
-    test_plan5_packed_generational_handles_bitwise(t)
-    test_plan5_handle_slot_reuse_and_aba_safety(t)
-    test_plan5_intrusive_wait_queue_operations(t)
-    test_plan5_o1_handle_lookups_under_high_fiber_load(t)
-    test_plan5_config_constants_integration(t)
-    test_wait_queue_auto_unlinking_on_abort(t)
-    test_scope_multi_cycle_emp_stun_and_recovery(t)
-    test_interruption_race_attack_recovery_loop(t)
-    test_with_timeout_by_value_branching(t)
-    test_fiber_calc_stack_usage_canary_breach_detection(t)
-    test_intrusive_fiber_scope_lifecycle(t)
-    test_fiber_cleanup_preserves_user_data(t)
-    test_scheduler_destroy_scope_detachment(t)
-    test_ready_queue_generational_aba_guard(t)
-    test_race_join_independent_sibling_non_interference(t)
-    test_rush_join_independent_sibling_non_interference(t)
-    test_fiber_self_join_deadlock_guard(t)
-    test_multi_isa_byte_opcodes_disassembly_validation(t)
-    test_high_level_inline_asm_stack_and_register_extractors(t)
-    test_real_time_clock_ignores_pause_and_scale(t)
-    test_fixed_tick_clock_precision(t)
-    test_with_timeout_real_during_pause(t)
-    test_clock_queries_inside_fiber(t)
-    test_multi_clock_simultaneous_advance(t)
-    test_ticker_zero_drift_accumulation(t)
-    test_mixed_clock_race_real_vs_sim(t)
-    test_qol_overloads_and_accessors(t)
-    test_reinit_and_reuse_primitives(t)
-    test_fuzz_scheduler_invariants(t)
-    test_fuzz_deep_cancel_and_pool_exhaustion(t)
-    test_heterogeneous_scope_cancellation(t)
-    test_time_scaling_and_pause(t)
-    test_real_time_clock_while_paused(t)
-    test_fixed_integer_tick_clock(t)
-    test_dual_clock_time_scaling(t)
-    test_multi_clock_heap_integrity(t)
-    test_scope_mass_cancel_mixed_states(t)
-    test_primitives_custom_arena_allocation_fidelity(t)
-    test_headless_boss_ai_fuzzing_simulation(t)
-    test_phase_transition_emp_coincidence_fuzzing(t)
-    test_wait_queue_defensive_and_paused_dispatch(t)
-    test_time_scale_defensive_clamping(t)
-    test_scheduler_destroy_wait_queue_unlinking(t)
-    test_spawn_real_val_while_paused(t)
-    test_real_time_fiber_paused_yield(t)
-    test_real_time_ticker_paused_zero_freeze(t)
-    test_fiber_pool_recycle_wake_clock_sanitization(t)
-    test_fiber_owned_ticker_zero_drift_and_rebase(t)
-    test_scheduler_reinit_no_memory_leak(t)
-    test_api_qol_fiber_overloads_and_nested_cleanup_chaining(t)
-    test_verse_rush_losers_continue(t)
-    test_verse_rush_failure_recovery_and_parent_rejoin(t)
-    test_branch_scoped_background_and_parent_abort(t)
-    test_sticky_event_and_sticky_signal(t)
-    test_yield_now_same_tick_interleave(t)
+run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: int, failed: int) {
+    runner_t: testing.T
+    active_t := t != nil ? t : &runner_t
+    tests := []struct{ name: string, fn: proc(^testing.T) } {
+        { "test_basic_spawn_and_run", test_basic_spawn_and_run },
+        { "test_stack_local_variables_across_yields", test_stack_local_variables_across_yields },
+        { "test_wait_seconds_timer_heap", test_wait_seconds_timer_heap },
+        { "test_wait_frames", test_wait_frames },
+        { "test_structured_sync", test_structured_sync },
+        { "test_structured_race", test_structured_race },
+        { "test_scope_cancellation", test_scope_cancellation },
+        { "test_cleanup_proc_and_defer", test_cleanup_proc_and_defer },
+        { "test_stack_canary_guard", test_stack_canary_guard },
+        { "test_nested_race_with_sync_branch", test_nested_race_with_sync_branch },
+        { "test_many_concurrent_fibers", test_many_concurrent_fibers },
+        { "test_deep_nested_hierarchy_sync_race_sync", test_deep_nested_hierarchy_sync_race_sync },
+        { "test_sync_failure_propagation", test_sync_failure_propagation },
+        { "test_race_all_simultaneous_finish", test_race_all_simultaneous_finish },
+        { "test_race_loser_with_children_aborts_all_descendants", test_race_loser_with_children_aborts_all_descendants },
+        { "test_timer_heap_1000_random_sort", test_timer_heap_1000_random_sort },
+        { "test_timer_heap_random_cancellations", test_timer_heap_random_cancellations },
+        { "test_pool_multi_slab_expansion_and_reclaim", test_pool_multi_slab_expansion_and_reclaim },
+        { "test_fiber_lifecycle_generation_reuse", test_fiber_lifecycle_generation_reuse },
+        { "test_local_variable_isolation_many_fibers", test_local_variable_isolation_many_fibers },
+        { "test_10k_yield_loop", test_10k_yield_loop },
+        { "test_zero_and_negative_waits", test_zero_and_negative_waits },
+        { "test_fiber_temp_allocator_isolation", test_fiber_temp_allocator_isolation },
+        { "test_with_timeout_completion", test_with_timeout_completion },
+        { "test_with_timeout_expired", test_with_timeout_expired },
+        { "test_signal_broadcast", test_signal_broadcast },
+        { "test_stack_watermark_usage_calculation", test_stack_watermark_usage_calculation },
+        { "test_async_token_bridge", test_async_token_bridge },
+        { "test_virtual_memory_guard_pages", test_virtual_memory_guard_pages },
+        { "test_spawn_by_value_primitives", test_spawn_by_value_primitives },
+        { "test_spawn_by_value_struct", test_spawn_by_value_struct },
+        { "test_spawn_by_value_concurrency_no_crosstalk", test_spawn_by_value_concurrency_no_crosstalk },
+        { "test_branch_by_value_sync", test_branch_by_value_sync },
+        { "test_branch_by_value_race", test_branch_by_value_race },
+        { "test_spawn_by_value_ephemeral_stack_safety", test_spawn_by_value_ephemeral_stack_safety },
+        { "test_with_timeout_proc_overloads", test_with_timeout_proc_overloads },
+        { "test_scope_query_helpers", test_scope_query_helpers },
+        { "test_fiber_time_accessors", test_fiber_time_accessors },
+        { "test_scope_wait", test_scope_wait },
+        { "test_fallback_control_flow", test_fallback_control_flow },
+        { "test_race_preemption_ignoring_failures", test_race_preemption_ignoring_failures },
+        { "test_fail_primitive", test_fail_primitive },
+        { "test_fallback_all_failing_and_by_value", test_fallback_all_failing_and_by_value },
+        { "test_race_5_branches_and_all_failing", test_race_5_branches_and_all_failing },
+        { "test_nested_concurrency_combinators", test_nested_concurrency_combinators },
+        { "test_fiber_join_normal_completion", test_fiber_join_normal_completion },
+        { "test_fiber_join_cancelled_target", test_fiber_join_cancelled_target },
+        { "test_fiber_join_already_finished", test_fiber_join_already_finished },
+        { "test_event_typed_multicast", test_event_typed_multicast },
+        { "test_event_empty_emit", test_event_empty_emit },
+        { "test_scheduler_prewarm", test_scheduler_prewarm },
+        { "test_handle_introspection_and_status", test_handle_introspection_and_status },
+        { "test_scheduler_pool_stats", test_scheduler_pool_stats },
+        { "test_scope_hierarchy_multi_fiber_active_count", test_scope_hierarchy_multi_fiber_active_count },
+        { "test_signal_multicast_wait_and_broadcast", test_signal_multicast_wait_and_broadcast },
+        { "test_scope_cancellation_preserves_independent_scopes", test_scope_cancellation_preserves_independent_scopes },
+        { "test_race_stun_interruption_and_recovery", test_race_stun_interruption_and_recovery },
+        { "test_scope_cancel_immediate_abort", test_scope_cancel_immediate_abort },
+        { "test_subscope_isolated_behavior_cancellation", test_subscope_isolated_behavior_cancellation },
+        { "test_cancel_fiber_waiting_on_signal", test_cancel_fiber_waiting_on_signal },
+        { "test_cancel_fiber_waiting_on_event", test_cancel_fiber_waiting_on_event },
+        { "test_scope_cancel_inside_nested_sync", test_scope_cancel_inside_nested_sync },
+        { "test_scope_cancel_inside_nested_race", test_scope_cancel_inside_nested_race },
+        { "test_fallback_resilience_after_scope_cancellation", test_fallback_resilience_after_scope_cancellation },
+        { "test_branch_name_and_debug_tree_preservation", test_branch_name_and_debug_tree_preservation },
+        { "test_signal_multicast_cascade_with_dynamic_waiters", test_signal_multicast_cascade_with_dynamic_waiters },
+        { "test_fiber_set_cleanup_deep_hierarchy_abort", test_fiber_set_cleanup_deep_hierarchy_abort },
+        { "test_event_multicast_dynamic_subscribe_during_emit", test_event_multicast_dynamic_subscribe_during_emit },
+        { "test_scheduler_prewarm_slab_expansion_under_load", test_scheduler_prewarm_slab_expansion_under_load },
+        { "test_rush_and_fallback_with_signal_interruption", test_rush_and_fallback_with_signal_interruption },
+        { "test_watchdog_configuration_and_disable", test_watchdog_configuration_and_disable },
+        { "test_scope_destroy_prevents_stale_pointer_access", test_scope_destroy_prevents_stale_pointer_access },
+        { "test_temp_allocator_isolation_invariants", test_temp_allocator_isolation_invariants },
+        { "test_event_multicast_broadcast_and_clear", test_event_multicast_broadcast_and_clear },
+        { "test_generational_handle_history_capacity", test_generational_handle_history_capacity },
+        { "test_scheduler_walk_tree_traversal", test_scheduler_walk_tree_traversal },
+        { "test_structured_task_preemption_via_race_and_signal", test_structured_task_preemption_via_race_and_signal },
+        { "test_fiber_dynamic_renaming", test_fiber_dynamic_renaming },
+        { "test_plan5_packed_generational_handles_bitwise", test_plan5_packed_generational_handles_bitwise },
+        { "test_plan5_handle_slot_reuse_and_aba_safety", test_plan5_handle_slot_reuse_and_aba_safety },
+        { "test_plan5_intrusive_wait_queue_operations", test_plan5_intrusive_wait_queue_operations },
+        { "test_plan5_o1_handle_lookups_under_high_fiber_load", test_plan5_o1_handle_lookups_under_high_fiber_load },
+        { "test_plan5_config_constants_integration", test_plan5_config_constants_integration },
+        { "test_wait_queue_auto_unlinking_on_abort", test_wait_queue_auto_unlinking_on_abort },
+        { "test_scope_multi_cycle_emp_stun_and_recovery", test_scope_multi_cycle_emp_stun_and_recovery },
+        { "test_interruption_race_attack_recovery_loop", test_interruption_race_attack_recovery_loop },
+        { "test_with_timeout_by_value_branching", test_with_timeout_by_value_branching },
+        { "test_fiber_calc_stack_usage_canary_breach_detection", test_fiber_calc_stack_usage_canary_breach_detection },
+        { "test_intrusive_fiber_scope_lifecycle", test_intrusive_fiber_scope_lifecycle },
+        { "test_fiber_cleanup_preserves_user_data", test_fiber_cleanup_preserves_user_data },
+        { "test_scheduler_destroy_scope_detachment", test_scheduler_destroy_scope_detachment },
+        { "test_ready_queue_generational_aba_guard", test_ready_queue_generational_aba_guard },
+        { "test_race_join_independent_sibling_non_interference", test_race_join_independent_sibling_non_interference },
+        { "test_rush_join_independent_sibling_non_interference", test_rush_join_independent_sibling_non_interference },
+        { "test_fiber_self_join_deadlock_guard", test_fiber_self_join_deadlock_guard },
+        { "test_multi_isa_byte_opcodes_disassembly_validation", test_multi_isa_byte_opcodes_disassembly_validation },
+        { "test_high_level_inline_asm_stack_and_register_extractors", test_high_level_inline_asm_stack_and_register_extractors },
+        { "test_real_time_clock_ignores_pause_and_scale", test_real_time_clock_ignores_pause_and_scale },
+        { "test_fixed_tick_clock_precision", test_fixed_tick_clock_precision },
+        { "test_with_timeout_real_during_pause", test_with_timeout_real_during_pause },
+        { "test_clock_queries_inside_fiber", test_clock_queries_inside_fiber },
+        { "test_multi_clock_simultaneous_advance", test_multi_clock_simultaneous_advance },
+        { "test_ticker_zero_drift_accumulation", test_ticker_zero_drift_accumulation },
+        { "test_mixed_clock_race_real_vs_sim", test_mixed_clock_race_real_vs_sim },
+        { "test_qol_overloads_and_accessors", test_qol_overloads_and_accessors },
+        { "test_reinit_and_reuse_primitives", test_reinit_and_reuse_primitives },
+        { "test_fuzz_scheduler_invariants", test_fuzz_scheduler_invariants },
+        { "test_fuzz_deep_cancel_and_pool_exhaustion", test_fuzz_deep_cancel_and_pool_exhaustion },
+        { "test_heterogeneous_scope_cancellation", test_heterogeneous_scope_cancellation },
+        { "test_time_scaling_and_pause", test_time_scaling_and_pause },
+        { "test_real_time_clock_while_paused", test_real_time_clock_while_paused },
+        { "test_fixed_integer_tick_clock", test_fixed_integer_tick_clock },
+        { "test_dual_clock_time_scaling", test_dual_clock_time_scaling },
+        { "test_multi_clock_heap_integrity", test_multi_clock_heap_integrity },
+        { "test_scope_mass_cancel_mixed_states", test_scope_mass_cancel_mixed_states },
+        { "test_primitives_custom_arena_allocation_fidelity", test_primitives_custom_arena_allocation_fidelity },
+        { "test_headless_boss_ai_fuzzing_simulation", test_headless_boss_ai_fuzzing_simulation },
+        { "test_phase_transition_emp_coincidence_fuzzing", test_phase_transition_emp_coincidence_fuzzing },
+        { "test_wait_queue_defensive_and_paused_dispatch", test_wait_queue_defensive_and_paused_dispatch },
+        { "test_time_scale_defensive_clamping", test_time_scale_defensive_clamping },
+        { "test_scheduler_destroy_wait_queue_unlinking", test_scheduler_destroy_wait_queue_unlinking },
+        { "test_spawn_real_val_while_paused", test_spawn_real_val_while_paused },
+        { "test_real_time_fiber_paused_yield", test_real_time_fiber_paused_yield },
+        { "test_real_time_ticker_paused_zero_freeze", test_real_time_ticker_paused_zero_freeze },
+        { "test_fiber_pool_recycle_wake_clock_sanitization", test_fiber_pool_recycle_wake_clock_sanitization },
+        { "test_fiber_owned_ticker_zero_drift_and_rebase", test_fiber_owned_ticker_zero_drift_and_rebase },
+        { "test_scheduler_reinit_no_memory_leak", test_scheduler_reinit_no_memory_leak },
+        { "test_api_qol_fiber_overloads_and_nested_cleanup_chaining", test_api_qol_fiber_overloads_and_nested_cleanup_chaining },
+        { "test_verse_rush_losers_continue", test_verse_rush_losers_continue },
+        { "test_verse_rush_failure_recovery_and_parent_rejoin", test_verse_rush_failure_recovery_and_parent_rejoin },
+        { "test_branch_scoped_background_and_parent_abort", test_branch_scoped_background_and_parent_abort },
+        { "test_sticky_event_and_sticky_signal", test_sticky_event_and_sticky_signal },
+        { "test_yield_now_same_tick_interleave", test_yield_now_same_tick_interleave },
+        { "test_rush_active_coord_reentry", test_rush_active_coord_reentry },
+        { "test_fiber_defer_lifo_order", test_fiber_defer_lifo_order },
+        { "test_combinator_with_helpers", test_combinator_with_helpers },
+        { "test_branch_primitives_and_with_signal", test_branch_primitives_and_with_signal },
+        { "test_task_future", test_task_future },
+    }
+    total := len(tests)
+    for test, i in tests {
+        sub_t: testing.T
+        test.fn(&sub_t)
+        if sub_t.error_count == 0 {
+            passed += 1
+            if verbose {
+                fmt.printf("  [PASS] [%3d/%3d] %s\n", i + 1, total, test.name)
+            }
+        } else {
+            failed += 1
+            if t != nil do t.error_count += sub_t.error_count
+            fmt.printf("  [FAIL] [%3d/%3d] %s (errors: %d)\n", i + 1, total, test.name, sub_t.error_count)
+        }
+    }
+    return passed, failed
 }
 
 // ============================================================================
@@ -6273,4 +6297,328 @@ test_yield_now_same_tick_interleave :: proc(t: ^testing.T) {
         testing.expect_value(t, trace[4], 5)
         testing.expect_value(t, trace[5], 6)
     }
+}
+
+@(test)
+test_rush_active_coord_reentry :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    rush_winner := -1
+    rush_loser_finished := false
+    race_winner_index := -1
+    race_loser_aborted := false
+
+    Data_Box :: struct {
+        p_rush_winner:        ^int,
+        p_rush_loser:         ^bool,
+        p_race_winner:        ^int,
+        p_race_loser_aborted: ^bool,
+    }
+
+    box := Data_Box{
+        p_rush_winner        = &rush_winner,
+        p_rush_loser         = &rush_loser_finished,
+        p_race_winner        = &race_winner_index,
+        p_race_loser_aborted = &race_loser_aborted,
+    }
+
+    spawn(&sched, proc(f: ^Fiber, b: ^Data_Box) {
+        // Step 1: Execute a rush where branch 0 wins immediately, leaving branch 1 running in background
+        w := rush(f,
+            branch(proc(f: ^Fiber) {
+                // Winner finishes immediately
+            }),
+            branch(proc(f: ^Fiber, p_fin: ^bool) {
+                wait_steps(f, 3)
+                p_fin^ = true
+            }, b.p_rush_loser),
+        )
+        b.p_rush_winner^ = w
+
+        // Step 2: Immediately execute a race!
+        // This overwrites f.active_coord with a new coord_id.
+        // It must NOT cancel the earlier rush loser, nor should the rush loser's completion interfere with this race.
+        race_w := race(f,
+            branch(proc(f: ^Fiber, p_idx: ^int) {
+                wait_steps(f, 1)
+                p_idx^ = 0
+            }, b.p_race_winner),
+            branch(proc(f: ^Fiber, p_ab: ^bool) {
+                fiber_defer(f, proc(user_data: rawptr) {
+                    ptr := (^bool)(user_data)
+                    ptr^ = true
+                }, p_ab)
+                wait_steps(f, 10)
+            }, b.p_race_loser_aborted),
+        )
+        b.p_race_winner^ = race_w
+        wait_steps(f, 5)
+    }, &box)
+
+    // Step 0: Parent runs rush (branch 0 wins), enters race
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, rush_winner, 0)
+    testing.expect_value(t, rush_loser_finished, false)
+
+    // Step 1: Race branch 0 finishes and wins, aborts race branch 1
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, race_winner_index, 0)
+    testing.expect_value(t, race_loser_aborted, true)
+    testing.expect_value(t, rush_loser_finished, false) // Rush loser STILL alive!
+
+    // Step 2 & 3: Advance until rush loser finishes
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, rush_loser_finished, true)
+}
+
+@(test)
+test_fiber_defer_lifo_order :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    trace: [dynamic]int
+    defer delete(trace)
+
+    // Sub-test 1: Clean finish executes defers in LIFO order (3 -> 2 -> 1)
+    spawn(&sched, proc(f: ^Fiber, tr: ^[dynamic]int) {
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 1)
+        }, tr)
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 2)
+        }, tr)
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 3)
+        }, tr)
+    }, &trace)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, len(trace), 3)
+    if len(trace) == 3 {
+        testing.expect_value(t, trace[0], 3)
+        testing.expect_value(t, trace[1], 2)
+        testing.expect_value(t, trace[2], 1)
+    }
+
+    clear(&trace)
+
+    // Sub-test 2: Cancellation/abort also executes defers in LIFO order (3 -> 2 -> 1)
+    h := spawn(&sched, proc(f: ^Fiber, tr: ^[dynamic]int) {
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 1)
+        }, tr)
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 2)
+        }, tr)
+        fiber_defer(f, proc(user_data: rawptr) {
+            append((^[dynamic]int)(user_data), 3)
+        }, tr)
+        wait_steps(f, 100)
+    }, &trace)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, len(trace), 0)
+
+    fiber_cancel(&sched, h)
+    testing.expect_value(t, len(trace), 3)
+    if len(trace) == 3 {
+        testing.expect_value(t, trace[0], 3)
+        testing.expect_value(t, trace[1], 2)
+        testing.expect_value(t, trace[2], 1)
+    }
+}
+
+@(test)
+test_combinator_with_helpers :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Test_Context :: struct {
+        sync_ok:  bool,
+        sync_a:   bool,
+        sync_b:   bool,
+        race_won: int,
+    }
+
+    ctx: Test_Context
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Test_Context) {
+        // sync_with passing shared context pointer directly
+        ok := sync_with(f, c,
+            proc(f: ^Fiber, c: ^Test_Context) {
+                c.sync_a = true
+            },
+            proc(f: ^Fiber, c: ^Test_Context) {
+                c.sync_b = true
+            },
+        )
+        c.sync_ok = ok
+
+        // race_with
+        w := race_with(f, c,
+            proc(f: ^Fiber, c: ^Test_Context) {
+                wait_steps(f, 5)
+            },
+            proc(f: ^Fiber, c: ^Test_Context) {
+                // wins immediately
+            },
+        )
+        c.race_won = w
+
+        // parameterless procs in sync
+        _ = sync(f,
+            proc(f: ^Fiber) {
+                // parameterless arm 0
+            },
+            proc(f: ^Fiber) {
+                // parameterless arm 1
+            },
+        )
+    }, &ctx)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect(t, ctx.sync_ok)
+    testing.expect_value(t, ctx.sync_a, true)
+    testing.expect_value(t, ctx.sync_b, true)
+    testing.expect_value(t, ctx.race_won, 1)
+}
+
+@(test)
+test_branch_primitives_and_with_signal :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+
+    Signal_Test_Pkg :: struct {
+        sig: ^Signal,
+        res: ^bool,
+    }
+
+    interrupted1 := false
+    pkg1 := Signal_Test_Pkg{sig = &sig, res = &interrupted1}
+    spawn(&sched, proc(f: ^Fiber, p: ^Signal_Test_Pkg) {
+        p.res^ = with_signal(f, p.sig, proc(f: ^Fiber) {
+            wait_steps(f, 10)
+        })
+    }, &pkg1)
+
+    // Emitter fiber
+    spawn(&sched, proc(f: ^Fiber, s: ^Signal) {
+        wait_steps(f, 2)
+        signal_emit(f, s)
+    }, &sig)
+
+    // Step 0..3
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, interrupted1, true)
+
+    // Now test with_signal when task finishes normally WITHOUT interruption:
+    interrupted2 := true
+    pkg2 := Signal_Test_Pkg{sig = &sig, res = &interrupted2}
+    spawn(&sched, proc(f: ^Fiber, p: ^Signal_Test_Pkg) {
+        p.res^ = with_signal(f, p.sig, proc(f: ^Fiber) {
+            wait_steps(f, 1)
+        })
+    }, &pkg2)
+
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, interrupted2, false)
+}
+
+@(test)
+test_task_future :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    task: Task(int)
+    task_init(&task)
+
+    // Worker fiber computes value and completes the task
+    spawn(&sched, proc(f: ^Fiber, tk: ^Task(int)) {
+        wait_steps(f, 2)
+        task_complete(f, tk, 42)
+    }, &task)
+
+    Await_Box :: struct {
+        val1: int,
+        ok1:  bool,
+        val2: int,
+        ok2:  bool,
+    }
+
+    box: Await_Box
+
+    Data_Pkg :: struct {
+        task: ^Task(int),
+        box:  ^Await_Box,
+    }
+
+    pkg := Data_Pkg{task = &task, box = &box}
+
+    // Awaiter fiber awaits task before it's completed
+    spawn(&sched, proc(f: ^Fiber, p: ^Data_Pkg) {
+        val, ok := task_await(f, p.task)
+        p.box.val1 = val
+        p.box.ok1 = ok
+    }, &pkg)
+
+    testing.expect_value(t, task_is_ready(&task), false)
+
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, task_is_ready(&task), true)
+    testing.expect(t, box.ok1)
+    testing.expect_value(t, box.val1, 42)
+
+    // Awaiter fiber awaits task AFTER it is already completed (latched state instant return!)
+    spawn(&sched, proc(f: ^Fiber, p: ^Data_Pkg) {
+        val, ok := task_await(f, p.task)
+        p.box.val2 = val
+        p.box.ok2 = ok
+    }, &pkg)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect(t, box.ok2)
+    testing.expect_value(t, box.val2, 42)
+
+    // Also test spawn_task one-liner helper:
+    task2: Task(string)
+    spawn_task(&sched, &task2, proc(f: ^Fiber) -> string {
+        wait_steps(f, 1)
+        return "verse_task_result"
+    })
+
+    task2_res: string
+    task2_ok:  bool
+    Task2_Pkg :: struct {
+        tk:  ^Task(string),
+        res: ^string,
+        ok:  ^bool,
+    }
+    t2_pkg := Task2_Pkg{tk = &task2, res = &task2_res, ok = &task2_ok}
+    spawn(&sched, proc(f: ^Fiber, p: ^Task2_Pkg) {
+        val, ok := task_await(f, p.tk)
+        p.res^ = val
+        p.ok^ = ok
+    }, &t2_pkg)
+
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+    testing.expect(t, task2_ok)
+    testing.expect_value(t, task2_res, "verse_task_result")
 }

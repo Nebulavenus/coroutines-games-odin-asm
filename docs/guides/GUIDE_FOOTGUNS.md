@@ -169,16 +169,16 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^sync.Fiber_Mutex) {
        if player_is_too_far() do return
    }
    ```
-3. **Guaranteed Cancellation Cleanup (`fiber_set_cleanup`)**:
+3. **Guaranteed Cancellation Cleanup (`fiber_defer`)**:
    ```odin
-   coroutine.fiber_set_cleanup(f, proc(user_data: rawptr) {
-       m := (^sync.Fiber_Mutex)(user_data)
+   // 100% cancellation-proof: registers a LIFO cleanup hook that runs on normal return OR external abort!
+   coroutine.fiber_defer(f, proc(m: ^sync.Fiber_Mutex) {
        sync.mutex_unlock(g_sched, m)
    }, m)
    ```
 
 ### The Rule
-> **Prefer `sync.with_mutex` / `sync.with_semaphore` for all scoped operations, or write `defer sync.mutex_unlock(f.sched, m)` immediately after acquiring a lock.**
+> **Prefer `sync.with_mutex` / `sync.with_semaphore` for all scoped operations, or register a cleanup hook with `coroutine.fiber_defer(f, cleanup_proc, data)`.**
 
 ---
 
@@ -429,6 +429,66 @@ If `enemy.is_dead` is only updated by an animation event, physics step, or comba
 
 ---
 
+## Footgun 15: Relying on Native Odin `defer` for External Fiber Cancellation / Abort
+
+### The Trap
+Writing native Odin `defer` inside a fiber body and expecting it to execute when the fiber is aborted from the outside (e.g., losing a `race`, entity death via `scope_cancel`, or deadline expiration in `with_timeout`):
+
+```odin
+// DANGEROUS: Native defer DOES NOT RUN on external fiber cancellation!
+dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
+    p.speed *= 3.0
+    p.is_dashing = true
+
+    // DANGER: Only executes if this procedure returns naturally via CPU instructions!
+    defer {
+        p.speed /= 3.0
+        p.is_dashing = false
+    }
+
+    coroutine.wait(f, 0.5) // What if the player is killed by an EMP or enemy during this wait?
+}
+```
+
+### What Happens
+In stackful fiber switching, suspended fibers waiting in the scheduler (in `.Sleeping_Time`, `.Suspended_Wait`, or `.Suspended_Join`) are cancelled externally by the scheduler or parent combinator (`fiber_abort_tree`).
+
+Because the fiber is simply removed from scheduling queues and recycled directly back into the fiber pool free list, **the CPU never resumes execution of the fiber's stack frame**. Therefore, the native compiler-generated `defer` instructions at the end of the procedure are completely bypassed! `p.speed` remains permanently multiplied and `p.is_dashing` remains stuck at `true`.
+
+### The Solution
+Use the engine's built-in 8-slot LIFO defer stack: `coroutine.fiber_defer` and `coroutine.fiber_cleanup_pop`:
+
+```odin
+// SAFE: 100% Guaranteed to run on normal return, failure, OR external abort!
+dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
+    orig_speed := p.speed
+    p.speed *= 3.0
+    p.is_dashing = true
+
+    // Register LIFO cleanup hook:
+    coroutine.fiber_defer(f, proc(p: ^Player) {
+        p.speed = 300.0 // Default speed
+        p.is_dashing = false
+    }, p)
+
+    coroutine.wait(f, 0.5) // If aborted here, fiber_defer hook is guaranteed to execute!
+
+    // Restore state normally and pop cleanup hook:
+    p.speed = orig_speed
+    p.is_dashing = false
+    coroutine.fiber_cleanup_pop(f)
+}
+```
+
+1. **LIFO Execution Order**: Registered `fiber_defer` callbacks execute in reverse (LIFO) order upon normal completion, failure, or cancellation, exactly like language-level defers.
+2. **Zero Heap Allocation**: Cleanups live directly in an inline 8-slot array on the `Fiber` struct (`cleanups: [8]Fiber_Cleanup`).
+3. **Safe Pop**: Call `coroutine.fiber_cleanup_pop(f)` when an operation completes normally to unregister the hook.
+
+### The Rule
+> **Never rely on native Odin `defer` for state restoration across yield points that can be cancelled externally. Use `coroutine.fiber_defer` or scoped combinators (`with_mutex`, `with_signal`, `with_timeout`).**
+
+---
+
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
 ```text
@@ -448,5 +508,6 @@ If `enemy.is_dead` is only updated by an animation event, physics step, or comba
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
 │ 12. Never #force_inline yield points: Call boundaries preserve registers.   │
 │ 13. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
+│ 14. Use fiber_defer for abort cleanup: Native defer won't run on cancel!    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

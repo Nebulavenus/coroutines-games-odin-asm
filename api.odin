@@ -340,44 +340,41 @@ fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
     return f != nil ? f.debug_name : ""
 }
 
-SCOPED_CLEANUP_MAGIC :: u64(0x5343_4F50_4543_4C4E)
-
-Scoped_Cleanup_Node :: struct {
-    signature: u64,
-    prev_proc: proc(user_data: rawptr),
-    prev_data: rawptr,
-}
-
-fiber_set_cleanup_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
-    if f == nil do return
-    if f.cleanup_proc != nil && f.cleanup_data != nil {
-        node := (^Scoped_Cleanup_Node)(f.cleanup_data)
-        if node.signature == SCOPED_CLEANUP_MAGIC {
-            for node.prev_proc != nil && node.prev_data != nil {
-                next_node := (^Scoped_Cleanup_Node)(node.prev_data)
-                if next_node.signature == SCOPED_CLEANUP_MAGIC {
-                    node = next_node
-                } else {
-                    break
-                }
-            }
-            node.prev_proc = cleanup_proc
-            node.prev_data = user_data
-            return
+// Register a cleanup procedure executed in LIFO order when this fiber finishes, fails, or is cancelled.
+fiber_defer_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
+    if f == nil || cleanup_proc == nil do return
+    if f.cleanup_count < MAX_FIBER_CLEANUPS {
+        f.cleanups[f.cleanup_count] = Fiber_Cleanup{
+            proc_ptr  = cleanup_proc,
+            user_data = user_data,
         }
+        f.cleanup_count += 1
+    } else {
+        panic("fiber_defer: exceeded MAX_FIBER_CLEANUPS (8)")
     }
-    f.cleanup_proc = cleanup_proc
-    f.cleanup_data = user_data
 }
 
-fiber_set_cleanup_ptr :: proc(f: ^Fiber, cleanup_proc: proc(user_data: ^$T), user_data: ^T) {
-    fiber_set_cleanup_raw(f, cast(proc(rawptr))cleanup_proc, rawptr(user_data))
+fiber_defer_ptr :: proc(f: ^Fiber, cleanup_proc: proc(user_data: ^$T), user_data: ^T) {
+    fiber_defer_raw(f, cast(proc(rawptr))cleanup_proc, rawptr(user_data))
 }
 
-fiber_set_cleanup :: proc{
-    fiber_set_cleanup_raw,
-    fiber_set_cleanup_ptr,
+fiber_defer :: proc{
+    fiber_defer_raw,
+    fiber_defer_ptr,
 }
+
+// Pop the most recently registered cleanup hook (used by scoped RAII guards on normal exit)
+fiber_cleanup_pop :: proc(f: ^Fiber) {
+    if f != nil && f.cleanup_count > 0 {
+        f.cleanup_count -= 1
+        f.cleanups[f.cleanup_count] = {}
+    }
+}
+
+// Aliases for backwards compatibility
+fiber_set_cleanup_raw :: fiber_defer_raw
+fiber_set_cleanup_ptr :: fiber_defer_ptr
+fiber_set_cleanup     :: fiber_defer
 
 scheduler_set_watchdog :: proc(sched: ^Scheduler, enabled: bool, max_slice_ms: f64 = 100.0) {
     if sched == nil do return
@@ -453,6 +450,19 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = 
 // Unified overloaded entry point
 branch :: proc{branch_ptr, branch_val, branch_nil}
 
+// Built-in Branch_Desc factories for synchronization primitives
+branch_signal :: proc(sig: ^Signal, name := "signal_wait") -> Branch_Desc {
+    return branch_ptr(signal_wait, sig, name)
+}
+
+branch_sticky_signal :: proc(sig: ^Sticky_Signal, name := "sticky_signal_wait") -> Branch_Desc {
+    return branch_ptr(sticky_signal_wait, sig, name)
+}
+
+branch_wait :: proc(seconds: f32, name := "timer_wait", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc {
+    return branch_val(wait, seconds, name, clock)
+}
+
 // ============================================================================
 // Scoped Fire-and-Forget Subtasks (Verse branch:)
 // ============================================================================
@@ -521,9 +531,15 @@ branch_scoped :: proc{
     branch_scoped_nil,
 }
 
+MAX_STACK_BRANCHES :: 16
+
 @(private="file")
 fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
+    f.sched.next_coord_id += 1
+    coord_id := f.sched.next_coord_id
+
     f.active_coord = Join_Coordinator{
+        id              = coord_id,
         kind            = kind,
         parent          = f,
         total_branches  = len(branches),
@@ -553,6 +569,7 @@ fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc
         child.user_fn = b.user_fn
         child.entry_proc = b.entry_proc
         child.join_coord = &f.active_coord
+        child.join_coord_id = coord_id
         child.branch_index = i
 
         fiber_link_child(f, child)
@@ -565,29 +582,169 @@ fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc
     context = f.stored_context
 }
 
-sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
+sync_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
     if f == nil || f.sched == nil || len(branches) == 0 do return true
     fiber_setup_branches(f, .Sync, branches)
     return !f.active_coord.has_failed
 }
 
-race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
+sync_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (all_succeeded: bool) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return true
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_nil(p)
+        }
+        return sync_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_nil(p)
+    }
+    return sync_branches(f, ..descs)
+}
+
+sync :: proc{
+    sync_branches,
+    sync_procs,
+}
+
+sync_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (all_succeeded: bool) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return true
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_ptr(p, ctx)
+        }
+        return sync_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_ptr(p, ctx)
+    }
+    return sync_branches(f, ..descs)
+}
+
+race_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(branches) == 0 do return -1
     fiber_setup_branches(f, .Race, branches)
     return f.active_coord.winner_index
 }
 
-rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
+race_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return -1
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_nil(p)
+        }
+        return race_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_nil(p)
+    }
+    return race_branches(f, ..descs)
+}
+
+race :: proc{
+    race_branches,
+    race_procs,
+}
+
+race_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return -1
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_ptr(p, ctx)
+        }
+        return race_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_ptr(p, ctx)
+    }
+    return race_branches(f, ..descs)
+}
+
+rush_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(branches) == 0 do return -1
     fiber_setup_branches(f, .Rush, branches)
     return f.active_coord.winner_index
 }
 
-fallback :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (succeeded: bool, winning_index: int) {
+rush_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return -1
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_nil(p)
+        }
+        return rush_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_nil(p)
+    }
+    return rush_branches(f, ..descs)
+}
+
+rush :: proc{
+    rush_branches,
+    rush_procs,
+}
+
+rush_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return -1
+    if len(procs) <= MAX_STACK_BRANCHES {
+        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
+        for p, i in procs {
+            stack_descs[i] = branch_ptr(p, ctx)
+        }
+        return rush_branches(f, ..stack_descs[:len(procs)])
+    }
+    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    for p, i in procs {
+        descs[i] = branch_ptr(p, ctx)
+    }
+    return rush_branches(f, ..descs)
+}
+
+fallback_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (succeeded: bool, winning_index: int) {
     if f == nil || f.sched == nil || len(branches) == 0 do return false, -1
 
     for b, i in branches {
-        ok := sync(f, b)
+        ok := sync_branches(f, b)
+        if ok {
+            return true, i
+        }
+    }
+    return false, -1
+}
+
+fallback_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (succeeded: bool, winning_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return false, -1
+
+    for p, i in procs {
+        ok := sync_procs(f, p)
+        if ok {
+            return true, i
+        }
+    }
+    return false, -1
+}
+
+fallback :: proc{
+    fallback_branches,
+    fallback_procs,
+}
+
+fallback_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (succeeded: bool, winning_index: int) {
+    if f == nil || f.sched == nil || len(procs) == 0 do return false, -1
+
+    for p, i in procs {
+        ok := sync_branches(f, branch_ptr(p, ctx))
         if ok {
             return true, i
         }
@@ -650,6 +807,100 @@ with_timeout_nil :: proc(
 }
 
 with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, with_timeout_nil}
+
+// ============================================================================
+// with_signal & with_sticky_signal Combinators (Interruptible Tasks)
+// ============================================================================
+
+with_signal_branch :: proc(f: ^Fiber, sig: ^Signal, task: Branch_Desc) -> (interrupted: bool) {
+    if f == nil || f.sched == nil || sig == nil do return false
+    winner := race(f, task, branch_signal(sig, "with_signal_watcher"))
+    return winner == 1
+}
+
+with_signal_ptr :: proc(
+    f: ^Fiber,
+    sig: ^Signal,
+    entry: proc(f: ^Fiber, data: ^$T),
+    data: ^T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) {
+    return with_signal_branch(f, sig, branch_ptr(entry, data, name, clock))
+}
+
+with_signal_val :: proc(
+    f: ^Fiber,
+    sig: ^Signal,
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) where !intrinsics.type_is_pointer(T) {
+    return with_signal_branch(f, sig, branch_val(entry, data, name, clock))
+}
+
+with_signal_nil :: proc(
+    f: ^Fiber,
+    sig: ^Signal,
+    entry: proc(f: ^Fiber),
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) {
+    return with_signal_branch(f, sig, branch_nil(entry, name, clock))
+}
+
+with_signal :: proc{
+    with_signal_branch,
+    with_signal_ptr,
+    with_signal_val,
+    with_signal_nil,
+}
+
+with_sticky_signal_branch :: proc(f: ^Fiber, sig: ^Sticky_Signal, task: Branch_Desc) -> (interrupted: bool) {
+    if f == nil || f.sched == nil || sig == nil do return false
+    winner := race(f, task, branch_sticky_signal(sig, "with_sticky_signal_watcher"))
+    return winner == 1
+}
+
+with_sticky_signal_ptr :: proc(
+    f: ^Fiber,
+    sig: ^Sticky_Signal,
+    entry: proc(f: ^Fiber, data: ^$T),
+    data: ^T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) {
+    return with_sticky_signal_branch(f, sig, branch_ptr(entry, data, name, clock))
+}
+
+with_sticky_signal_val :: proc(
+    f: ^Fiber,
+    sig: ^Sticky_Signal,
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) where !intrinsics.type_is_pointer(T) {
+    return with_sticky_signal_branch(f, sig, branch_val(entry, data, name, clock))
+}
+
+with_sticky_signal_nil :: proc(
+    f: ^Fiber,
+    sig: ^Sticky_Signal,
+    entry: proc(f: ^Fiber),
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> (interrupted: bool) {
+    return with_sticky_signal_branch(f, sig, branch_nil(entry, name, clock))
+}
+
+with_sticky_signal :: proc{
+    with_sticky_signal_branch,
+    with_sticky_signal_ptr,
+    with_sticky_signal_val,
+    with_sticky_signal_nil,
+}
 
 // ============================================================================
 // Unified Event(T) & Signal (1-to-Many Zero-Allocation Broadcast)
@@ -771,6 +1022,14 @@ sticky_event_peek :: proc "contextless" (ev: ^Sticky_Event($T)) -> (val: T, ok: 
     return {}, false
 }
 
+sticky_event_waiter_count :: #force_inline proc "contextless" (ev: ^Sticky_Event($T)) -> int {
+    return ev != nil ? wait_queue_count(&ev.waiters) : 0
+}
+
+sticky_event_has_waiters :: #force_inline proc "contextless" (ev: ^Sticky_Event($T)) -> bool {
+    return ev != nil && !wait_queue_is_empty(&ev.waiters)
+}
+
 sticky_event_wait :: proc(f: ^Fiber, ev: ^Sticky_Event($T)) -> (payload: T, ok: bool) {
     #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || ev == nil || f.sched == nil do return {}, false
@@ -815,51 +1074,25 @@ sticky_event_emit_fiber :: proc(f: ^Fiber, ev: ^Sticky_Event($T), payload: T) {
     sticky_event_emit_sched(f.sched, ev, payload)
 }
 
-sticky_signal_init :: proc(sig: ^Sticky_Signal) {
-    if sig == nil do return
-    sig^ = {}
-}
-
-sticky_signal_destroy :: proc(sig: ^Sticky_Signal) {
-    if sig == nil do return
-    wait_queue_destroy(&sig.waiters)
-}
-
-sticky_signal_reset :: proc(sig: ^Sticky_Signal) {
-    if sig == nil do return
-    sig.is_set = false
-}
-
-sticky_signal_is_set :: proc "contextless" (sig: ^Sticky_Signal) -> bool {
-    return sig != nil && sig.is_set
-}
+// Sticky_Signal Aliases (0-byte Sticky_Event)
+sticky_signal_init         :: sticky_event_init
+sticky_signal_destroy      :: sticky_event_destroy
+sticky_signal_reset        :: sticky_event_reset
+sticky_signal_is_set       :: sticky_event_is_set
+sticky_signal_waiter_count :: sticky_event_waiter_count
+sticky_signal_has_waiters  :: sticky_event_has_waiters
 
 sticky_signal_wait :: proc(f: ^Fiber, sig: ^Sticky_Signal) {
-    if f == nil || sig == nil || f.sched == nil do return
-    if sig.is_set do return
-
-    wait_queue_push_back(&sig.waiters, f)
-    fiber_suspend(f)
+    _, _ = sticky_event_wait(f, sig)
 }
 
 sticky_signal_emit_sched :: proc(sched: ^Scheduler, sig: ^Sticky_Signal) {
-    if sig == nil do return
-    sig.is_set = true
-    if sched == nil || wait_queue_is_empty(&sig.waiters) do return
-
-    for {
-        f, ok := wait_queue_pop_front(&sig.waiters)
-        if !ok do break
-        if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
-            f.status = .Ready
-            append(&sched.ready_queue, f.handle)
-        }
-    }
+    sticky_event_emit_sched(sched, sig, struct{}{})
 }
 
 sticky_signal_emit_fiber :: proc(f: ^Fiber, sig: ^Sticky_Signal) {
     if f == nil || f.sched == nil do return
-    sticky_signal_emit_sched(f.sched, sig)
+    sticky_event_emit_sched(f.sched, sig, struct{}{})
 }
 
 sticky_event_emit :: proc{
@@ -907,3 +1140,157 @@ await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
 
     return intrinsics.atomic_load(&token.state) == .Completed
 }
+
+// ============================================================================
+// Verse-Style Task(T) Futures (Backed by Zero-Alloc Sticky_Event(T))
+// ============================================================================
+
+task_init :: proc(task: ^Task($T), handle: Fiber_Handle = 0) {
+    if task == nil do return
+    task^ = {}
+    task.handle = handle
+}
+
+task_complete_sched :: proc(sched: ^Scheduler, task: ^Task($T), value: T) {
+    if task == nil do return
+    sticky_event_emit(sched, &task.result, value)
+}
+
+task_complete_fiber :: proc(f: ^Fiber, task: ^Task($T), value: T) {
+    if task == nil || f == nil do return
+    sticky_event_emit(f, &task.result, value)
+}
+
+task_complete :: proc{
+    task_complete_sched,
+    task_complete_fiber,
+}
+
+task_await :: proc(f: ^Fiber, task: ^Task($T)) -> (val: T, ok: bool) {
+    if f == nil || task == nil do return {}, false
+    return sticky_event_wait(f, &task.result)
+}
+
+task_is_ready :: proc(task: ^Task($T)) -> bool {
+    return task != nil && task.result.has_value
+}
+
+// Spawn a worker fiber that computes a value and automatically completes the Task(R)
+spawn_task_sched_nil :: proc(
+    sched: ^Scheduler,
+    task: ^Task($R),
+    entry: proc(f: ^Fiber) -> R,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_SIM,
+) -> Fiber_Handle {
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(f: ^Fiber) -> R,
+    }
+    task_init(task)
+    h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        res := p.fn(f)
+        task_complete(f, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry}, scope, name, clock)
+    task.handle = h
+    return h
+}
+
+spawn_task_sched_ptr :: proc(
+    sched: ^Scheduler,
+    task: ^Task($R),
+    entry: proc(f: ^Fiber, data: ^$D) -> R,
+    data: ^D,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_SIM,
+) -> Fiber_Handle {
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(f: ^Fiber, data: ^D) -> R,
+        data: ^D,
+    }
+    task_init(task)
+    h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        res := p.fn(f, p.data)
+        task_complete(f, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, scope, name, clock)
+    task.handle = h
+    return h
+}
+
+spawn_task_sched_val :: proc(
+    sched: ^Scheduler,
+    task: ^Task($R),
+    entry: proc(f: ^Fiber, data: $D) -> R,
+    data: D,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_SIM,
+) -> Fiber_Handle where !intrinsics.type_is_pointer(D) {
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(f: ^Fiber, data: D) -> R,
+        data: D,
+    }
+    #assert(size_of(Task_Wrapper_Payload) <= FIBER_PAYLOAD_SIZE, "spawn_task_sched_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    task_init(task)
+    h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        res := p.fn(f, p.data)
+        task_complete(f, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, scope, name, clock)
+    task.handle = h
+    return h
+}
+
+spawn_task_fiber_nil :: proc(
+    f: ^Fiber,
+    task: ^Task($R),
+    entry: proc(child: ^Fiber) -> R,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_task_sched_nil(f.sched, task, entry, scope, name, c)
+}
+
+spawn_task_fiber_ptr :: proc(
+    f: ^Fiber,
+    task: ^Task($R),
+    entry: proc(child: ^Fiber, data: ^$D) -> R,
+    data: ^D,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_task_sched_ptr(f.sched, task, entry, data, scope, name, c)
+}
+
+spawn_task_fiber_val :: proc(
+    f: ^Fiber,
+    task: ^Task($R),
+    entry: proc(child: ^Fiber, data: $D) -> R,
+    data: D,
+    scope: ^Fiber_Scope = nil,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle where !intrinsics.type_is_pointer(D) {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_task_sched_val(f.sched, task, entry, data, scope, name, c)
+}
+
+spawn_task :: proc{
+    spawn_task_sched_nil,
+    spawn_task_sched_ptr,
+    spawn_task_sched_val,
+    spawn_task_fiber_nil,
+    spawn_task_fiber_ptr,
+    spawn_task_fiber_val,
+}
+

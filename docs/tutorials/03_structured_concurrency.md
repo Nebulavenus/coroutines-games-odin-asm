@@ -37,11 +37,11 @@ laser_beam :: proc(f: ^coroutine.Fiber, id: int) {
 boss_laser_barrage :: proc(f: ^coroutine.Fiber) {
     fmt.println("Boss preparing simultaneous 3-laser barrage!")
 
-    // Fork-join 3 concurrent laser beams using variadic branches
+    // Fork-join 3 concurrent laser beams using direct procedures or sync_with
     coroutine.sync(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber) { laser_beam(f, 1) }, name = "Laser 1"),
-        coroutine.branch(proc(f: ^coroutine.Fiber) { laser_beam(f, 2) }, name = "Laser 2"),
-        coroutine.branch(proc(f: ^coroutine.Fiber) { laser_beam(f, 3) }, name = "Laser 3"),
+        proc(f: ^coroutine.Fiber) { laser_beam(f, 1) },
+        proc(f: ^coroutine.Fiber) { laser_beam(f, 2) },
+        proc(f: ^coroutine.Fiber) { laser_beam(f, 3) },
     )
 
     // Resumes ONLY when all 3 lasers finish!
@@ -49,11 +49,13 @@ boss_laser_barrage :: proc(f: ^coroutine.Fiber) {
 }
 ```
 
+*Tip:* When all branches share a common data pointer, use `coroutine.sync_with(f, data, ...)` to eliminate closure boilerplate!
+
 ---
 
 ## 2. Preemptive Cancellation with `race`
 
-Use `race` when multiple branches compete, and the parent wants to resume as soon as the **first** branch completes successfully (`.Completed`)—automatically aborting and cleaning up the losing branches. If an arm calls `fail(f)`, it drops out of the competition without winning:
+Use `race` (or `race_with`) when multiple branches compete, and the parent wants to resume as soon as the **first** branch completes successfully (`.Completed`)—automatically aborting and cleaning up the losing branches. If an arm calls `fail(f)`, it drops out of the competition without winning:
 
 ```
                            [ Parent Fiber ]
@@ -61,7 +63,7 @@ Use `race` when multiple branches compete, and the parent wants to resume as soo
                                   │
          ┌────────────────────────┼────────────────────────┐
          ▼                        ▼                        ▼
-  [ Attack Loop ]          [ HP <= 50% Watcher ]      [ 10s Enrage Timer ]
+  [ Attack Loop ]          [ HP <= 50% Watcher ]      [ 5s Enrage Timer ]
   (Runs indefinitely)      (Triggers when HP drops)   (Timer countdown)
                                   │
                                   ▼
@@ -69,7 +71,7 @@ Use `race` when multiple branches compete, and the parent wants to resume as soo
                                   │
          ┌────────────────────────┴────────────────────────┐
          ▼                                                 ▼
-  [ ABORT Attack Loop ]                         [ ABORT 10s Timer ]
+  [ ABORT Attack Loop ]                         [ ABORT 5s Timer ]
 ```
 
 ### Complete Boss Phase Simulation Example
@@ -93,51 +95,50 @@ boss_combat_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Entity) {
     // ==========================================
     fmt.println("\n[PHASE 1] Boss engages player!")
 
-    winner := coroutine.race(f,
+    // Using race_with to pass ^Boss_Entity to all branches cleanly,
+    // combined with the pre-built branch_wait timer:
+    winner := coroutine.race_with(f, boss,
         // Branch 0: Continuous Attack Loop
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             for {
                 fmt.println("  -> Boss casts Void Bolt!")
                 coroutine.wait(f, 1.0)
             }
-        }, boss, name = "Attack Loop"),
+        },
 
         // Branch 1: Health Threshold Trigger
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             for b.hp > 50 {
                 coroutine.yield(f)
             }
             fmt.println("  >>> TRIGGER: Boss HP dropped to <= 50%! <<<")
-        }, boss, name = "HP Trigger"),
+        },
 
-        // Branch 2: Enrage Timer
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
-            coroutine.wait(f, 5.0)
-            fmt.println("  >>> TRIGGER: 5-Second Enrage Timer Expired! <<<")
-        }, boss, name = "Enrage Timer"),
+        // Branch 2: Enrage Timer using pre-built primitive
+        coroutine.branch_wait(5.0, name = "Enrage Timer"),
     )
 
     fmt.printf("[PHASE 1 COMPLETE] Winning branch index: %d\n", winner)
     fmt.println("Transitioning to Phase 2: All Phase 1 attacks automatically aborted!")
 
     // ==========================================
-    // PHASE 2: Parallel Super-Attack (sync)
+    // PHASE 2: Parallel Super-Attack (sync_with)
     // ==========================================
     boss.phase = 2
     fmt.println("\n[PHASE 2] Boss casts ultimate synchronized nova!")
 
-    coroutine.sync(f,
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+    coroutine.sync_with(f, boss,
+        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             fmt.println("  [Shield] Charging invulnerability barrier...")
             coroutine.wait(f, 1.5)
             fmt.println("  [Shield] Barrier fully charged!")
-        }, boss, name = "Shield Branch"),
+        },
 
-        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             fmt.println("  [Nova] Expanding fiery explosion ring...")
             coroutine.wait(f, 1.5)
             fmt.println("  [Nova] Fiery ring reached boundary!")
-        }, boss, name = "Nova Branch"),
+        },
     )
 
     fmt.println("\n=== BOSS ENCOUNTER VICTORY ===")
@@ -172,10 +173,13 @@ main :: proc() {
 ## 3. What Happens to Child Subtrees on Cancel?
 
 When a branch loses a `race` or is cancelled:
-1. The engine recursively traverses the losing fiber's child hierarchy bottom-up.
+1. The engine recursively traverses the losing fiber's child hierarchy bottom-up (`fiber_abort_tree`).
 2. Any sleeping child fibers are immediately removed from their clock domain's `timer_heap` or `step_waiters`.
-3. Stacks are returned to the slab pool for $O(1)$ recycling.
-4. Native `defer` blocks execute cleanly.
+3. Registered cleanup callbacks registered via `coroutine.fiber_defer` execute in strict LIFO order.
+4. Stacks are returned to the slab pool for $O(1)$ recycling.
+
+> [!WARNING]
+> Because suspended stackful fibers are cancelled externally without resuming execution on the CPU, **native Odin `defer` statements do not run on abort**. Always use `coroutine.fiber_defer` when managing external resources or reversible state (see [Guide: Footguns & Traps](file:///E:/OdinLang/Projects/coroutines_asm/docs/guides/GUIDE_FOOTGUNS.md#footgun-15-relying-on-native-odin-defer-for-external-fiber-cancellation--abort)).
 
 ---
 

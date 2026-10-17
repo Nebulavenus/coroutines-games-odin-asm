@@ -42,8 +42,8 @@ docs/wasm/
 ├── 01_ARCHITECTURE_ASYNCIFY.md   # Asyncify Integration, Leaf Protocol & Event Loop
 ├── 02_MEMORY_AND_LIMITATIONS.md   # Dual-Stack Dilemma, Shadow-Stack Aliasing & 3 Golden Rules
 ├── 03_BROWSER_GAME_AND_CANVAS.md  # Porting Raylib Games, C ABI Struct Unpacking & Controls
-├── 04_TESTING_AND_AUTOMATION.md   # 16-Suite Test Harness, Headless Node.js CI & Fuzzing
-└── 05_STACK_SWITCHING_ROADMAP.md  # Future Wasm Stack-Switching, Pointer Swapping & WasmFX
+├── 04_TESTING_AND_AUTOMATION.md   # 17-Suite Test Harness, Headless Node.js CI & Fuzzing
+├── 05_STACK_SWITCHING_ROADMAP.md  # Future Wasm Stack-Switching, Pointer Swapping & WasmFX
 ```
 
 ### Module Summaries:
@@ -54,7 +54,7 @@ docs/wasm/
 - **[03. Browser Game & Canvas Adapter](03_BROWSER_GAME_AND_CANVAS.md)**:
   Details the architecture of the browser-playable Boss Battle demo. Explains how Odin passes C structs by pointer across the Wasm boundary, how `raylib_canvas.js` unpacks colors, and how modern browser keyboard controls work.
 - **[04. Testing & CI Automation](04_TESTING_AND_AUTOMATION.md)**:
-  Catalogs the 16 automated test suites in `examples/wasm_test/main.odin` and explains how headless Node.js harnesses verify 1000+ simulation frames with zero visual regression and zero runtime panics.
+  Catalogs the 17 automated test suites in `examples/wasm_test/main.odin` and explains how headless Node.js harnesses verify 1000+ simulation frames with zero visual regression and zero runtime panics.
 - **[05. Future Stack-Switching Roadmap](05_STACK_SWITCHING_ROADMAP.md)**:
   Surveys upcoming WebAssembly capabilities: Phase 2 shadow-stack pointer swapping (`$__stack_pointer`) and Phase 3 native hardware delimited continuations (W3C WasmFX: `cont.new`, `suspend`, `resume`).
 
@@ -97,7 +97,7 @@ Both downloaders fetch the official release from GitHub, unpack into `tools/bina
 
 All WebAssembly workflows are orchestrated through `build.ps1`:
 
-### 1. Build and Run the Complete 16-Suite Automated Wasm Tests
+### 1. Build and Run the Complete 17-Suite Automated Wasm Tests
 Compiles `examples/wasm_test`, applies `wasm-opt --asyncify`, and runs the suite under Node.js:
 ```powershell
 .\build.ps1 test-wasm

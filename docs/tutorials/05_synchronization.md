@@ -3,7 +3,7 @@
 Coroutines frequently need to communicate across independent systems, wait for broadcast game events, or share restricted gameplay resources without polling or OS thread locks.
 
 The runtime organizes synchronization into two tiers:
-1. **Core Zero-Allocation Primitives (`coroutine`)**: Unified multicast `Event(T)` & parameterless broadcast `Signal :: Event(struct{})`, dynamic `fiber_join`, and hierarchical `Fiber_Scope`.
+1. **Core Zero-Allocation Primitives (`coroutine`)**: Unified multicast `Event(T)` & parameterless broadcast `Signal :: Event(struct{})`, latched milestones (`Sticky_Event(T)` / `Sticky_Signal`), typed futures (`Task(T)` & `spawn_task`), interruption cleanup stack (`fiber_defer`), dynamic `fiber_join`, and hierarchical `Fiber_Scope`.
 2. **Optional Modular CSP & Locking (`coroutine/sync`)**: `Fiber_Mutex`, `Fiber_Semaphore`, typed `Channel(T)`, and Go-style `chan_select_recv`.
 
 ---
@@ -115,6 +115,74 @@ ui_fiber :: proc(f: ^coroutine.Fiber) {
 
 - **True ZII & Zero Allocations**: Requires no heap memory or dynamic queues.
 - **State Reset**: Call `coroutine.sticky_signal_reset(&game.ready_signal)` or `coroutine.sticky_event_reset(&game.winner_event)` when resetting the game match.
+
+---
+
+## 2.6 Verse-Style Typed Task Futures (`Task(T)` & `spawn_task`)
+
+In Epic Verse, asynchronous procedures return typed values (`spawn{ ComputeResult() }`). In this engine, `Task(T)` provides a zero-allocation, typed asynchronous future backed by `Sticky_Event(T)`:
+
+```odin
+Calculate_Stats_Request :: struct {
+    hero_level: int,
+    gear_score: int,
+}
+
+Combat_Stats :: struct {
+    attack_power: int,
+    critical_chance: f32,
+}
+
+compute_stats_proc :: proc(f: ^coroutine.Fiber, req: ^Calculate_Stats_Request) -> Combat_Stats {
+    // Simulate multi-tick calculation or asynchronous lookup
+    coroutine.wait(f, 0.1)
+    return Combat_Stats{
+        attack_power = req.hero_level * 15 + req.gear_score * 2,
+        critical_chance = 0.05 + f32(req.hero_level) * 0.01,
+    }
+}
+
+hero_equipment_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler) {
+    req := Calculate_Stats_Request{hero_level = 20, gear_score = 150}
+    task: coroutine.Task(Combat_Stats)
+
+    // Launch worker fiber returning Combat_Stats:
+    coroutine.spawn_task(sched, &task, compute_stats_proc, &req)
+
+    // Await strongly typed result with zero polling:
+    stats := coroutine.task_await(f, &task)
+    fmt.printf("[Hero] Stats recalculated: Attack=%d, Crit=%.1f%%\n", stats.attack_power, stats.critical_chance * 100.0)
+}
+```
+
+- **True ZII**: Zero heap allocations; state is stored within the intrusive wait queue and typed value cache.
+- **Non-blocking Inspection**: Check if a task is already completed without suspending using `coroutine.task_is_ready(&task)`.
+
+---
+
+## 2.7 Guaranteed Interruption Cleanup with `fiber_defer`
+
+Because stackful fibers suspended inside a wait queue are cancelled externally without resuming on CPU instructions (e.g. when losing a `race`, on scope cancellation, or parent destruction), **native Odin `defer` statements do not run upon external abort**.
+
+To guarantee that locks are released, temporary buffers returned, or gameplay status flags reverted, use the 8-slot LIFO defer stack (`fiber_defer`):
+
+```odin
+player_combat_stance_fiber :: proc(f: ^coroutine.Fiber, player: ^Player) {
+    player.in_berserk_stance = true
+
+    // Register cleanup callback on the fiber's LIFO defer stack:
+    coroutine.fiber_defer(f, proc(p: ^Player) {
+        p.in_berserk_stance = false
+        fmt.println("[Stance] Berserk stance reverted.")
+    }, player)
+
+    // Combat actions (may be aborted externally at any time!):
+    coroutine.wait(f, 5.0)
+
+    // On normal exit, pop and execute the cleanup hook:
+    coroutine.fiber_cleanup_pop(f)
+}
+```
 
 ---
 

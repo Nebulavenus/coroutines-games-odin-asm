@@ -802,7 +802,7 @@ test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
             }, c)
             coro.wait(f, 0.05)
             semaphore_release(c.sched, c.sem)
-            f.cleanup_proc = nil // Clear cleanup since released normally
+            coro.fiber_cleanup_pop(f) // Clear cleanup since released normally
             c.completed^ += 1
         }, &ctx)
     }
@@ -855,7 +855,7 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
             }, c)
             coro.wait(f, 0.03)
             mutex_unlock(c.sched, c.m)
-            f.cleanup_proc = nil
+            coro.fiber_cleanup_pop(f)
             c.completed^ += 1
         }, &ctx)
     }
