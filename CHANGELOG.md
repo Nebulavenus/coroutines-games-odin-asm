@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Matrix Slow-Mo & Recovery Bar Game Update] - 2026-10-17
+
+### Added
+- **Matrix-Style Bullet-Time Slow-Mo in Boss Fight Demo (`examples/game/main.odin`)**:
+  - Right Mouse Button (RMB, with keyboard fallback Shift/Q) triggers non-linear Matrix bullet-time slow-motion.
+  - Recovery bar HUD (`slowmo_charge` / `slowmo_max`) draining at 28 units/s and recharging at 22 units/s.
+  - Non-linear slowdown curve ($t^{1.5}$) tracking the recovery bar: maximum world slowdown ($15\%$ speed) at full bar, smoothly easing back to normal ($100\%$) as the charge depletes.
+  - Player agility advantage: player movement receives up to $+35\%$ speed multiplier while world is in slow-mo, achieving $>8.6\times$ relative velocity advantage over enemy bullets.
+  - Real-time player dash: dedicated exclusively to Spacebar (and K) running on `CLOCK_REAL`.
+  - Matrix visual feedback: fullscreen digital matrix tint, player ghost afterimage trails, and bullet-time projectile wakes.
+- **Web Canvas Mouse Mapping (`tools/web/raylib_canvas.js`)**:
+  - Mapped DOM mouse button events (0=Left, 1=Middle, 2=Right) to Raylib's `MouseButton` enum (0=Left, 1=Right, 2=Middle).
+
 ## [Minimal Verse/SkookumScript Core Refactoring & Indexed Clock_Domain Architecture] - 2026-10-17
 
 ### Changed
@@ -121,15 +134,15 @@ All notable changes to this project will be documented in this file.
 ## [Inline ASM Deep-Dive & #byte Production Standard Baseline] - 2026-09-04
 
 ### Added
-- **Odin Inline Assembly Specification & Compiler Internals ([`docs/ASM_2.md`](docs/ASM_2.md), [`docs/inline_asm_analysis.md`](docs/inline_asm_analysis.md))**:
+- **Odin Inline Assembly Specification & Compiler Internals ([`docs/ASM.md`](docs/ASM.md), [`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md))**:
   - Documented complete inline assembly AST rules, undocumented directives (`#no_init`, `#skip`, `#align`), and two-step scratch parameter bindings.
   - Documented LLVM backend lowering constraints: missing label colon in AMD64/RISC-V (`llvm_backend_asm.cpp:390`), base pointer/frame pointer interference on `%rsp`/`%rbp`, and vector register early-clobber (`=&`) corruption on scratch XMM stores.
   - Completed git archaeology across project commit history and Odin compiler PRs (PR #7444 `bill/asm-cfg`, sub-register width lattice `in_w`, and backward liveness checks).
   - Confirmed `#byte` machine code arrays as the canonical production standard for the coroutine runtime across all 6 target architectures (`windows_amd64`, `linux_amd64`, `darwin_amd64`, `darwin_arm64`, `linux_arm64`, `linux_riscv64`), maintaining 100% test pass (188/188 tests) and 16.89ns context switch latency.
-- **Full Odin Inline Assembly Specification ([`docs/ASM_2.md`](docs/ASM_2.md))**:
+- **Full Odin Inline Assembly Specification ([`docs/ASM.md`](docs/ASM.md))**:
   - Authored authoritative manual covering all undocumented compiler directives (`#no_init`, `#skip`, `#align`, `#byte`), scratch parameter bindings, width-views, template directives (`#volatile`, `#align_stack`, `#pure`), and clobber constraints.
   - Documented SSA dataflow analysis (`seed_regs`, `seed_pm`, `in_w` lattice), CFG block construction, terminal instructions, and template exit requirements (`check_asm_cfg_block_leaves`).
-- **Comprehensive Compiler Internals & Option A Specification ([`docs/inline_asm_analysis.md`](docs/inline_asm_analysis.md))**:
+- **Comprehensive Compiler Internals & Option A Specification ([`docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md))**:
   - Identified 6 root-cause blockers across frontend SSA (`check_asm_cfg_report_undef_reg`, `in_w[0]`), frontend CFG (terminal calls, dead writes), backend codegen (missing label colon in `llvm_backend_asm.cpp:390`), and LLVM machine function register allocation (frame pointer interference on `%rbp`).
   - Documented Option A pure high-level inline assembly context switch pattern with named labels and direct mnemonics, along with the upstream Odin compiler patch.
   - Documented why `#byte` remains the optimal production standard for stock Odin compiler compatibility.
@@ -161,8 +174,8 @@ All notable changes to this project will be documented in this file.
   - Added `.\run_wsl_qemu.ps1` supporting `test`, `bench`, and `all` targets under `qemu-aarch64` and `qemu-riscv64` in WSL2.
 - **Machine Code Disassembler Validation with `core:rexcode` (`src/coroutine/coroutine_test.odin`)**:
   - Added **Test 187** validating that all `#byte` machine code opcodes decode byte-for-byte across x86-64, ARM64, and RISC-V 64 without errors.
-- **Comprehensive Documentation (`PLAN6.md`, `TECH_ODIN_INLINE_ASM_ANALYSIS.md`)**:
-  - Authored `PLAN6.md` detailing multi-ISA architecture, SSA pass diagnostics, trampoline sequences, and opcode mappings.
+- **Comprehensive Documentation (`docs/tech/TECH_ASM.md`, `docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`)**:
+  - Authored `docs/tech/TECH_ASM.md` detailing multi-ISA architecture, SSA pass diagnostics, trampoline sequences, and opcode mappings.
 
 ### Fixed
 - **Multi-Frame Coroutine Yielding under RISC Architectures**:

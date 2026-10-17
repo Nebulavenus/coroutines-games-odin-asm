@@ -45,16 +45,24 @@ Particle :: struct {
 }
 
 Player :: struct {
-    pos:           rl.Vector2,
-    speed:         f32,
-    radius:        f32,
-    hp:            f32,
-    max_hp:        f32,
-    can_dash:      bool,
-    is_dashing:    bool,
-    dash_cooldown: f32,
-    emp_cooldown:  f32,
-    scope:         coroutine.Fiber_Scope,
+    pos:             rl.Vector2,
+    speed:           f32,
+    radius:          f32,
+    hp:              f32,
+    max_hp:          f32,
+    can_dash:        bool,
+    is_dashing:      bool,
+    dash_cooldown:   f32,
+    emp_cooldown:    f32,
+    slowmo_charge:   f32,
+    slowmo_max:      f32,
+    is_slowmo:       bool,
+    slowmo_factor:   f32,
+    shoot_timer:     f32,
+    ghost_positions: [6]rl.Vector2,
+    ghost_alphas:    [6]f32,
+    ghost_timer:     f32,
+    scope:           coroutine.Fiber_Scope,
 }
 
 Boss :: struct {
@@ -532,6 +540,8 @@ game_init :: proc(g: ^Game) {
         can_dash      = true,
         is_dashing    = false,
         dash_cooldown = 0.0,
+        slowmo_charge = 100.0,
+        slowmo_max    = 100.0,
     }
 
     g.boss = Boss{
@@ -622,7 +632,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     // Latch actions while paused or running
-    if rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) || rl.IsKeyPressed(.K) {
+    if rl.IsKeyPressed(.SPACE) || rl.IsKeyPressed(.K) {
         g.latched_dash = true
     }
     if rl.IsMouseButtonPressed(.LEFT) || rl.IsKeyPressed(.J) || rl.IsKeyPressed(.Z) {
@@ -636,16 +646,47 @@ game_update :: proc(g: ^Game, dt: f32) {
         return
     }
 
+    // --- Matrix Slowmo Mechanic (Hold RMB) with Recovery Bar ---
+    slowmo_held := rl.IsMouseButtonDown(.RIGHT) || rl.IsKeyDown(.LEFT_SHIFT) || rl.IsKeyDown(.Q)
+    if slowmo_held && g.player.slowmo_charge > 0.0 && !g.is_paused && !g.game_over && !g.victory {
+        g.player.is_slowmo = true
+        DRAIN_RATE : f32 = 28.0 // ~3.57s of continuous bullet-time
+        g.player.slowmo_charge = max(0.0, g.player.slowmo_charge - DRAIN_RATE * dt)
+        if g.player.slowmo_charge <= 0.0 {
+            g.player.is_slowmo = false
+        }
+    } else {
+        g.player.is_slowmo = false
+        RECHARGE_RATE : f32 = 22.0 // ~4.5s to fully recover
+        g.player.slowmo_charge = min(g.player.slowmo_max, g.player.slowmo_charge + RECHARGE_RATE * dt)
+    }
+
+    // Non-linear slowdown curve:
+    // When bar is full (t=1.0), factor=1.0 (maximum world slowdown).
+    // As bar empties (t->0), world slowdown smoothly diminishes back to normal speed.
+    t := clamp(g.player.slowmo_charge / g.player.slowmo_max, 0.0, 1.0)
+    factor: f32 = 0.0
+    if g.player.is_slowmo {
+        factor = t * math.sqrt(t) // t^1.5 curve
+    }
+    g.player.slowmo_factor = factor
+
+    MIN_WORLD_SCALE : f32 = 0.15 // Down to 15% speed at full bar
+    world_time_scale := 1.0 - (1.0 - MIN_WORLD_SCALE) * factor
+    world_sim_dt := sim_dt * world_time_scale
+    player_agility := 1.0 + 0.35 * factor
+    player_dt := sim_dt * player_agility
+
     if !g.is_paused {
-        g.game_time += sim_dt
+        g.game_time += world_sim_dt
     }
 
     // Step Coroutines Engine (Multi-Clock Driven)
     coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
     if g.is_paused {
-        coroutine.scheduler_single_step(&g.sched, sim_dt, coroutine.CLOCK_SIM)
+        coroutine.scheduler_single_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
     } else {
-        coroutine.scheduler_step(&g.sched, sim_dt, coroutine.CLOCK_SIM)
+        coroutine.scheduler_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
     }
 
     if g.game_over || g.victory {
@@ -655,7 +696,7 @@ game_update :: proc(g: ^Game, dt: f32) {
         return
     }
 
-    // --- Player Movement (WASD / Arrows) ---
+    // --- Player Movement (WASD / Arrows with Matrix Agility) ---
     move_dir := rl.Vector2{0, 0}
     if rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)    do move_dir.y -= 1
     if rl.IsKeyDown(.S) || rl.IsKeyDown(.DOWN)  do move_dir.y += 1
@@ -664,16 +705,35 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     if linalg.length(move_dir) > 0 {
         move_dir = linalg.normalize(move_dir)
-        g.player.pos += move_dir * g.player.speed * sim_dt
+        g.player.pos += move_dir * (g.player.speed * player_agility) * sim_dt
         g.player.pos.x = clamp(g.player.pos.x, g.player.radius, f32(SCREEN_WIDTH) - g.player.radius)
         g.player.pos.y = clamp(g.player.pos.y, g.player.radius, f32(SCREEN_HEIGHT) - g.player.radius)
     }
 
-    // --- Player Dash Coroutine Trigger (Space / RMB / K) ---
-    do_dash := g.latched_dash || rl.IsKeyPressed(.SPACE) || rl.IsMouseButtonPressed(.RIGHT) || rl.IsKeyPressed(.K)
+    // --- Player Afterimage Ghost Trail (Bullet-time silhouette) ---
+    for i in 0 ..< 6 {
+        if g.player.ghost_alphas[i] > 0.0 {
+            g.player.ghost_alphas[i] = max(0.0, g.player.ghost_alphas[i] - dt * 4.0)
+        }
+    }
+    if g.player.is_slowmo || g.player.is_dashing {
+        g.player.ghost_timer += dt
+        if g.player.ghost_timer >= 0.035 {
+            g.player.ghost_timer = 0.0
+            for i := 5; i > 0; i -= 1 {
+                g.player.ghost_positions[i] = g.player.ghost_positions[i - 1]
+                g.player.ghost_alphas[i] = g.player.ghost_alphas[i - 1] * 0.75
+            }
+            g.player.ghost_positions[0] = g.player.pos
+            g.player.ghost_alphas[0] = g.player.is_dashing ? 0.9 : (0.35 + 0.5 * factor)
+        }
+    }
+
+    // --- Player Dash Coroutine Trigger (Space / K) ---
+    do_dash := g.latched_dash || rl.IsKeyPressed(.SPACE) || rl.IsKeyPressed(.K)
     g.latched_dash = false
     if do_dash && g.player.can_dash && !coroutine.scope_is_busy(&g.player.scope) {
-        coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash")
+        coroutine.spawn(&g.sched, player_dash_coroutine, &g.player, scope = &g.player.scope, name = "Player Dash", clock = coroutine.CLOCK_REAL)
     }
 
     // --- Player EMP / Stun Trigger (E / B / X key) ---
@@ -698,10 +758,12 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     // Player Shooting (Left Click, J/Z, or Latched)
+    g.player.shoot_timer += player_dt
     is_shooting := g.latched_shoot || rl.IsMouseButtonDown(.LEFT) || rl.IsKeyDown(.J) || rl.IsKeyDown(.Z)
     g.latched_shoot = false
     if is_shooting {
-        if math.mod(g.game_time, 0.12) < sim_dt || sim_dt >= 0.12 {
+        if g.player.shoot_timer >= 0.12 {
+            g.player.shoot_timer = 0.0
             mouse_pos := rl.GetMousePosition()
             shoot_dir := rl.Vector2{0, -1}
             if linalg.length(mouse_pos - g.player.pos) > 10.0 {
@@ -720,7 +782,8 @@ game_update :: proc(g: ^Game, dt: f32) {
             g.projectile_count -= 1
             continue
         }
-        p.pos += p.vel * sim_dt
+        p_dt := p.is_enemy ? world_sim_dt : sim_dt
+        p.pos += p.vel * p_dt
 
         // Check Out of bounds
         if p.pos.x < -50 || p.pos.x > SCREEN_WIDTH + 50 || p.pos.y < -50 || p.pos.y > SCREEN_HEIGHT + 50 {
@@ -783,8 +846,8 @@ game_update :: proc(g: ^Game, dt: f32) {
     // --- Update Particles ---
     for i := g.particle_count - 1; i >= 0; i -= 1 {
         p := &g.particles[i]
-        p.pos += p.vel * sim_dt
-        p.alpha -= sim_dt * 2.0
+        p.pos += p.vel * world_sim_dt
+        p.alpha -= world_sim_dt * 2.0
         if p.alpha <= 0.0 {
             g.particles[i] = g.particles[g.particle_count - 1]
             g.particle_count -= 1
@@ -816,6 +879,12 @@ game_render :: proc(g: ^Game) {
         rl.DrawCircleV(p.pos + g.camera_offset, p.size, c)
     }
 
+    // --- Matrix Bullet-Time Fullscreen Tint ---
+    if g.player.is_slowmo && g.player.slowmo_factor > 0.01 {
+        tint_alpha := u8(clamp(g.player.slowmo_factor * 45.0, 0, 75))
+        rl.DrawRectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, {0, 30, 10, tint_alpha})
+    }
+
     // --- Draw Boss ---
     if g.boss.alive {
         boss_screen_pos := g.boss.pos + g.camera_offset
@@ -835,6 +904,17 @@ game_render :: proc(g: ^Game) {
         rl.DrawCircleV(boss_screen_pos, 8.0, rl.WHITE)
     }
 
+    // --- Draw Player Ghost Afterimages (Bullet-time silhouettes) ---
+    for i in 0 ..< 6 {
+        alpha := g.player.ghost_alphas[i]
+        if alpha > 0.01 {
+            ghost_col := g.player.is_dashing ? rl.SKYBLUE : rl.Color{0, 255, 130, 255}
+            ghost_col.a = u8(clamp(alpha * 255.0, 0, 255))
+            screen_pos := g.player.ghost_positions[i] + g.camera_offset
+            rl.DrawCircleV(screen_pos, g.player.radius * (1.0 - f32(i) * 0.08), ghost_col)
+        }
+    }
+
     // --- Draw Player ---
     if g.player.hp > 0.0 {
         player_col := g.player.is_dashing ? rl.SKYBLUE : rl.GREEN
@@ -848,9 +928,19 @@ game_render :: proc(g: ^Game) {
         rl.DrawLineV(player_screen_pos, player_screen_pos + dir * 24.0, rl.LIME)
     }
 
-    // --- Draw Projectiles ---
+    // --- Draw Projectiles (With Bullet-Time Wakes) ---
     for i in 0 ..< g.projectile_count {
         p := &g.projectiles[i]
+        if g.player.is_slowmo && p.is_enemy && g.player.slowmo_factor > 0.08 {
+            v_len := linalg.length(p.vel)
+            if v_len > 1.0 {
+                v_dir := p.vel / v_len
+                trail_len := 16.0 * g.player.slowmo_factor
+                wake_col := rl.Color{0, 255, 160, u8(clamp(g.player.slowmo_factor * 160.0, 0, 200))}
+                rl.DrawLineV(p.pos + g.camera_offset, p.pos + g.camera_offset - v_dir * trail_len, wake_col)
+                rl.DrawCircleLinesV(p.pos + g.camera_offset, p.radius + 3.0 * g.player.slowmo_factor, wake_col)
+            }
+        }
         rl.DrawCircleV(p.pos + g.camera_offset, p.radius, p.color)
     }
 
@@ -890,22 +980,40 @@ game_render :: proc(g: ^Game) {
     boss_info := fmt.ctprintf("BOSS: %s (HP: %.0f / %.0f)", g.boss.phase_name, g.boss.hp, g.boss.max_hp)
     rl.DrawText(boss_info, i32(boss_bar_x) + 10, i32(boss_bar_y) + 4, 16, rl.BLACK)
 
-    // 2. Player HP & Dash UI (Bottom Left)
-    player_bar_w: f32 = 220.0
-    player_bar_h: f32 = 18.0
+    // 2. Player HP, Slowmo Recovery & Dash UI (Bottom Left)
+    player_bar_w: f32 = 240.0
+    player_bar_h: f32 = 16.0
     player_bar_x: f32 = 30.0
-    player_bar_y := f32(SCREEN_HEIGHT) - 50.0
+    base_y := f32(SCREEN_HEIGHT) - 78.0
 
-    rl.DrawRectangle(i32(player_bar_x), i32(player_bar_y), i32(player_bar_w), i32(player_bar_h), {40, 40, 50, 255})
+    // (a) Matrix Slowmo Recovery Bar
+    slowmo_y := base_y
+    rl.DrawRectangle(i32(player_bar_x) - 2, i32(slowmo_y) - 2, i32(player_bar_w) + 4, i32(player_bar_h) + 4, {10, 20, 15, 200})
+    rl.DrawRectangle(i32(player_bar_x), i32(slowmo_y), i32(player_bar_w), i32(player_bar_h), {25, 40, 30, 255})
+    curr_slowmo_w := (g.player.slowmo_charge / g.player.slowmo_max) * player_bar_w
+    slowmo_bar_col := g.player.is_slowmo ? rl.Color{0, 255, 140, 255} : rl.Color{0, 200, 100, 255}
+    rl.DrawRectangle(i32(player_bar_x), i32(slowmo_y), i32(curr_slowmo_w), i32(player_bar_h), slowmo_bar_col)
+    border_col := g.player.is_slowmo ? rl.WHITE : rl.Color{0, 220, 120, 255}
+    rl.DrawRectangleLines(i32(player_bar_x), i32(slowmo_y), i32(player_bar_w), i32(player_bar_h), border_col)
+
+    speed_pct := (1.0 - (1.0 - 0.15) * g.player.slowmo_factor) * 100.0
+    slowmo_label := fmt.ctprintf("SLOWMO: %.0f%% (WORLD: %.0f%%)", g.player.slowmo_charge, speed_pct)
+    rl.DrawText(slowmo_label, i32(player_bar_x) + 6, i32(slowmo_y) + 2, 12, rl.BLACK)
+
+    // (b) Player HP Bar
+    hp_y := base_y + 22.0
+    rl.DrawRectangle(i32(player_bar_x) - 2, i32(hp_y) - 2, i32(player_bar_w) + 4, i32(player_bar_h) + 4, {15, 15, 20, 200})
+    rl.DrawRectangle(i32(player_bar_x), i32(hp_y), i32(player_bar_w), i32(player_bar_h), {40, 40, 50, 255})
     curr_hp_w := (g.player.hp / g.player.max_hp) * player_bar_w
-    rl.DrawRectangle(i32(player_bar_x), i32(player_bar_y), i32(curr_hp_w), i32(player_bar_h), rl.GREEN)
-    rl.DrawRectangleLines(i32(player_bar_x), i32(player_bar_y), i32(player_bar_w), i32(player_bar_h), rl.WHITE)
-    rl.DrawText(fmt.ctprintf("HP: %.0f/%.0f", g.player.hp, g.player.max_hp), i32(player_bar_x) + 6, i32(player_bar_y) + 2, 14, rl.BLACK)
+    rl.DrawRectangle(i32(player_bar_x), i32(hp_y), i32(curr_hp_w), i32(player_bar_h), rl.GREEN)
+    rl.DrawRectangleLines(i32(player_bar_x), i32(hp_y), i32(player_bar_w), i32(player_bar_h), rl.WHITE)
+    rl.DrawText(fmt.ctprintf("HP: %.0f/%.0f", g.player.hp, g.player.max_hp), i32(player_bar_x) + 6, i32(hp_y) + 2, 12, rl.BLACK)
 
-    // Dash indicator
-    dash_text := g.player.can_dash ? "DASH: READY [SPACE / RMB]" : "DASH: RECHARGING..."
+    // (c) Dash indicator & Status
+    dash_text := g.player.can_dash ? "DASH: READY [SPACE]" : "DASH: RECHARGING..."
     dash_color := g.player.can_dash ? rl.SKYBLUE : rl.GRAY
-    rl.DrawText(fmt.ctprintf(dash_text), i32(player_bar_x), i32(player_bar_y) - 24, 16, dash_color)
+    rl.DrawText(fmt.ctprintf(dash_text), i32(player_bar_x), i32(base_y) - 20, 15, dash_color)
+    rl.DrawText("SLOWMO: [HOLD RMB]", i32(player_bar_x) + 155, i32(base_y) - 20, 13, g.player.is_slowmo ? rl.LIME : rl.DARKGREEN)
 
     // 3. Engine Diagnostics (Top Right)
     active_fibers := 0
@@ -918,6 +1026,7 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("Active Fibers (Coroutines): %d", active_fibers), SCREEN_WIDTH - 280, diag_y, 16, rl.YELLOW); diag_y += 22
     rl.DrawText(fmt.ctprintf("Boss Stun Signal: [B / X: EMP]"), SCREEN_WIDTH - 280, diag_y, 16, g.boss.color == rl.DARKGRAY ? rl.GRAY : rl.ORANGE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Timer Min-Heap: %d items", len(g.sched.clocks[coroutine.CLOCK_SIM].timer_heap)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
+    rl.DrawText(fmt.ctprintf("World Speed: %.0f%%", speed_pct), SCREEN_WIDTH - 280, diag_y, 16, g.player.is_slowmo ? rl.LIME : rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
@@ -929,7 +1038,7 @@ game_render :: proc(g: ^Game) {
         rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 900, 24, flash_col)
         rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
     } else {
-        rl.DrawText("WASD: Move | LMB/J: Shoot | Space/RMB: Dash | E/B: EMP | H/Tab: Hierarchy | P: Pause | R: Restart", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+        rl.DrawText("WASD: Move | LMB/J: Shoot | Space: Dash | RMB: Matrix Slowmo | E/B: EMP | H/Tab: Hierarchy | P: Pause | R: Restart", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
     }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (H / TAB / F1) ---

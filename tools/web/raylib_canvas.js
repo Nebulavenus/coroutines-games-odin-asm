@@ -65,7 +65,7 @@ export function createRaylibWeb(canvas, memoryGetter) {
         });
 
         canvas.addEventListener('mousedown', (e) => {
-            const btn = e.button; // 0: Left, 1: Middle, 2: Right
+            const btn = e.button === 2 ? 1 : (e.button === 1 ? 2 : e.button); // DOM: 0=Left, 1=Middle, 2=Right -> Raylib: 0=Left, 1=Right, 2=Middle
             if (!mouseDown.has(btn)) {
                 mousePressed.add(btn);
             }
@@ -73,7 +73,7 @@ export function createRaylibWeb(canvas, memoryGetter) {
         });
 
         window.addEventListener('mouseup', (e) => {
-            const btn = e.button;
+            const btn = e.button === 2 ? 1 : (e.button === 1 ? 2 : e.button);
             mouseDown.delete(btn);
         });
 

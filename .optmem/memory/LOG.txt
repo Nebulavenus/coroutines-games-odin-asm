@@ -108,3 +108,7 @@
 #107 2026-10-17 Restored 20 core tests to coroutine_test.odin (128 total) adapted to Clock_Domain API and 44 sync tests to sync/sync_test.odin (49 total); 177 tests pass with 0 leaks.
 #108 2026-10-17 Documentation audit complete: updated ARCHITECTURE, REPORTS, DISTRIBUTION, tutorials, guides, and wasm docs to minimal Verse/Skookum core; verified 177 tests passing (128 core, 49 sync), check-all (7 targets), and test-wasm.
 #109 2026-10-17 Tutorial code audit complete: verified all runnable tutorial code blocks compile cleanly with odin check; fixed fmt.Printf casing and sync qualifiers in Footguns 5-7; verified 49 markdown files with zero broken links.
+#110 2026-10-17 Added Matrix slow-mo on RMB to game demo with recovery bar, non-linear curve (15% min world speed at full bar), player agility boost, ghost trails, and Spacebar dash.
+#111 2026-10-17 Reorganized README.md to prioritize approachable Verse/SkookumScript concurrency examples (sync, race, rush, fallback, timeouts, signals) before low-level systems hardware specs.
+#112 2026-10-17 Replaced ASCII diagrams in README.md with native GitHub Mermaid flowcharts (for concurrency combinators and multi-domain clocks) and a formatted GFM demo table.
+#113 2026-10-17 Pruned 9 redundant planning docs and duplicate ASM drafts (PLAN.md-PLAN7.md, ASM_2.md, inline_asm_analysis.md); verified 40 canonical markdown docs with 0 broken links.
