@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 177-test coverage (128 core + 49 sync) for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 182-test coverage (133 core + 49 sync) plus 16 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -32,13 +32,13 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (177 Tests Passing)
+## 2. Test Suite Execution Results (182 Native Tests + 16 WebAssembly Tests)
 
-All **177 unit tests** execute cleanly via `build.ps1 test`:
+All **182 native unit tests** execute cleanly via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 128 tests in ~330ms. All tests were successful.
+Finished 133 tests in ~290ms. All tests were successful.
 
 Testing coroutine/sync package ()...
 Finished 49 tests in ~16ms. All tests were successful.
@@ -46,7 +46,9 @@ Finished 49 tests in ~16ms. All tests were successful.
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-### Complete 177-Test Catalog across 18 Test Suites:
+And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
+
+### Complete 182-Test Catalog across 18 Test Suites:
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -68,12 +70,12 @@ Finished 49 tests in ~16ms. All tests were successful.
 #### Suite 4: Structured Concurrency Combinators (Tests 12–22)
 12. `test_structured_sync`: Parallel branch join; parent resumes on all completions.
 13. `test_sync_failure_propagation`: Explicit failure detection returning `false`.
-14. `test_structured_race`: First-to-finish preemption and sibling abortion.
+14. `test_structured_race`: First-to-succeed preemption and sibling abortion.
 15. `test_race_all_simultaneous_finish`: Deterministic tie-breaking on simultaneous completions.
 16. `test_race_loser_with_children_aborts_all_descendants`: Bottom-up pruning of loser subtrees.
 17. `test_nested_race_with_sync_branch`: Nested `race` containing `sync` sub-branches.
 18. `test_deep_nested_hierarchy_sync_race_sync`: 4-tier hierarchy combining `sync`, `race`, and sub-tasks.
-19. `test_rush_first_success`: First successful branch wins while ignoring earlier failures.
+19. `test_rush_first_success`: First successful branch wins while ignoring earlier failures and allowing losers to run in background.
 20. `test_fallback_priority_cascade`: Sequential fallback execution stopping on first success.
 21. `test_with_timeout_completion`: Task finishing before deadline.
 22. `test_with_timeout_expired`: Task aborting on expired deadline.
@@ -174,6 +176,15 @@ Finished 49 tests in ~16ms. All tests were successful.
 160. `test_defensive_semaphore_non_positive`: Defensive non-positive count guards in `semaphore_release` (`coroutine/sync`).
 161. `test_simulation_loop_while_paused`: Step execution safety when scheduler simulation clock is paused.
 
+#### Suite 18: Pure Verse Concurrency Primitives (Tests 162–168)
+162. `test_verse_rush_losers_continue`: Validates `rush` partial join where loser branches are detached and continue in background.
+163. `test_verse_rush_failure_recovery_and_parent_rejoin`: Validates failure drop-out in `rush` and subsequent join coordination.
+164. `test_branch_scoped_background_and_parent_abort`: Validates `branch_scoped` parent-bound fire-and-forget tasks and automatic bottom-up pruning.
+165. `test_sticky_event_and_sticky_signal`: Validates latched `Sticky_Event(T)` / `Sticky_Signal` milestone synchronization.
+166. `test_yield_now_same_tick_interleave`: Validates in-frame cooperative `yield_now` timeslice sharing without tick boundary advancement.
+167. `test_race_preemption_ignoring_failures`: Validates `race` ignoring failed branches and completing with the first successful arm.
+168. `test_race_5_branches_and_all_failing`: Validates `race` failure handling returning `-1` when all arms fail.
+
 ---
 
 ## 3. Performance Benchmark Suite Results (`.\build.ps1 run-bench`)
@@ -214,15 +225,15 @@ All 12 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
-| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (188/188 tests, 0 leaks) |
+| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
+| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (182/182 tests, 0 leaks) |
 | `boss_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `bench_binary` | `-o:speed` | `native` | Headless Benchmark App | **PASS** (Zero Leaks) |

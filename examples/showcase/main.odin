@@ -44,6 +44,7 @@ Ritual_Station :: struct {
     is_active:    bool,
     completed:    bool,
     result_alpha: f32,
+    swirl_angle:  f32,
     scope:        coroutine.Fiber_Scope,
 }
 
@@ -79,7 +80,7 @@ Charger_Station :: struct {
     scope:     coroutine.Fiber_Scope,
 }
 
-// --- Station 4: The Alert Beacon (Signal) ---
+// --- Station 4: The Alert Beacon (Signal & Sticky_Signal) ---
 Sentry :: struct {
     pos:         rl.Vector2,
     home_pos:    rl.Vector2,
@@ -89,13 +90,14 @@ Sentry :: struct {
 }
 
 Beacon_Station :: struct {
-    pos:          rl.Vector2,
-    alarm_signal: coroutine.Signal,
-    sentries:     [6]Sentry,
-    is_flashing:  bool,
-    flash_alpha:  f32,
-    is_lockdown:  bool,
-    scope:        coroutine.Fiber_Scope,
+    pos:             rl.Vector2,
+    alarm_signal:    coroutine.Signal,
+    lockdown_signal: coroutine.Sticky_Signal,
+    sentries:        [6]Sentry,
+    is_flashing:     bool,
+    flash_alpha:     f32,
+    is_lockdown:     bool,
+    scope:           coroutine.Fiber_Scope,
 }
 
 // --- Station 5: The Loot Forge (Pull Sequence) ---
@@ -284,7 +286,16 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
     s.result_alpha = 0.0
 
     // Broadcast Event(T)
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Started", "3 Runes charging in parallel (sync)", rl.SKYBLUE})
+    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Started", "3 Runes charging in parallel (sync + branch_scoped)", rl.SKYBLUE})
+
+    // Launch parent-bound ambient swirl FX with Verse branch_scoped:
+    // Runs concurrently in background; automatically cancelled and reaped when f completes!
+    coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, s: ^Ritual_Station) {
+        for {
+            coroutine.yield_frame(child)
+            s.swirl_angle += coroutine.delta_time(child) * 4.0
+        }
+    }, s, "Ritual Swirl FX (branch_scoped)")
 
     // Parallel join of 3 runes using structured sync
     coroutine.sync(f,
@@ -878,12 +889,14 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
             }
 
             sync.chan_try_send(&w.station_channel.user_channel, "LOCKDOWN: Cancelled sentries via Structured Scope")
-            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"EMERGENCY LOCKDOWN", "Cancelled sentry patrols via Fiber_Scope!", rl.RED})
+            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"EMERGENCY LOCKDOWN", "Latched via Sticky_Signal & Scope!", rl.RED})
+            coroutine.sticky_signal_emit(&w.sched, &w.station_beacon.lockdown_signal)
 
             // 2. Spawn temporary lockdown recovery fiber
             coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, b: ^Beacon_Station) {
                 coroutine.wait(f, 4.0) // 4-second lockdown
                 b.is_lockdown = false
+                coroutine.sticky_signal_reset(&b.lockdown_signal)
                 for i in 0 ..< 6 {
                     b.sentries[i].color = rl.ORANGE
                     b.sentries[i].is_alerted = false
@@ -892,7 +905,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
                     coroutine.spawn(f.sched, sentry_watch_fiber, &b.sentries[i], scope = &b.scope, name = fmt.tprintf("Sentry #%d", i + 1))
                 }
                 g_world.toast_title = "LOCKDOWN ENDED"
-                g_world.toast_desc = "Sentries resumed perimeter watch"
+                g_world.toast_desc = "Sticky_Signal reset; sentries resumed watch"
                 g_world.toast_color = rl.GREEN
                 g_world.toast_timer = 2.5
             }, &w.station_beacon)
@@ -951,10 +964,19 @@ showcase_render :: proc(w: ^Showcase_World) {
     header_stats := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Mem: %d KB | Defense Sem: %d", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb, sync.semaphore_available_permits(&w.station_defense.sem))
     rl.DrawText(header_stats, 25, 38, 12, rl.SKYBLUE)
 
-    // --- Station 1: Ritual Circle (sync) ---
+    // --- Station 1: Ritual Circle (sync & branch_scoped) ---
     rl.DrawCircleLines(i32(w.station_ritual.pos.x), i32(w.station_ritual.pos.y), 65.0, rl.SKYBLUE)
     rl.DrawText("1. RITUAL CIRCLE", i32(w.station_ritual.pos.x) - 55, i32(w.station_ritual.pos.y) - 85, 13, rl.SKYBLUE)
-    rl.DrawText("[sync: 3 Runes]", i32(w.station_ritual.pos.x) - 45, i32(w.station_ritual.pos.y) - 72, 11, rl.GRAY)
+    rl.DrawText("[sync & branch_scoped]", i32(w.station_ritual.pos.x) - 62, i32(w.station_ritual.pos.y) - 72, 11, rl.GRAY)
+
+    if w.station_ritual.is_active {
+        for i in 0 ..< 4 {
+            ang := w.station_ritual.swirl_angle + f32(i) * (math.TAU / 4.0)
+            p := w.station_ritual.pos + {math.cos(ang), math.sin(ang)} * 45.0
+            rl.DrawCircleV(p, 3.5, rl.SKYBLUE)
+        }
+        rl.DrawText("[scoped aura active]", i32(w.station_ritual.pos.x) - 52, i32(w.station_ritual.pos.y) + 72, 10, rl.LIME)
+    }
 
     for r in w.station_ritual.runes {
         rl.DrawCircleV(r.pos, 11.0, r.active ? r.color : rl.DARKGRAY)
@@ -985,13 +1007,13 @@ showcase_render :: proc(w: ^Showcase_World) {
         }
     }
 
-    // --- Station 4: Alert Beacon (Signal & Category Tag) ---
+    // --- Station 4: Alert Beacon (Signal & Sticky_Signal) ---
     is_locked_down := w.station_beacon.is_lockdown
     beacon_color := is_locked_down ? rl.RED : rl.ORANGE
     rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 28.0, beacon_color)
     rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 52, i32(w.station_beacon.pos.y) - 60, 13, beacon_color)
-    subtext := is_locked_down ? "[LOCKDOWN: 4s Stun Active]" : "[Signal & Category Tag: K]"
-    rl.DrawText(fmt.ctprintf(subtext), i32(w.station_beacon.pos.x) - 65, i32(w.station_beacon.pos.y) - 48, 10, is_locked_down ? rl.RED : rl.GRAY)
+    subtext := is_locked_down ? "[LOCKDOWN: Sticky_Signal Latched]" : "[Signal & Sticky_Signal: K]"
+    rl.DrawText(fmt.ctprintf(subtext), i32(w.station_beacon.pos.x) - 75, i32(w.station_beacon.pos.y) - 48, 10, is_locked_down ? rl.RED : rl.GRAY)
 
     if is_locked_down {
         pulse_r := 65.0 + 8.0 * math.sin(w.global_time * 8.0)
@@ -1164,9 +1186,9 @@ showcase_render :: proc(w: ^Showcase_World) {
             case .Suspended_Join:
                 kind := "Sync"
                 switch f.active_coord.kind {
-                case .Sync:     kind = "Sync"
-                case .Race:     kind = "Race"
-                case .Rush:     kind = "Rush"
+                case .Sync: kind = "Sync"
+                case .Race: kind = "Race"
+                case .Rush: kind = "Rush"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

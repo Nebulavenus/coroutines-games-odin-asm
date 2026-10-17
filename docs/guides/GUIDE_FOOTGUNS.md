@@ -304,10 +304,11 @@ boss_spawn_minions :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 
 ### How the Engine Mitigates It
 1. **Structured Concurrency (`sync`, `race`, `rush`, `fallback`)**: The parent fiber owns all branch children. If the parent or a sibling aborts, the entire branch tree is automatically cancelled and recycled bottom-up.
-2. **Entity Scopes (`Fiber_Scope` & `scope_wait`)**: For dynamic clusters attached to an entity, pass `scope = &boss.scope`. Calling `scope_destroy` guarantees every child is terminated.
+2. **Scope-Bound Fire-and-Forget (`branch_scoped`)**: If you need to launch a concurrent background task without suspending the parent, use `branch_scoped(f, ...)` instead of `spawn(...)`. Scoped branches are automatically bound to the parent's lifetime and aborted if the parent finishes or aborts.
+3. **Entity Scopes (`Fiber_Scope` & `scope_wait`)**: For dynamic clusters attached to an entity, pass `scope = &boss.scope`. Calling `scope_cancel` guarantees every child is terminated.
 
 ### The Rule
-> **Prefer Structured Concurrency (`sync`/`race`) for hierarchical workflows, and `Fiber_Scope` (`scope_wait`) for entity lifecycle clusters. Never leave detached background handles unowned.**
+> **Prefer Structured Concurrency (`sync`/`race`/`rush`), `branch_scoped` for parent-bound background tasks, and `Fiber_Scope` (`scope_wait`) for entity lifecycle clusters. Never leave detached background handles unowned.**
 
 ---
 
@@ -401,6 +402,33 @@ Because all fibers share the single shadow stack, when `boss_ai` sleeps or yield
 
 ---
 
+## Footgun 14: Accidental In-Frame Busy Spin with `yield_now` vs Frame-Boundary `yield`
+
+### The Trap
+Using `yield_now` inside a game state polling loop:
+
+```odin
+// DANGEROUS: Busy-spins within the current frame!
+for !enemy.is_dead {
+    coroutine.yield_now(f)
+}
+```
+
+### What Happens
+`coroutine.yield_now(f)` (like Epic Verse `Sleep(0.0)`) cooperatively relinquishes the CPU timeslice to other ready fibers in the **current** frame and re-enqueues itself into `sched.ready_queue` immediately.
+
+If `enemy.is_dead` is only updated by an animation event, physics step, or combat damage in a **future** simulation tick, `yield_now(f)` will continuously re-enqueue and re-execute in the same frame without letting time advance. If other fibers also yield or complete, this fiber repeatedly spins within the current frame's `scheduler_run` loop, creating an accidental in-frame busy-spin!
+
+### The Solution
+1. **Computational Slicing**: Use `yield_now(f)` exclusively for distributing heavy computational workloads (e.g., A* pathfinding node slicing, procedural generation batches, raymarching iterations) across fibers in the current frame without causing frame hitching.
+2. **Game State Polling**: Use `coroutine.yield(f)` (or `coroutine.wait(f, 0.0)`) when waiting for game state, physics, or entity health that updates across frame boundaries. `yield(f)` enqueues the fiber into the clock domain's `step_waiters` targeting the next tick ($t + 1$).
+3. **Event-Driven Signaling**: Better yet, replace polling loops entirely with zero-polling events: `coroutine.signal_wait(f, &enemy.death_signal)`.
+
+### The Rule
+> **Use `yield_now(f)` only to distribute heavy CPU computation across fibers in the current tick. Use `yield(f)` or `wait(f, dt)` when waiting for gameplay state that changes across frame boundaries.**
+
+---
+
 ## Summary: The Gameplay Programmer's Golden Rules Cheat Sheet
 
 ```text
@@ -419,5 +447,6 @@ Because all fibers share the single shadow stack, when `boss_ai` sleeps or yield
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
 │ 12. Never #force_inline yield points: Call boundaries preserve registers.   │
+│ 13. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

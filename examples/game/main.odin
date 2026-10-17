@@ -1101,9 +1101,9 @@ game_render :: proc(g: ^Game) {
             case .Suspended_Join:
                 kind := "Sync"
                 switch f.active_coord.kind {
-                case .Sync:     kind = "Sync"
-                case .Race:     kind = "Race"
-                case .Rush:     kind = "Rush"
+                case .Sync: kind = "Sync"
+                case .Race: kind = "Race"
+                case .Rush: kind = "Rush"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

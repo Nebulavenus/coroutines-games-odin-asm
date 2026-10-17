@@ -98,7 +98,7 @@ test_boss_phase_transition_simulation :: proc(t: ^testing.T) {
 To run these tests locally, in CI pipelines, or under cross-architecture QEMU emulation:
 
 ```powershell
-# Run all 177 unit tests on native host (128 core + 49 sync)
+# Run all 182 unit tests on native host (133 core + 49 sync)
 .\build.ps1 test
 
 # Cross-check all 7 multi-ISA & Wasm targets
@@ -108,7 +108,7 @@ To run these tests locally, in CI pipelines, or under cross-architecture QEMU em
 .\run_wsl_qemu.ps1 test
 ```
 
-Because simulation does not require window creation or GPU contexts, all 177 unit tests execute in under 350 milliseconds on native host.
+Because simulation does not require window creation or GPU contexts, all 182 unit tests execute in under 350 milliseconds on native host.
 
 ---
 

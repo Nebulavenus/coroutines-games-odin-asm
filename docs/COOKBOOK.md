@@ -251,6 +251,27 @@ enemy_decision_loop :: proc(f: ^coroutine.Fiber, e: ^Enemy_AI) {
         coroutine.wait(f, 0.5)
     }
 }
+
+// Opportunistic scouting with rush:
+// Parent resumes as soon as ANY scout succeeds, but other scouts
+// continue surveying the map concurrently in the background!
+scouting_mission :: proc(f: ^coroutine.Fiber) {
+    coroutine.rush(f,
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 0.4)
+            coroutine.fail(f) // Dead end: drops out harmlessly
+        }),
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 0.8)
+            // Primary objective located! Unblocks parent immediately.
+        }),
+        coroutine.branch(proc(f: ^coroutine.Fiber) {
+            coroutine.wait(f, 2.0)
+            // Secondary objective mapped in background (not cancelled by rush!)
+        }),
+    )
+    // Parent continues gameplay immediately at 0.8s!
+}
 ```
 
 ---
@@ -568,6 +589,15 @@ wildlife_ambient_fiber :: proc(f: ^coroutine.Fiber, sig: ^coroutine.Signal) {
 session_end_stage :: proc(session: ^Game_Session) {
     // Unblocks all signal listeners instantly in one tick:
     coroutine.signal_emit(&session.sched, &session.stage_clear_signal)
+}
+
+// Latched Milestone Transitions (Sticky_Signal / Sticky_Event(T)):
+// If an event can occur before late-joining fibers begin awaiting (e.g. game phase switches,
+// asset loading milestones), standard broadcast events drop the unawaited signal.
+// Sticky_Signal / Sticky_Event(T) caches the signal state so late joiners unblock immediately:
+late_joining_hud_fiber :: proc(f: ^coroutine.Fiber, ready_sig: ^coroutine.Sticky_Signal) {
+    coroutine.sticky_signal_wait(f, ready_sig) // Resumes immediately if already signaled!
+    fmt.println("[HUD] Initialized after game ready milestone.")
 }
 ```
 

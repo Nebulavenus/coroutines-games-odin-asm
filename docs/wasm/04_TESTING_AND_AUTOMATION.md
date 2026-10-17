@@ -1,12 +1,12 @@
 # WebAssembly Testing & CI Automation
 
-This document catalogs the 12 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
+This document catalogs the 16 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
 
 ---
 
 ## 1. Automated Test Suite Catalog (`examples/wasm_test/main.odin`)
 
-The WebAssembly test runner validates every core engine primitive across 12 automated suites under `.\build.ps1 test-wasm`:
+The WebAssembly test runner validates every core engine primitive across 16 automated suites under `.\build.ps1 test-wasm`:
 
 | Suite # | Test Name | Target Subsystem | Key Verification |
 | :--- | :--- | :--- | :--- |
@@ -22,6 +22,10 @@ The WebAssembly test runner validates every core engine primitive across 12 auto
 | **Test 10** | **Nested Combinator Aborts** | `race` canceling `sync` | A fast racing timer aborts an active nested `sync` containing multiple child attack loops. |
 | **Test 11** | **Ticker Zero-Drift Precision** | `Ticker`, `wait_ticker` | Steps 5 discrete frames @ 0.02s; asserts exactly 5 discrete ticks with zero timing drift. |
 | **Test 12** | **Multi-Round EMP Stun Fuzzing** | Signals, Timers & Heap | Simulates 300 frames of rapid, randomized EMP signal stuns with 0 leaked fibers or heap nodes. |
+| **Test 13** | **Verse `rush()` Combinator** | `rush_combinator` | First branch to succeed unblocks parent; losing arms continue executing in background. |
+| **Test 14** | **Verse `branch_scoped()`** | `branch_scoped` | Spawns parent-bound fire-and-forget subtask; automatically aborted when parent exits. |
+| **Test 15** | **Latched State (`Sticky_Event`)** | `Sticky_Event`, `Sticky_Signal` | Emits before await; late-joining fiber receives cached state immediately in $O(1)$. |
+| **Test 16** | **In-Frame Timeslice (`yield_now`)** | `yield_now` | Multiple fibers interleave cooperative timeslices in the same frame without advancing clock. |
 
 ---
 
@@ -59,13 +63,13 @@ Runs the complete Boss Battle game engine for **1000 frames** (16.7 seconds @ 60
 ## 3. Running Automated Tests
 
 ```powershell
-# Run the complete 12-suite Wasm test runner:
+# Run the complete 16-suite Wasm test runner:
 .\build.ps1 test-wasm
 
 # Run the 1000-frame headless game simulation test:
 .\build.ps1 test-web-game
 
-# Verify native unit tests (189 tests across all architectures):
+# Verify native unit tests (182 tests across all architectures):
 .\build.ps1 test
 ```
 
@@ -89,8 +93,12 @@ Post-processing with Binaryen Asyncify...
   [Test 10] Nested race() Cancels Nested sync() with Child Tickers... OK
   [Test 11] Ticker Precision, Zero-Drift & Safe Scope Abort... OK
   [Test 12] Multi-Round EMP Stun AI Fuzzing & Memory Invariants... OK
+  [Test 13] Verse rush(): Losers Continue in Background... OK
+  [Test 14] Verse branch_scoped(): Parent-Bound Lifecycle... OK
+  [Test 15] Latched State: Sticky_Event & Sticky_Signal... OK
+  [Test 16] In-Frame Timeslice: yield_now() Same-Tick Interleave... OK
 
 =================================================================================
-ALL 12 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
+ALL 16 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
 =================================================================================
 ```

@@ -1684,7 +1684,7 @@ test_fallback_control_flow :: proc(t: ^testing.T) {
 // ============================================================================
 
 @(test)
-test_rush_success_preemption :: proc(t: ^testing.T) {
+test_race_preemption_ignoring_failures :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
@@ -1692,7 +1692,7 @@ test_rush_success_preemption :: proc(t: ^testing.T) {
     winning_branch: int = -99
 
     spawn(&sched, proc(f: ^Fiber, win: ^int) {
-        winner := rush(f,
+        winner := race(f,
             branch(proc(f: ^Fiber) {
                 // Branch 0: Fails quickly at 0.02s (failure is ignored!)
                 wait(f, 0.02)
@@ -1807,7 +1807,7 @@ test_fallback_all_failing_and_by_value :: proc(t: ^testing.T) {
 // ============================================================================
 
 @(test)
-test_rush_5_branches_and_all_failing :: proc(t: ^testing.T) {
+test_race_5_branches_and_all_failing :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
@@ -1817,7 +1817,7 @@ test_rush_5_branches_and_all_failing :: proc(t: ^testing.T) {
 
     // 5 branches: 0, 1 fail early; 2 takes long; 3 finishes successfully first; 4 takes longest
     spawn(&sched, proc(f: ^Fiber, win: ^int) {
-        w := rush(f,
+        w := race(f,
             branch(proc(f: ^Fiber) { wait(f, 0.02); fail(f) }, "Branch 0 (Fails)"),
             branch(proc(f: ^Fiber) { wait(f, 0.03); fail(f) }, "Branch 1 (Fails)"),
             branch(proc(f: ^Fiber) { wait(f, 0.25) }, "Branch 2 (Long)"),
@@ -1829,7 +1829,7 @@ test_rush_5_branches_and_all_failing :: proc(t: ^testing.T) {
 
     // All branches fail -> returns -1
     spawn(&sched, proc(f: ^Fiber, win: ^int) {
-        w := rush(f,
+        w := race(f,
             branch(proc(f: ^Fiber) { wait(f, 0.01); fail(f) }),
             branch(proc(f: ^Fiber) { wait(f, 0.02); fail(f) }),
             branch(proc(f: ^Fiber) { wait(f, 0.03); fail(f) }),
@@ -1861,14 +1861,14 @@ test_nested_concurrency_combinators :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, out_ok: ^bool) {
         // Sync outer join
         res := sync(f,
-            // Branch 0: Nested Rush
+            // Branch 0: Nested Race
             branch(proc(f: ^Fiber) {
-                winner := rush(f,
+                winner := race(f,
                     branch(proc(f: ^Fiber) { wait(f, 0.01); fail(f) }),
                     branch(proc(f: ^Fiber) { wait(f, 0.04) }),
                 )
                 if winner != 1 do fail(f)
-            }, "Nested Rush"),
+            }, "Nested Race"),
 
             // Branch 1: Nested Fallback
             branch(proc(f: ^Fiber) {
@@ -4929,10 +4929,10 @@ run_all_coroutine_tests :: proc(t: ^testing.T) {
     test_fiber_time_accessors(t)
     test_scope_wait(t)
     test_fallback_control_flow(t)
-    test_rush_success_preemption(t)
+    test_race_preemption_ignoring_failures(t)
     test_fail_primitive(t)
     test_fallback_all_failing_and_by_value(t)
-    test_rush_5_branches_and_all_failing(t)
+    test_race_5_branches_and_all_failing(t)
     test_nested_concurrency_combinators(t)
     test_fiber_join_normal_completion(t)
     test_fiber_join_cancelled_target(t)
@@ -5017,6 +5017,11 @@ run_all_coroutine_tests :: proc(t: ^testing.T) {
     test_fiber_owned_ticker_zero_drift_and_rebase(t)
     test_scheduler_reinit_no_memory_leak(t)
     test_api_qol_fiber_overloads_and_nested_cleanup_chaining(t)
+    test_verse_rush_losers_continue(t)
+    test_verse_rush_failure_recovery_and_parent_rejoin(t)
+    test_branch_scoped_background_and_parent_abort(t)
+    test_sticky_event_and_sticky_signal(t)
+    test_yield_now_same_tick_interleave(t)
 }
 
 // ============================================================================
@@ -5971,4 +5976,301 @@ test_api_qol_fiber_overloads_and_nested_cleanup_chaining :: proc(t: ^testing.T) 
     testing.expect_value(t, qctx.ev_received, 777)
     testing.expect_value(t, fiber_is_alive(&sched, qctx.target_h), false)
     testing.expect_value(t, scope_active_count(&qctx.child_scope), 0)
+}
+
+// ============================================================================
+// Verse Concurrency Semantics & Latched State Tests
+// ============================================================================
+
+@(test)
+test_verse_rush_losers_continue :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Rush_Test_Ctx :: struct {
+        winner:       int,
+        branch0_done: bool,
+        branch1_done: bool,
+        branch2_done: bool,
+    }
+    ctx: Rush_Test_Ctx
+    ctx.winner = -1
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Rush_Test_Ctx) {
+        // Verse rush: first branch to finish wakes parent, losers continue in background!
+        w := rush(f,
+            branch(proc(f: ^Fiber, c: ^Rush_Test_Ctx) {
+                wait(f, 0.02)
+                c.branch0_done = true
+            }, c, "Branch 0 (Fastest)"),
+            branch(proc(f: ^Fiber, c: ^Rush_Test_Ctx) {
+                wait(f, 0.05)
+                c.branch1_done = true
+            }, c, "Branch 1 (Medium)"),
+            branch(proc(f: ^Fiber, c: ^Rush_Test_Ctx) {
+                wait(f, 0.08)
+                c.branch2_done = true
+            }, c, "Branch 2 (Slowest)"),
+        )
+        c.winner = w
+
+        // Parent was woken at 0.02s! Now parent waits until 0.10s to give losers time to complete
+        wait(f, 0.08)
+    }, &ctx)
+
+    // Prime root fiber at t=0.0 so rush branches start at t=0.0
+    scheduler_step(&sched, 0.0)
+
+    // Step 0.02s: Branch 0 completes, rush wakes parent
+    scheduler_step(&sched, 0.025)
+    testing.expect_value(t, ctx.winner, 0)
+    testing.expect_value(t, ctx.branch0_done, true)
+    testing.expect_value(t, ctx.branch1_done, false)
+    testing.expect_value(t, ctx.branch2_done, false)
+
+    // Advance past 0.05s: Branch 1 should complete in background without being cancelled
+    scheduler_step(&sched, 0.035)
+    testing.expect_value(t, ctx.branch1_done, true)
+    testing.expect_value(t, ctx.branch2_done, false)
+
+    // Advance past 0.08s: Branch 2 should complete in background
+    scheduler_step(&sched, 0.035)
+    testing.expect_value(t, ctx.branch2_done, true)
+}
+
+@(test)
+test_verse_rush_failure_recovery_and_parent_rejoin :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Rush_Adv_Ctx :: struct {
+        winner_rush: int,
+        sync_ok:     bool,
+        loser_done:  bool,
+    }
+    ctx: Rush_Adv_Ctx
+    ctx.winner_rush = -99
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Rush_Adv_Ctx) {
+        // 1. Rush where branch 0 fails early, branch 1 succeeds at 0.03s, branch 2 takes 0.10s
+        w := rush(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.01); fail(f) }, "Branch 0 (Fails)"),
+            branch(proc(f: ^Fiber) { wait(f, 0.03) }, "Branch 1 (Succeeds)"),
+            branch(proc(f: ^Fiber, c: ^Rush_Adv_Ctx) {
+                wait(f, 0.10)
+                c.loser_done = true
+            }, c, "Branch 2 (Loser Background)"),
+        )
+        c.winner_rush = w
+
+        // 2. Parent immediately enters a sync join while Branch 2 is still running in background!
+        s_ok := sync(f,
+            branch(proc(f: ^Fiber) { wait(f, 0.04) }, "Sync Child A"),
+            branch(proc(f: ^Fiber) { wait(f, 0.04) }, "Sync Child B"),
+        )
+        c.sync_ok = s_ok
+
+        // Wait a bit to ensure Branch 2 finishes in background
+        wait(f, 0.05)
+    }, &ctx)
+
+    // Prime at t=0.0
+    scheduler_step(&sched, 0.0)
+
+    // Step to 0.04s: Branch 0 failed, Branch 1 succeeded at 0.03s -> winner_rush must be 1!
+    scheduler_step(&sched, 0.04)
+    testing.expect_value(t, ctx.winner_rush, 1)
+    testing.expect_value(t, ctx.sync_ok, false)
+    testing.expect_value(t, ctx.loser_done, false)
+
+    // Step to 0.09s: Parent's sync (0.04s long) completes; Branch 2 (0.10s) still running
+    scheduler_step(&sched, 0.05)
+    testing.expect_value(t, ctx.sync_ok, true)
+    testing.expect_value(t, ctx.loser_done, false)
+
+    // Step to 0.15s: Branch 2 finishes in background without issues
+    scheduler_step(&sched, 0.06)
+    testing.expect_value(t, ctx.loser_done, true)
+}
+
+@(test)
+test_branch_scoped_background_and_parent_abort :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Scoped_Ctx :: struct {
+        child1_step1: bool,
+        child1_step2: bool,
+        child2_val:   int,
+        parent_done:  bool,
+    }
+    ctx: Scoped_Ctx
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Scoped_Ctx) {
+        // 1. Fire-and-forget child 1
+        branch_scoped(f, proc(child: ^Fiber, c: ^Scoped_Ctx) {
+            wait(child, 0.02)
+            c.child1_step1 = true
+            wait(child, 0.10) // Would complete at 0.12s, but parent exits at 0.05s!
+            c.child1_step2 = true
+        }, c, "Scoped Child 1")
+
+        // 2. Fire-and-forget child 2 (by value)
+        Payload :: struct {
+            val:  int,
+            dest: ^int,
+        }
+        branch_scoped(f, proc(child: ^Fiber, p: Payload) {
+            p.dest^ = p.val * 2
+        }, Payload{val = 21, dest = &c.child2_val}, "Scoped Child 2")
+
+        // Parent does NOT wait on children; parent does its own short work
+        wait(f, 0.05)
+        c.parent_done = true
+        // Parent exits here! Scoped Child 1 must be auto-aborted by fiber_cleanup_and_recycle!
+    }, &ctx)
+
+    // Prime root fiber at t=0.0: Child 2 runs immediately, Child 1 waits for 0.02s
+    scheduler_step(&sched, 0.0)
+    testing.expect_value(t, ctx.child2_val, 42)
+    testing.expect_value(t, ctx.child1_step1, false)
+
+    // Step to 0.03s: Child 1 step 1 finishes, parent still alive
+    scheduler_step(&sched, 0.03)
+    testing.expect_value(t, ctx.child1_step1, true)
+    testing.expect_value(t, ctx.parent_done, false)
+
+    // Step past 0.05s: Parent exits, aborting Child 1
+    scheduler_step(&sched, 0.03)
+    testing.expect_value(t, ctx.parent_done, true)
+    testing.expect_value(t, ctx.child1_step2, false)
+
+    // Step well past 0.12s to ensure Child 1 was truly aborted and does not run step 2
+    scheduler_step(&sched, 0.20)
+    testing.expect_value(t, ctx.child1_step2, false)
+}
+
+@(test)
+test_sticky_event_and_sticky_signal :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sig: Sticky_Signal
+    sticky_signal_init(&sig)
+    defer sticky_signal_destroy(&sig)
+
+    ev: Sticky_Event(int)
+    sticky_event_init(&ev)
+    defer sticky_event_destroy(&ev)
+
+    Test_Ctx :: struct {
+        sig:            ^Sticky_Signal,
+        ev:             ^Sticky_Event(int),
+        sig_early_woke: bool,
+        sig_late_woke:  bool,
+        ev_early_val:   int,
+        ev_late_val:    int,
+    }
+    ctx: Test_Ctx
+    ctx.sig = &sig
+    ctx.ev = &ev
+
+    // Early waiters (before emit)
+    spawn(&sched, proc(f: ^Fiber, c: ^Test_Ctx) {
+        sticky_signal_wait(f, c.sig)
+        c.sig_early_woke = true
+    }, &ctx)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Test_Ctx) {
+        if val, ok := sticky_event_wait(f, c.ev); ok {
+            c.ev_early_val = val
+        }
+    }, &ctx)
+
+    // Step once: early waiters are suspended
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.sig_early_woke, false)
+    testing.expect_value(t, ctx.ev_early_val, 0)
+    testing.expect_value(t, sticky_signal_is_set(&sig), false)
+    testing.expect_value(t, sticky_event_is_set(&ev), false)
+
+    // Emit both sticky primitives
+    sticky_signal_emit(&sched, &sig)
+    sticky_event_emit(&sched, &ev, 999)
+
+    testing.expect_value(t, sticky_signal_is_set(&sig), true)
+    testing.expect_value(t, sticky_event_is_set(&ev), true)
+    peek_val, peek_ok := sticky_event_peek(&ev)
+    testing.expect_value(t, peek_ok, true)
+    testing.expect_value(t, peek_val, 999)
+
+    // Step: early waiters wake up
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.sig_early_woke, true)
+    testing.expect_value(t, ctx.ev_early_val, 999)
+
+    // Late waiters (after emit): must NOT suspend, should return immediately!
+    spawn(&sched, proc(f: ^Fiber, c: ^Test_Ctx) {
+        sticky_signal_wait(f, c.sig)
+        c.sig_late_woke = true
+    }, &ctx)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Test_Ctx) {
+        if val, ok := sticky_event_wait(f, c.ev); ok {
+            c.ev_late_val = val
+        }
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.sig_late_woke, true)
+    testing.expect_value(t, ctx.ev_late_val, 999)
+
+    // Test reset
+    sticky_signal_reset(&sig)
+    sticky_event_reset(&ev)
+    testing.expect_value(t, sticky_signal_is_set(&sig), false)
+    testing.expect_value(t, sticky_event_is_set(&ev), false)
+}
+
+@(test)
+test_yield_now_same_tick_interleave :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    trace: [dynamic]int
+    defer delete(trace)
+
+    spawn(&sched, proc(f: ^Fiber, tr: ^[dynamic]int) {
+        append(tr, 1)
+        yield_now(f)
+        append(tr, 3)
+        yield_now(f)
+        append(tr, 5)
+    }, &trace)
+
+    spawn(&sched, proc(f: ^Fiber, tr: ^[dynamic]int) {
+        append(tr, 2)
+        yield_now(f)
+        append(tr, 4)
+        yield_now(f)
+        append(tr, 6)
+    }, &trace)
+
+    // Single step with dt=0.0: all interleaved steps must run in the EXACT SAME frame/tick!
+    scheduler_step(&sched, 0.0)
+
+    testing.expect_value(t, len(trace), 6)
+    if len(trace) == 6 {
+        testing.expect_value(t, trace[0], 1)
+        testing.expect_value(t, trace[1], 2)
+        testing.expect_value(t, trace[2], 3)
+        testing.expect_value(t, trace[3], 4)
+        testing.expect_value(t, trace[4], 5)
+        testing.expect_value(t, trace[5], 6)
+    }
 }

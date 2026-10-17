@@ -59,8 +59,8 @@ Clock_Domain :: struct {
 
 Join_Kind :: enum u8 {
     Sync, // All children must finish; parent resumes when remaining == 0
-    Race, // First child to finish wins; immediately aborts all siblings
-    Rush, // First child to SUCCEED wins; aborts siblings; failures ignored unless all fail
+    Race, // First child to succeed wins; immediately aborts all siblings; failures ignored unless all fail
+    Rush, // First child to succeed wins; losers continue in background (Verse rush)
 }
 
 // ============================================================================
@@ -197,6 +197,17 @@ Event :: struct($T: typeid) {
 }
 
 Signal :: Event(struct{})
+
+Sticky_Signal :: struct {
+    waiters: Wait_Queue,
+    is_set:  bool,
+}
+
+Sticky_Event :: struct($T: typeid) {
+    waiters:   Wait_Queue,
+    has_value: bool,
+    value:     T,
+}
 
 // --- Pool Memory Telemetry ---
 

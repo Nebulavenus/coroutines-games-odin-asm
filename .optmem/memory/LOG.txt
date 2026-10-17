@@ -112,3 +112,8 @@
 #111 2026-10-17 Reorganized README.md to prioritize approachable Verse/SkookumScript concurrency examples (sync, race, rush, fallback, timeouts, signals) before low-level systems hardware specs.
 #112 2026-10-17 Replaced ASCII diagrams in README.md with native GitHub Mermaid flowcharts (for concurrency combinators and multi-domain clocks) and a formatted GFM demo table.
 #113 2026-10-17 Pruned 9 redundant planning docs and duplicate ASM drafts (PLAN.md-PLAN7.md, ASM_2.md, inline_asm_analysis.md); verified 40 canonical markdown docs with 0 broken links.
+#114 2026-10-17 Realigned rush to Verse non-cancelling join; added race_success for speculative failure-tolerant race, branch_scoped for parent-bound fire-and-forget, Sticky_Event/Sticky_Signal for latched state, and yield_now for in-frame yields; 181/181 tests pass across 7 targets.
+#115 2026-10-17 Unified race with Verse semantics (first .Completed wins and aborts rivals, fail drops out without winning, -1 on all fail); eliminated race_success completely; 181/181 tests pass across 7 targets.
+#116 2026-10-17 Updated docs suite (ARCHITECTURE, COOKBOOK, REPORTS, TECH_CONCURRENCY, TECH_PRIMITIVES, tutorials 03-05, FOOTGUNS) to pure Verse race, rush, branch_scoped, yield_now, Sticky_Event; verified 0 broken links and 182/182 tests passing.
+#117 2026-10-17 Documented Footgun 14 in GUIDE_FOOTGUNS.md, Tutorial 4, and README.md: use yield_now for in-frame computation slices; use yield for frame-boundary state loops to avoid busy spins.
+#118 2026-10-17 Revisited examples (quest_ai Zone 2 rush background window, showcase branch_scoped/Sticky_Signal, wasm_test 16 suites, dist_test) & updated wasm docs; 182 native + 16 wasm tests pass.

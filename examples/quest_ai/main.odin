@@ -223,7 +223,9 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     // Broadcast Quest Start via Event(T)
     coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{"Outpost Quest Started: Hack, Slay, or Retrieve!", rl.YELLOW})
 
-    // Run 3 objectives in parallel; first to SUCCEED wins and aborts the others!
+    // Run 3 objectives in parallel with Verse rush:
+    // First to SUCCEED unblocks the parent immediately!
+    // Crucially: Losing branches are NOT cancelled; they continue executing concurrently in the background!
     winner := coroutine.rush(f,
         // Option 0: Hack Security Terminal (Hold near terminal)
         coroutine.branch(proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
@@ -237,9 +239,11 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
             // Succeeded!
         }, q, "Objective 0: Hack Terminal"),
 
-        // Option 1: Eliminate 2 Sentry Drones (Simulated combat timeout)
+        // Option 1: Eliminate 2 Sentry Drones (Sequential combat timing)
         coroutine.branch(proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
-            coroutine.wait(f, 3.2) // Takes 3.2 seconds
+            coroutine.wait(f, 1.8)
+            q.drones_defeated = 1
+            coroutine.wait(f, 1.8)
             q.drones_defeated = 2
         }, q, "Objective 1: Destroy Sentries"),
 
@@ -255,21 +259,30 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         }, q, "Objective 2: Retrieve Keycard"),
     )
 
-    q.is_active = false
-    q.completed = true
     names := [?]string{"Terminal Hacked!", "Sentries Destroyed!", "Keycard Retrieved!"}
     if winner >= 0 && winner < 3 {
         q.winner_name = names[winner]
-        q.status_text = fmt.tprintf("SUCCESS: %s (rush won by Option %d)", q.winner_name, winner)
+        q.status_text = fmt.tprintf("PRIMARY GOAL: %s! Secondary tasks active in background...", q.winner_name)
         q.status_color = rl.GREEN
+        coroutine.fiber_set_name(f, "Quest Director (rush background window)")
+        // Broadcast Primary Victory Event
+        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fmt.tprintf("PRIMARY GOAL MET: %s", q.winner_name), rl.GREEN})
+
+        // Verse rush demonstration:
+        // Losing arms continue running concurrently in the background as direct child fibers!
+        // We give the player a 4-second bonus window to complete secondary objectives:
+        coroutine.wait(f, 4.0)
+
+        q.status_text = fmt.tprintf("QUEST CONCLUDED: %s (Bonus window finished)", q.winner_name)
         coroutine.fiber_set_name(f, "Quest Director: Completed")
-        // Broadcast Victory Event
-        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fmt.tprintf("VICTORY: %s", q.winner_name), rl.GREEN})
     } else {
         q.status_text = "QUEST FAILED"
         q.status_color = rl.RED
         coroutine.fiber_set_name(f, "Quest Director: Failed")
     }
+
+    q.is_active = false
+    q.completed = true
 }
 
 // ============================================================================
@@ -606,17 +619,21 @@ world_render :: proc(w: ^World) {
     // --- Zone 2: Outpost Quest (rush & Event(T)) ---
     rl.DrawRectangleLines(420, 75, 440, 300, {60, 80, 120, 255})
     rl.DrawText("ZONE 2: Quest Objectives (rush + Event(T))", 435, 90, 15, rl.GOLD)
-    rl.DrawText("Rush: Hack Terminal || Kill Sentries || Keycard", 435, 112, 11, rl.GRAY)
+    rl.DrawText("Rush: First goal unblocks parent; secondary goals continue in background!", 435, 112, 11, rl.GRAY)
 
-    // Terminal
+    // Terminal (Option 0)
     rl.DrawRectangleV(w.quest.terminal_pos - {16, 16}, {32, 32}, rl.DARKBLUE)
     rl.DrawText("Terminal", i32(w.quest.terminal_pos.x) - 24, i32(w.quest.terminal_pos.y) - 30, 11, rl.SKYBLUE)
-    if w.quest.is_active {
+    if w.quest.is_active || w.quest.terminal_prog > 0.0 {
         rl.DrawRectangle(i32(w.quest.terminal_pos.x) - 20, i32(w.quest.terminal_pos.y) + 20, 40, 6, rl.DARKGRAY)
         rl.DrawRectangle(i32(w.quest.terminal_pos.x) - 20, i32(w.quest.terminal_pos.y) + 20, i32(40.0 * w.quest.terminal_prog), 6, rl.GREEN)
     }
 
-    // Keycard
+    // Sentries (Option 1)
+    rl.DrawCircleV({630, 200}, 14.0, w.quest.drones_defeated >= 2 ? rl.DARKGREEN : (w.quest.drones_defeated == 1 ? rl.ORANGE : rl.MAROON))
+    rl.DrawText(fmt.ctprintf("Sentries (%d/2)", w.quest.drones_defeated), 590, 172, 11, rl.RAYWHITE)
+
+    // Keycard (Option 2)
     rl.DrawCircleV(w.quest.keycard_pos, 12.0, w.quest.keycard_found ? rl.DARKGREEN : rl.GOLD)
     rl.DrawText("Keycard", i32(w.quest.keycard_pos.x) - 20, i32(w.quest.keycard_pos.y) - 26, 11, rl.YELLOW)
 
@@ -740,9 +757,9 @@ world_render :: proc(w: ^World) {
             case .Suspended_Join:
                 kind := "Sync"
                 switch f.active_coord.kind {
-                case .Sync:     kind = "Sync"
-                case .Race:     kind = "Race"
-                case .Rush:     kind = "Rush"
+                case .Sync: kind = "Sync"
+                case .Race: kind = "Race"
+                case .Rush: kind = "Rush"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

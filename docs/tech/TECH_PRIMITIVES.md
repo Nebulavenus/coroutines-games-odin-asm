@@ -16,12 +16,21 @@ Event :: struct($T: typeid) {
 }
 
 Signal :: Event(struct{})
+
+Sticky_Event :: struct($T: typeid) {
+    waiters:  Wait_Queue,
+    value:    T,
+    signaled: bool,
+}
+
+Sticky_Signal :: Sticky_Event(struct{})
 ```
 
 Built entirely on intrusive `Wait_Queue` pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`):
 - **True ZII**: Valid immediately upon declaration with zero initialization procedure calls required.
 - **Zero Allocations**: Inserting or removing waiters performs no heap allocations.
 - **Unified Engine**: `signal_emit` and `event_emit` share the same zero-allocation broadcast pipeline.
+- **Latched State (`Sticky_Event` / `Sticky_Signal`)**: Caches the emitted state (`signaled = true`) and last payload value. If a fiber calls `sticky_event_wait` after the signal was already emitted, it resumes immediately in $O(1)$ time without suspending, eliminating race conditions on initialization and game phase milestones. Can be reset via `sticky_event_reset`.
 
 ---
 

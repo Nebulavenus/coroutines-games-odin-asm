@@ -526,6 +526,179 @@ test_rapid_signal_emp_fuzzing :: proc() {
 }
 
 // ----------------------------------------------------------------------------
+// Test 13: Verse rush() Combinator — First to Succeed Wins, Losers Continue in Background
+// ----------------------------------------------------------------------------
+test_verse_rush_losers_continue :: proc() {
+    fmt.print("  [Test 13] Verse rush(): Losers Continue in Background... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    Rush_State :: struct {
+        fast_done:  bool,
+        slow_done:  bool,
+        winner_idx: int,
+    }
+    state := Rush_State{winner_idx = -1}
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Rush_State) {
+        w := coroutine.rush(f,
+            coroutine.branch(proc(child: ^coroutine.Fiber, s: ^Rush_State) {
+                coroutine.wait(child, 0.020) // Fast branch: 20ms
+                s.fast_done = true
+            }, s),
+            coroutine.branch(proc(child: ^coroutine.Fiber, s: ^Rush_State) {
+                coroutine.wait(child, 0.080) // Slow branch: 80ms
+                s.slow_done = true
+            }, s),
+        )
+        s.winner_idx = w
+
+        // Parent resumes immediately when fast branch succeeds:
+        assert(s.winner_idx == 0, "Fast branch must win rush")
+        assert(s.fast_done, "Fast branch must be done")
+        assert(!s.slow_done, "Slow branch must NOT be done yet")
+
+        // Wait long enough for slow branch to also finish in background:
+        coroutine.wait(f, 0.100)
+        assert(s.slow_done, "Slow branch MUST have completed in background without being aborted!")
+    }, &state)
+
+    for _ in 0 ..< 15 {
+        coroutine.scheduler_step(&sched, 0.016)
+    }
+
+    assert(state.fast_done && state.slow_done, "Both branches must complete under rush")
+    fmt.println("OK")
+}
+
+// ----------------------------------------------------------------------------
+// Test 14: Verse branch_scoped() — Parent-Bound Fire-and-Forget Subtasks
+// ----------------------------------------------------------------------------
+test_branch_scoped_background_and_parent_abort :: proc() {
+    fmt.print("  [Test 14] Verse branch_scoped(): Parent-Bound Lifecycle... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    child_ticks := 0
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ct: ^int) {
+        // Launch background subtask bound to f:
+        coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, ct: ^int) {
+            for {
+                coroutine.wait(child, 0.016)
+                ct^ += 1
+            }
+        }, ct)
+
+        // Parent runs for 3 ticks then exits naturally:
+        coroutine.wait(f, 0.050)
+    }, &child_ticks)
+
+    // Step scheduler for parent lifetime:
+    for _ in 0 ..< 5 {
+        coroutine.scheduler_step(&sched, 0.016)
+    }
+
+    ticks_at_exit := child_ticks
+    assert(ticks_at_exit >= 2, "Scoped child must run while parent is alive")
+
+    // Advance scheduler further: parent is gone, child MUST be aborted!
+    for _ in 0 ..< 5 {
+        coroutine.scheduler_step(&sched, 0.016)
+    }
+
+    assert(child_ticks == ticks_at_exit, "Scoped child must not run after parent exits")
+    fmt.println("OK")
+}
+
+// ----------------------------------------------------------------------------
+// Test 15: Latched State — Sticky_Event(T) and Sticky_Signal
+// ----------------------------------------------------------------------------
+test_sticky_event_and_signal :: proc() {
+    fmt.print("  [Test 15] Latched State: Sticky_Event & Sticky_Signal... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    ready_sig: coroutine.Sticky_Signal
+    val_ev:    coroutine.Sticky_Event(int)
+
+    // Emit before any fiber awaits:
+    coroutine.sticky_signal_emit(&sched, &ready_sig)
+    coroutine.sticky_event_emit(&sched, &val_ev, 99)
+
+    sig_received := false
+    ev_val := 0
+
+    // Late-joining fiber awaits already-signaled sticky primitives:
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, data: ^[4]rawptr) {
+        sig := cast(^coroutine.Sticky_Signal)data[0]
+        ev := cast(^coroutine.Sticky_Event(int))data[1]
+        sig_rcv := cast(^bool)data[2]
+        out_v := cast(^int)data[3]
+
+        // Must return immediately without suspending:
+        coroutine.sticky_signal_wait(f, sig)
+        sig_rcv^ = true
+
+        val, ok := coroutine.sticky_event_wait(f, ev)
+        if ok {
+            out_v^ = val
+        }
+    }, &[4]rawptr{&ready_sig, &val_ev, &sig_received, &ev_val})
+
+    coroutine.scheduler_step(&sched, 0.016)
+
+    assert(sig_received, "Sticky_Signal must unblock late joiner immediately")
+    assert(ev_val == 99, "Sticky_Event must deliver cached payload immediately")
+    fmt.println("OK")
+}
+
+// ----------------------------------------------------------------------------
+// Test 16: In-Frame Timeslice — yield_now() Cooperative Sharing
+// ----------------------------------------------------------------------------
+test_yield_now_same_tick :: proc() {
+    fmt.print("  [Test 16] In-Frame Timeslice: yield_now() Same-Tick Interleave... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    history: [8]int
+    count := 0
+
+    Yield_Data :: struct {
+        id:      int,
+        history: ^[8]int,
+        count:   ^int,
+    }
+    d1 := Yield_Data{1, &history, &count}
+    d2 := Yield_Data{2, &history, &count}
+
+    worker :: proc(f: ^coroutine.Fiber, d: ^Yield_Data) {
+        for _ in 0 ..< 2 {
+            if d.count^ < 8 {
+                d.history[d.count^] = d.id
+                d.count^ += 1
+            }
+            coroutine.yield_now(f) // Relinquishes timeslice in same frame
+        }
+    }
+
+    coroutine.spawn(&sched, worker, &d1)
+    coroutine.spawn(&sched, worker, &d2)
+
+    // Step scheduler for EXACTLY 1 frame:
+    coroutine.scheduler_step(&sched, 0.016)
+
+    // In 1 single frame step, both fibers interleaved execution via yield_now:
+    assert(count == 4, "Both fibers must complete their yield_now iterations in the same frame")
+    assert(history[0] == 1 && history[1] == 2 && history[2] == 1 && history[3] == 2, "Fibers must alternate via yield_now")
+    fmt.println("OK")
+}
+
+// ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
 main :: proc() {
@@ -546,9 +719,13 @@ main :: proc() {
     test_nested_race_sync_signal_abort()
     test_ticker_zero_drift_and_abort()
     test_rapid_signal_emp_fuzzing()
+    test_verse_rush_losers_continue()
+    test_branch_scoped_background_and_parent_abort()
+    test_sticky_event_and_signal()
+    test_yield_now_same_tick()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 12 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 16 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

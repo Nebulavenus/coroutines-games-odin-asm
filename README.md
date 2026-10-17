@@ -21,7 +21,8 @@ flowchart TD
     Parent -->|"wait(f, 2.0)"| Time["Straight-Line Time<br/>Sleeps on clock domain"]
     Parent -->|"sync(f, ..)"| Sync["Parallel Coordination<br/>Waits for ALL branches"]
     Parent -->|"race(f, ..)"| Race["Preemptive Cancellation<br/>First done cancels rivals"]
-    Parent -->|"rush(f, ..)"| Rush["First to Succeed<br/>Ignores branches that fail"]
+    Parent -->|"rush(f, ..)"| Rush["Partial Join (Verse)<br/>First done returns; losers run"]
+    Parent -->|"branch_scoped(f)"| Scoped["Fire-and-Forget (Verse)<br/>Bound to parent lifetime"]
     Parent -->|"fallback(f, ..)"| Fallback["Priority Fallback<br/>Tries A, then B, then C"]
 
     Sync --> S1["Branch A"]
@@ -38,7 +39,7 @@ flowchart TD
 
 ## Structured Concurrency in Action
 
-### 1. Straight-Line Timing (`wait` & `yield`)
+### 1. Straight-Line Timing (`wait`, `yield`, `yield_now`)
 
 Write timed abilities and multi-step actions without timer variables or delta-time bookkeeping:
 
@@ -52,10 +53,14 @@ fireball_combo :: proc(f: ^coroutine.Fiber, caster: ^Hero) {
     play_sound(.Fireball_Launch)
     coroutine.wait(f, 0.2) // Recovery delay
 
+    coroutine.yield_now(f) // Cooperative timeslice share in same frame (Verse Sleep(0.0))
     coroutine.yield(f)     // Pause for exactly 1 game tick before idle
     play_animation(caster, .Idle)
 }
 ```
+
+> [!TIP]
+> **`yield(f)` vs `yield_now(f)`**: Use `yield(f)` (or `wait(f, dt)`) when waiting for game state that updates across frame boundaries. Use `yield_now(f)` (Verse `Sleep(0.0)`) solely to distribute heavy CPU computation across fibers in the current frame without spinning.
 
 ### 2. Parallel Coordination (`sync`)
 
@@ -75,7 +80,7 @@ play_sound(.Gate_Unlocked)
 
 ### 3. Preemptive Competition (`race`)
 
-*Verse `race` / SkookumScript `race()`*: Runs multiple branches in parallel. The instant **any** branch finishes, all other competing branches are immediately and recursively aborted:
+*Verse `race` / SkookumScript `race()`*: Runs multiple branches concurrently in competition. The instant **any branch succeeds** (`.Completed`), it wins the race and all other competing branches are immediately and recursively aborted. Branches that call `coroutine.fail(f)` drop out without winning; if all branches fail, `race` returns `-1`:
 
 ```odin
 // Boss charges a devastating mega laser, but player can interrupt it with an EMP stun!
@@ -93,20 +98,32 @@ if winner == 1 {
 }
 ```
 
-### 4. First to Succeed (`rush`)
+### 4. Non-Cancelling Partial Join (`rush`)
 
-*Verse `rush`*: Runs multiple branches concurrently. The first branch to **succeed** wins; branches that `fail` are ignored until one succeeds or all fail:
+*Verse `rush`*: Runs arms concurrently. Completes as soon as the **first** branch finishes, but **does not cancel losing branches**—allowing them to continue executing in the background:
 
 ```odin
-// AI tries multiple tactical options; proceeds as soon as any valid path succeeds
-winning_branch := coroutine.rush(f,
-    coroutine.branch(try_flank_left, ai),
-    coroutine.branch(try_flank_right, ai),
-    coroutine.branch(try_vault_cover, ai),
+// Continue immediately when the fast low-res mesh loads, but let high-res keep streaming:
+coroutine.rush(f,
+    coroutine.branch(load_low_res_mesh, asset),
+    coroutine.branch(load_high_res_mesh, asset),
 )
+// Low-res finished -> gameplay resumes immediately! High-res continues in background.
 ```
 
-### 5. Priority Fallback (`fallback`)
+### 5. Scope-Bound Fire-and-Forget (`branch_scoped`)
+
+*Verse `branch:`*: Spawns a concurrent child task that runs in the background while the parent continues immediately. If the parent finishes or is cancelled, the background task is automatically aborted:
+
+```odin
+// Inside an ability fiber: fire-and-forget secondary particle FX & camera shake
+coroutine.branch_scoped(f, play_flame_emitter, &player.pos)
+coroutine.branch_scoped(f, camera_shake_loop, 0.5)
+
+// Parent continues immediately! If ability exits or player dies, children are auto-aborted.
+```
+
+### 6. Priority Fallback (`fallback`)
 
 Executes branches sequentially ($A \rightarrow B \rightarrow C$). If an action calls `coroutine.fail(f)`, the engine automatically rolls over to the next candidate:
 
@@ -119,7 +136,7 @@ ok, idx := coroutine.fallback(f,
 )
 ```
 
-### 6. Automatic Timeouts (`with_timeout`)
+### 7. Automatic Timeouts (`with_timeout`)
 
 Wraps any task in a deadline. If it doesn't complete in time, it is aborted cleanly:
 
@@ -131,7 +148,21 @@ if !defused {
 }
 ```
 
-### 7. Broadcast Signals & Multicast Events (`Signal` & `Event(T)`)
+### 8. Latched State Events (`Sticky_Event` & `Sticky_Signal`)
+
+*Verse `sticky_event`*: Broadcasts state transitions where late-joining fibers immediately receive the cached value without deadlocking:
+
+```odin
+match_started: coroutine.Sticky_Signal
+
+// Emitted once during level transition:
+coroutine.sticky_signal_emit(&sched, &match_started)
+
+// Any coroutine starting later receives it immediately without suspending:
+coroutine.sticky_signal_wait(f, &match_started) // Instant return!
+```
+
+### 9. Broadcast Signals & Multicast Events (`Signal` & `Event(T)`)
 
 Zero-allocation, True-ZII signaling across fibers with 0 heap overhead:
 
@@ -153,7 +184,7 @@ death_event: coroutine.Event(Death_Info)
 coroutine.event_emit(&sched, &death_event, Death_Info{victim_id = 42})
 ```
 
-### 8. Entity Lifecycles & Hierarchical Scopes (`Fiber_Scope`)
+### 10. Entity Lifecycles & Hierarchical Scopes (`Fiber_Scope`)
 
 Attach coroutines to entity scopes. When an entity despawns or changes state, cancel all its coroutines in $O(1)$ with no lingering callbacks or dangling pointers:
 
@@ -281,13 +312,13 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **177 / 177 Tests PASS (Native Host Windows)** |
-| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **177 / 177 Tests PASS (Native WSL2 Host CPU)** |
-| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **177 / 177 Tests PASS (WSL2 QEMU)** |
-| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **177 / 177 Tests PASS (WSL2 QEMU)** |
-| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **177 / 177 Tests PASS (AAPCS64 ABI Verified)** |
-| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **177 / 177 Tests PASS (SysV AMD64 ABI Verified)** |
-| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **12 / 12 Test Suites + 1,000-Frame Headless Game PASS** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **182 / 182 Tests PASS (Native Host Windows)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **182 / 182 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **182 / 182 Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **182 / 182 Tests PASS (WSL2 QEMU)** |
+| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **182 / 182 Tests PASS (AAPCS64 ABI Verified)** |
+| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **182 / 182 Tests PASS (SysV AMD64 ABI Verified)** |
+| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **16 / 16 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
 
@@ -305,7 +336,7 @@ The cross-platform PowerShell build script [`build.ps1`](build.ps1) automates al
 # Run the AI & Quest Sandbox
 .\build.ps1 run-quest
 
-# Run All 177 Unit Tests (128 Core + 49 Sync) with 0 Leaks
+# Run All 182 Unit Tests (133 Core + 49 Sync) with 0 Leaks
 .\build.ps1 test
 
 # Cross-Check All 7 Multi-ISA & WebAssembly Targets

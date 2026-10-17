@@ -181,6 +181,16 @@ yield :: proc(f: ^Fiber) {
 
 yield_frame :: yield
 
+// Cooperative timeslice yield within current tick/frame (Verse Sleep(0.0))
+yield_now :: proc(f: ^Fiber) {
+    if f == nil || f.sched == nil do return
+    f.status = .Ready
+    append(&f.sched.ready_queue, f.handle)
+    f.stored_context = context
+    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
+    context = f.stored_context
+}
+
 wait :: proc(f: ^Fiber, seconds: f32) {
     if f == nil || f.sched == nil do return
     if seconds <= 0.0 {
@@ -443,6 +453,74 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = 
 // Unified overloaded entry point
 branch :: proc{branch_ptr, branch_val, branch_nil}
 
+// ============================================================================
+// Scoped Fire-and-Forget Subtasks (Verse branch:)
+// ============================================================================
+
+branch_scoped_desc :: proc(f: ^Fiber, b: Branch_Desc) -> Fiber_Handle {
+    if f == nil || f.sched == nil do return 0
+
+    child_clock := b.clock_id == CLOCK_INHERIT ? f.clock_id : b.clock_id
+    cid := clamp_clock_id(child_clock)
+
+    child := fiber_pool_acquire(&f.sched.fiber_pool)
+    child.sched = f.sched
+    child.clock_id = cid
+    child.debug_name = b.name
+    child.stored_context = context
+    child.start_time = f.sched.clocks[int(cid)].time
+    if b.has_payload {
+        child.payload_storage = b.payload_storage
+        child.user_data = &child.payload_storage[0]
+    } else {
+        child.user_data = b.user_data
+    }
+    child.user_fn = b.user_fn
+    child.entry_proc = b.entry_proc
+    child.join_coord = nil
+    child.branch_index = -1
+
+    fiber_link_child(f, child)
+    append(&f.sched.ready_queue, child.handle)
+    return child.handle
+}
+
+branch_scoped_ptr :: proc(
+    f: ^Fiber,
+    entry: proc(child: ^Fiber, data: ^$T),
+    data: ^T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    return branch_scoped_desc(f, branch_ptr(entry, data, name, clock))
+}
+
+branch_scoped_val :: proc(
+    f: ^Fiber,
+    entry: proc(child: ^Fiber, data: $T),
+    data: T,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle where !intrinsics.type_is_pointer(T) {
+    return branch_scoped_desc(f, branch_val(entry, data, name, clock))
+}
+
+branch_scoped_nil :: proc(
+    f: ^Fiber,
+    entry: proc(child: ^Fiber),
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    return branch_scoped_desc(f, branch_nil(entry, name, clock))
+}
+
+branch_scoped :: proc{
+    branch_scoped_desc,
+    branch_scoped_ptr,
+    branch_scoped_val,
+    branch_scoped_nil,
+}
+
 @(private="file")
 fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
     f.active_coord = Join_Coordinator{
@@ -659,6 +737,151 @@ signal_emit :: proc{
 
 signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
     _, _ = event_wait(f, sig)
+}
+
+// ============================================================================
+// Sticky_Event(T) & Sticky_Signal (Latched State Broadcast Primitives)
+// ============================================================================
+
+sticky_event_init :: proc(ev: ^Sticky_Event($T)) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if ev == nil do return
+    ev^ = {}
+}
+
+sticky_event_destroy :: proc(ev: ^Sticky_Event($T)) {
+    if ev == nil do return
+    wait_queue_destroy(&ev.waiters)
+}
+
+sticky_event_reset :: proc(ev: ^Sticky_Event($T)) {
+    if ev == nil do return
+    ev.has_value = false
+    ev.value = {}
+}
+
+sticky_event_is_set :: proc "contextless" (ev: ^Sticky_Event($T)) -> bool {
+    return ev != nil && ev.has_value
+}
+
+sticky_event_peek :: proc "contextless" (ev: ^Sticky_Event($T)) -> (val: T, ok: bool) {
+    if ev != nil && ev.has_value {
+        return ev.value, true
+    }
+    return {}, false
+}
+
+sticky_event_wait :: proc(f: ^Fiber, ev: ^Sticky_Event($T)) -> (payload: T, ok: bool) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if f == nil || ev == nil || f.sched == nil do return {}, false
+
+    if ev.has_value {
+        return ev.value, true
+    }
+
+    wait_queue_push_back(&ev.waiters, f)
+    fiber_suspend(f)
+
+    if size_of(T) > 0 {
+        payload = (cast(^T)&f.payload_storage[0])^
+    }
+    return payload, true
+}
+
+sticky_event_emit_sched :: proc(sched: ^Scheduler, ev: ^Sticky_Event($T), payload: T) {
+    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    if ev == nil do return
+
+    ev.has_value = true
+    ev.value = payload
+
+    if sched == nil || wait_queue_is_empty(&ev.waiters) do return
+
+    for {
+        f, ok := wait_queue_pop_front(&ev.waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+            if size_of(T) > 0 {
+                (cast(^T)&f.payload_storage[0])^ = payload
+            }
+            f.status = .Ready
+            append(&sched.ready_queue, f.handle)
+        }
+    }
+}
+
+sticky_event_emit_fiber :: proc(f: ^Fiber, ev: ^Sticky_Event($T), payload: T) {
+    if f == nil || f.sched == nil do return
+    sticky_event_emit_sched(f.sched, ev, payload)
+}
+
+sticky_signal_init :: proc(sig: ^Sticky_Signal) {
+    if sig == nil do return
+    sig^ = {}
+}
+
+sticky_signal_destroy :: proc(sig: ^Sticky_Signal) {
+    if sig == nil do return
+    wait_queue_destroy(&sig.waiters)
+}
+
+sticky_signal_reset :: proc(sig: ^Sticky_Signal) {
+    if sig == nil do return
+    sig.is_set = false
+}
+
+sticky_signal_is_set :: proc "contextless" (sig: ^Sticky_Signal) -> bool {
+    return sig != nil && sig.is_set
+}
+
+sticky_signal_wait :: proc(f: ^Fiber, sig: ^Sticky_Signal) {
+    if f == nil || sig == nil || f.sched == nil do return
+    if sig.is_set do return
+
+    wait_queue_push_back(&sig.waiters, f)
+    fiber_suspend(f)
+}
+
+sticky_signal_emit_sched :: proc(sched: ^Scheduler, sig: ^Sticky_Signal) {
+    if sig == nil do return
+    sig.is_set = true
+    if sched == nil || wait_queue_is_empty(&sig.waiters) do return
+
+    for {
+        f, ok := wait_queue_pop_front(&sig.waiters)
+        if !ok do break
+        if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
+            f.status = .Ready
+            append(&sched.ready_queue, f.handle)
+        }
+    }
+}
+
+sticky_signal_emit_fiber :: proc(f: ^Fiber, sig: ^Sticky_Signal) {
+    if f == nil || f.sched == nil do return
+    sticky_signal_emit_sched(f.sched, sig)
+}
+
+sticky_event_emit :: proc{
+    sticky_event_emit_sched,
+    sticky_event_emit_fiber,
+}
+
+sticky_signal_emit :: proc{
+    sticky_signal_emit_sched,
+    sticky_signal_emit_fiber,
+}
+
+sticky_emit :: proc{
+    sticky_event_emit_sched,
+    sticky_event_emit_fiber,
+    sticky_signal_emit_sched,
+    sticky_signal_emit_fiber,
+}
+
+sticky_wait :: proc{
+    sticky_event_wait,
+    sticky_signal_wait,
 }
 
 // ============================================================================

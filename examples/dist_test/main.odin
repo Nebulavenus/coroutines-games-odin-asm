@@ -47,5 +47,29 @@ main :: proc() {
 	assert(executed, "Consumer fiber did not complete")
 	assert(received_val == 42, "Received unexpected value from event")
 
-	fmt.printf("[dist_test] SUCCESS: Amalgamated coroutine.odin verified! (received %d)\n", received_val)
+	// Validate branch_scoped and Sticky_Signal in amalgamated dist:
+	sticky_sig: coroutine.Sticky_Signal
+	coroutine.sticky_signal_emit(&sched, &sticky_sig)
+
+	scoped_ran := false
+	Scoped_Data :: struct {
+		sig: ^coroutine.Sticky_Signal,
+		ran: ^bool,
+	}
+	scoped_data := Scoped_Data{&sticky_sig, &scoped_ran}
+
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Scoped_Data) {
+		coroutine.sticky_signal_wait(f, d.sig)
+		coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, ran: ^bool) {
+			ran^ = true
+		}, d.ran)
+		coroutine.yield(f)
+	}, &scoped_data)
+
+	for _ in 0..<5 {
+		coroutine.scheduler_step(&sched, 0.016)
+	}
+	assert(scoped_ran, "branch_scoped and Sticky_Signal must work in amalgamated dist")
+
+	fmt.printf("[dist_test] SUCCESS: Amalgamated coroutine.odin verified! (received %d, scoped: %t)\n", received_val, scoped_ran)
 }

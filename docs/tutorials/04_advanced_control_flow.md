@@ -1,4 +1,4 @@
-# Tutorial 4: Advanced Decision Trees — `rush`, `fallback` & `with_timeout`
+# Tutorial 4: Advanced Decision Trees — `rush`, `fallback`, `branch_scoped` & `with_timeout`
 
 This chapter explores advanced control-flow combinators for modeling intelligent NPC behavior trees, opportunistic multi-objective scouting, and time-bounded actions.
 
@@ -117,9 +117,11 @@ main :: proc() {
 
 ---
 
-## 2. Parallel First-to-Succeed with `rush`
+## 2. Parallel First-to-Succeed Partial Join with `rush`
 
-Unlike `race` (which aborts as soon as *any* branch finishes or fails), `rush` runs branches in parallel and resumes on the **first successful** branch, safely ignoring early branch failures:
+In Epic Verse semantics, `rush` runs arms in parallel and resumes the parent as soon as the **first branch succeeds** (`.Completed`), safely ignoring early branch failures (`fail(f)`).
+
+**Crucially, unlike `race`, `rush` does NOT cancel losing branches!** Losing branches have their join coordinator detached and continue running concurrently in the background as scoped children of the parent:
 
 ```odin
 // 3 Scouts search different cave entrances concurrently
@@ -127,46 +129,54 @@ coroutine.rush(f,
     coroutine.branch(proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 0.5)
         fmt.println("[Scout North] Dead end!")
-        coroutine.fail(f) // Ignored by rush!
+        coroutine.fail(f) // Dropped out! Ignored by rush.
     }, name = "Scout North"),
 
     coroutine.branch(proc(f: ^coroutine.Fiber) {
         coroutine.wait(f, 1.0)
         fmt.println("[Scout East] Found the secret dungeon entrance!")
-        // Finishes successfully! Wins the rush!
+        // Finishes successfully! Wins rush and unblocks the parent!
     }, name = "Scout East"),
+
+    coroutine.branch(proc(f: ^coroutine.Fiber) {
+        coroutine.wait(f, 2.5)
+        fmt.println("[Scout West] Mapped underground treasure room!")
+        // Loses rush, BUT NOT CANCELLED! Keeps running in background!
+    }, name = "Scout West"),
 )
+
+// Parent resumes immediately when Scout East succeeds at 1.0s.
+// Scout West continues mapping in the background.
+// If the parent exits or is cancelled, background children are safely aborted bottom-up!
 ```
 
 ---
 
-## 3. Scoped Timeouts with `with_timeout`
+## 3. Parent-Bound Fire-and-Forget with `branch_scoped`
 
-Ensure asynchronous actions do not hang indefinitely:
+In Epic's Verse language, `branch:` launches a concurrent subtask without suspending the parent. If the parent function finishes, fails, or is cancelled, the branched task is automatically aborted.
+
+The library provides `coroutine.branch_scoped` for this exact pattern:
 
 ```odin
-Chest :: struct { is_unlocked: bool }
+// Launch an ambient visual aura tied to this entity's spellcast:
+coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, c: ^Chest) {
+    for !c.is_unlocked {
+        fmt.println("Casting glowing runes aura...")
+        coroutine.wait(child, 0.2)
+    }
+}, &chest, name = "Chest Glow FX")
 
-chest := Chest{is_unlocked = false}
-
-success := coroutine.with_timeout(f, 2.0, proc(f: ^coroutine.Fiber, c: ^Chest) {
-    fmt.println("Lockpicking chest...")
-    coroutine.wait(f, 1.5) // Takes 1.5 seconds
-    c.is_unlocked = true
-}, &chest)
-
-if success {
-    fmt.println("Chest unlocked successfully!")
-} else {
-    fmt.println("Lockpicking timed out! Alarm triggered!")
-}
+// Parent continues immediately without suspending!
+coroutine.wait(f, 1.0)
+// When parent finishes or aborts, all scoped branches are cleanly recycled!
 ```
 
 ---
 
 ## 4. Structured Task Preemption with `race` & `Signal`
 
-Easily run any task while racing it against a cancellation signal:
+In pure Verse semantics, `race` executes arms concurrently. The **first arm to succeed** (`.Completed`) wins and immediately cancels and cleans up all competing sibling subtrees. Branches that call `fail(f)` drop out without winning:
 
 ```odin
 winner := coroutine.race(f,
@@ -182,12 +192,45 @@ winner := coroutine.race(f,
 
 if winner == 1 {
     fmt.println("Lockpicking interrupted by emergency lockdown signal!")
+} else if winner == -1 {
+    fmt.println("All race branches failed!")
 }
 ```
 
 ---
 
-## 5. Zero-Drift Loops with Fiber-Owned Tickers (`ticker_wait`)
+## 5. In-Frame Cooperative Yields with `yield_now`
+
+Verse distinguishes between advancing the clock (`NextTick()`) and yielding within the current frame (`Sleep(0.0)`).
+
+- `coroutine.yield(f)`: Yields and targets the next clock step boundary ($t + 1$).
+- `coroutine.yield_now(f)`: Cooperatively relinquishes the CPU timeslice to other ready fibers in the **current** frame, resuming before the tick ends without advancing the clock.
+
+```odin
+// Distribute heavy computation cooperatively within the same frame:
+for chunk in world_chunks {
+    process_chunk(chunk)
+    coroutine.yield_now(f) // Lets other fibers run in this same tick
+}
+```
+
+> [!WARNING] **Scripting Rule: `yield_now` vs `yield` in Gameplay Loops**
+> Never use `yield_now(f)` inside a game state polling loop:
+> ```odin
+> // DANGEROUS: Busy-spins within the current frame!
+> for !enemy.is_dead {
+>     coroutine.yield_now(f)
+> }
+> ```
+> If `enemy.is_dead` is updated by an animation or physics tick in a future frame, `yield_now` will continuously re-enqueue in the same frame without letting simulation time advance.
+> 
+> **The Rule:**
+> - **Use `yield_now(f)`** to distribute heavy CPU computation (e.g., pathfinding node slicing, procedural generation) across fibers within the current frame.
+> - **Use `yield(f)`** (or `wait(f, 0.0)`) when waiting for game state that updates across frame boundaries.
+
+---
+
+## 6. Zero-Drift Loops with Fiber-Owned Tickers (`ticker_wait`)
 
 When running periodic actions, avoid naive `wait()` loops which accumulate frame quantization error. Instead, use the built-in fiber-owned ticker to eliminate cumulative timing drift:
 
@@ -204,7 +247,7 @@ for _ in 0 ..< 10 { // Exactly 10 ticks over 5.0 seconds with zero cumulative dr
 
 ---
 
-## 6. Time-Bounded Actions with `with_timeout`
+## 7. Time-Bounded Actions with `with_timeout`
 
 In structured concurrency, bounding any action by a deadline is done cleanly using `coroutine.with_timeout`:
 
@@ -238,4 +281,4 @@ elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
 ---
 
 ## Next Steps
-In [Tutorial 5: Synchronization & Communication](05_synchronization.md), you will learn how to synchronize independent fibers using `with_mutex`, `Fiber_Semaphore`, `Event(T)`, and `Channel(T)`.
+In [Tutorial 5: Synchronization & Communication](05_synchronization.md), you will learn how to synchronize independent fibers using `with_mutex`, `Fiber_Semaphore`, `Event(T)`, `Sticky_Event(T)`, and `Channel(T)`.

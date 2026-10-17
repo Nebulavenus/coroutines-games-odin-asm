@@ -336,7 +336,8 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
         coord.active_branches -= 1
 
         if coord.kind == .Race {
-            if fiber.status != .Aborted && !coord.completed {
+            if fiber.status == .Completed && !coord.completed {
+                // First SUCCESS wins!
                 coord.completed = true
                 coord.winner = fiber
                 coord.winner_index = fiber.branch_index
@@ -360,6 +361,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                     }
                 }
             } else if coord.active_branches <= 0 && !coord.completed {
+                // All branches finished without any success (or all failed/aborted)
                 coord.completed = true
                 coord.winner = nil
                 coord.winner_index = -1
@@ -371,19 +373,19 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
             }
         } else if coord.kind == .Rush {
             if fiber.status == .Completed && !coord.completed {
-                // First SUCCESS wins!
+                // Verse rush: first SUCCESS wins; losers continue in background!
                 coord.completed = true
                 coord.winner = fiber
                 coord.winner_index = fiber.branch_index
 
-                // Abort sibling branches immediately
+                // Detach remaining branches from join_coord so parent can reuse active_coord
                 parent := coord.parent
                 if parent != nil {
                     child := parent.first_child
                     for child != nil {
                         next := child.next_sibling
                         if child != fiber && child.join_coord == coord {
-                            fiber_abort_tree(fiber.sched, child)
+                            child.join_coord = nil
                         }
                         child = next
                     }
@@ -424,6 +426,11 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 // ============================================================================
 
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
+    // 0. Auto-cancel any remaining child fibers (e.g. branch_scoped or rush background tasks)
+    for fiber.first_child != nil {
+        fiber_abort_tree(sched, fiber.first_child)
+    }
+
     // 1. Run cleanup procedure if registered
     if fiber.cleanup_proc != nil {
         fiber.cleanup_proc(fiber.cleanup_data != nil ? fiber.cleanup_data : fiber.user_data)

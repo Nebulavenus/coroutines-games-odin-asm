@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Verse Structured Concurrency Realignment & Latched Primitives] - 2026-10-17
+
+### Added
+- **Scope-Bound Fire-and-Forget Subtasks (`branch_scoped`) (`api.odin`, `scheduler.odin`)**:
+  - Implemented Verse-style `branch:` semantics via `branch_scoped(f, entry, ...)`: spawns a concurrent subtask linked directly into `f`'s active fiber hierarchy without suspending the caller.
+  - Subtask automatically runs in the background concurrently with parent; auto-cancelled and reclaimed bottom-up if the parent finishes, fails, or is cancelled.
+  - Overloaded for raw procedures (`proc(child: ^Fiber)`), pointers (`proc(child: ^Fiber, data: ^T)`), values (`proc(child: ^Fiber, data: T)`), and pre-built `Branch_Desc`.
+- **Latched State Broadcast Primitives (`Sticky_Event(T)` / `Sticky_Signal`) (`types.odin`, `api.odin`)**:
+  - Added `Sticky_Event(T)` and `Sticky_Signal`: caches the emitted value so that late awaiters unblock immediately without deadlocking or missing past phase transitions.
+  - Added `sticky_event_wait`, `sticky_event_emit`, `sticky_event_peek`, `sticky_event_is_set`, `sticky_event_reset`, `sticky_signal_wait`, `sticky_signal_emit`, `sticky_signal_is_set`, and `sticky_signal_reset` (with overloaded `sticky_emit` and `sticky_wait`).
+- **Cooperative In-Frame Yield (`yield_now`) (`api.odin`)**:
+  - Added `yield_now(f)` matching Verse `Sleep(0.0)`: yields the fiber's timeslice to other ready fibers within the current simulation tick/frame and re-enqueues itself without advancing the clock step.
+
+### Changed
+- **Verse-Aligned `race` & `rush` (`scheduler.odin`, `types.odin`, `api.odin`)**:
+  - Unified `race(f, ..branches)` with Verse specification: the first branch to SUCCEED (`.Completed`) wins and immediately cancels remaining sibling branches. Branches that call `fail(f)` drop out without winning; if all branches fail, `race` returns `-1`.
+  - Realigned `rush(f, ..branches)` to strict Verse semantics: the first arm to succeed unblocks the parent immediately, while **losers continue running detached in the background** without being cancelled (auto-aborted if parent finishes).
+  - Eliminates the artificial `race_success` distinction, giving `race` and `rush` standard, symmetrical Verse concurrency semantics.
+- **Documentation & Scripting Guidelines**:
+  - Added Footgun 14 to `docs/guides/GUIDE_FOOTGUNS.md` and warning callouts to `docs/tutorials/04_advanced_control_flow.md` and `README.md` clarifying that `yield_now` is for in-frame CPU computational slicing, while `yield` is required for frame-boundary state polling.
+- **Example Logic Updates & Verse Visualizations**:
+  - `examples/quest_ai/main.odin`: Realigned Zone 2 logic to demonstrate true Verse `rush` background continuation; winning the primary objective unblocks the quest director into a 4-second bonus window where secondary tasks (Terminal hacking, Sentry defeat) visibly continue running in the background as live child fibers.
+  - `examples/showcase/main.odin`: Added `branch_scoped` parent-bound ambient swirl FX to Station 1 (Ritual Circle) and `Sticky_Signal` emergency lockdown latching to Station 4 (Beacon).
+  - `examples/dist_test/main.odin`: Added automated verification for `branch_scoped` and `Sticky_Signal` via amalgamated `dist/coroutine.odin`.
+- **WebAssembly Test Suite Expansion (12 -> 16 Suites) (`examples/wasm_test/main.odin`, `docs/wasm/`)**:
+  - Added Test 13 (`test_verse_rush_losers_continue`), Test 14 (`test_branch_scoped_background_and_parent_abort`), Test 15 (`test_sticky_event_and_signal`), and Test 16 (`test_yield_now_same_tick`).
+  - All 16 automated WebAssembly suites pass with 0 failures under Binaryen Asyncify and Node.js.
+
 ## [Matrix Slow-Mo & Recovery Bar Game Update] - 2026-10-17
 
 ### Added

@@ -39,9 +39,11 @@ SkookumScript’s gameplay scripting model relies on five core pillars:
 
 1. **Sequential Linearity:** Code reads top-to-bottom. Yielding does not lose call-stack context.
 2. **`sync` (Parallel Join):** Spawns $N$ concurrent branches and suspends the parent. The parent resumes *only when all branches finish successfully*. If any branch fails, all sibling branches are cancelled immediately.
-3. **`race` (First-to-Finish Preemption):** Spawns $N$ concurrent branches. The moment *any* branch completes or fails, all other competing branches are **instantly aborted and cleaned up**.
-4. **Hierarchical Lifetime & Scope Guarding:** Coroutines are attached to an owner (e.g., an `Enemy` or a parent task). If the owner dies or the parent aborts, the entire sub-tree of child fibers is guaranteed to be terminated.
-5. **No Manual Ref-Counting (`Rc` Elimination):** Because each coroutine has its own stack frame, local variables remain safely on the stack across yields.
+3. **`race` (First-to-Succeed Preemption):** Spawns $N$ concurrent branches. The moment *any* branch completes successfully (`.Completed`), all other competing branches are **instantly aborted and cleaned up**. Sibling branches that call `fail(f)` drop out without winning. If all branches fail, `race` returns `-1`.
+4. **`rush` (First-to-Succeed Partial Join):** Spawns $N$ concurrent branches. Resumes parent as soon as the first branch completes successfully, but **losing branches are NOT cancelled**; their join coordinators are detached and they continue executing concurrently in the background as scoped children of the parent.
+5. **`branch_scoped` (Parent-Bound Fire-and-Forget):** Spawns a background task attached to the parent's lifetime without suspending the parent. If the parent completes or is cancelled, all scoped branches are cleanly aborted bottom-up.
+6. **Hierarchical Lifetime & Scope Guarding:** Coroutines are attached to an owner (e.g., an `Enemy` or a parent task). If the owner dies or the parent aborts, the entire sub-tree of child fibers is guaranteed to be terminated.
+7. **No Manual Ref-Counting (`Rc` Elimination):** Because each coroutine has its own stack frame, local variables remain safely on the stack across yields.
 
 ---
 
@@ -613,7 +615,8 @@ A coordinator synchronizes a group of child fibers spawned by a parent. It lives
 ```odin
 Join_Kind :: enum u8 {
     Sync, // All children must finish; parent resumes when remaining == 0
-    Race, // First child to finish wins; immediately aborts all siblings
+    Race, // First child to succeed wins; immediately aborts all siblings
+    Rush, // First child to succeed wins; losers continue running in background
 }
 
 Join_Coordinator :: struct {
@@ -621,7 +624,7 @@ Join_Coordinator :: struct {
     parent:          ^Fiber,
     total_branches:  int,
     active_branches: int,
-    winner:          ^Fiber,      // Set in Race mode
+    winner:          ^Fiber,      // Set in Race / Rush mode
     has_failed:      bool,       // True if any child failed in Sync mode
     completed:       bool,
 }
@@ -629,7 +632,7 @@ Join_Coordinator :: struct {
 
 ---
 
-## 2. Concurrency Coordinators: `sync` vs. `race`
+## 2. Concurrency Coordinators: `sync`, `race`, and `rush`
 
 ### A. The `sync` Lifecycle (Parallel Join)
 1. **Spawn:** Parent initializes its `active_coord` (`kind = .Sync`, `active_branches = N`).
@@ -651,15 +654,26 @@ Join_Coordinator :: struct {
                  Child B finishes (rem = 0) ──► Parent Wakes Up
 ```
 
-### B. The `race` Lifecycle (First-to-Finish Preemption)
+### B. The `race` Lifecycle (First-to-Succeed Preemption)
 1. **Spawn:** Parent initializes `active_coord` (`kind = .Race`, `active_branches = N`, `winner = nil`).
 2. **Link & Suspend:** Parent spawns $N$ children and suspends with `.Suspended_Join`.
-3. **First Arrival Wins:** The first child to finish (or satisfy a condition):
+3. **First Success Wins:** The first child to finish with success (`status == .Completed`):
    * Sets `active_coord.winner = current_child`.
    * Sets `active_coord.completed = true`.
-   * **Instantly aborts all sibling branches** linked to that coordinator.
+   * **Instantly aborts all competing sibling branches** linked to that coordinator.
    * Moves the parent fiber back to the **Ready Queue**.
-4. **Cleanup:** Aborted siblings are immediately removed from scheduler queues (timer heap, condition lists) and their stacks are recycled.
+4. **Failure Drop-Out:** If a child calls `fail(f)`, it drops out without winning. If all branches fail, parent resumes with `winner = nil` (`winner_index = -1`).
+5. **Cleanup:** Aborted siblings are immediately removed from scheduler queues (timer heap, condition lists) and their stacks are recycled.
+
+### C. The `rush` Lifecycle (First-to-Succeed Partial Join)
+1. **Spawn:** Parent initializes `active_coord` (`kind = .Rush`, `active_branches = N`, `winner = nil`).
+2. **Link & Suspend:** Parent spawns $N$ children and suspends with `.Suspended_Join`.
+3. **First Success Resumes Parent:** When the first child succeeds:
+   * Sets `active_coord.winner = current_child` and `active_coord.completed = true`.
+   * **Detaches losing siblings:** Sets `child.join_coord = nil` on all remaining siblings so they no longer report to this coordinator.
+   * **Losers continue in background:** Losers are NOT aborted; they keep executing concurrently as direct scoped children of the parent.
+   * Moves the parent fiber back to the **Ready Queue**.
+4. **Child Reaping:** If the parent later exits or is cancelled, `fiber_cleanup_and_recycle` drains the parent's `first_child` list and safely aborts all background children bottom-up.
 
 ---
 
@@ -929,11 +943,39 @@ Spawns $N$ branches in parallel and suspends the parent fiber. **Resumes only wh
 sync :: proc(f: ^Fiber, branches: ..Branch_Desc) -> bool
 ```
 
-### C. `race` (First to Finish Wins)
-Spawns $N$ branches in parallel. **The first branch to finish aborts all competing sibling branches immediately.** Returns the index of the winning branch.
+### C. `race` (First to Succeed Wins)
+Spawns $N$ branches in parallel. **The first branch to complete with success (`.Completed`) aborts all competing sibling branches immediately.** Branches that call `fail(f)` drop out without winning. Returns the index of the winning branch, or `-1` if all branches failed.
 
 ```odin
 race :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
+```
+
+### D. `rush` (First to Succeed Partial Join)
+Spawns $N$ branches in parallel. Resumes the parent as soon as the first branch succeeds (`.Completed`), **without cancelling losing branches** (losers continue running concurrently in the background as scoped children of the parent).
+
+```odin
+rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
+```
+
+### E. `fallback` (Sequential Priority Execution)
+Executes branches sequentially in priority order ($A \rightarrow B \rightarrow C$). Stops at the first branch that succeeds. If a branch calls `fail(f)`, execution cascades to the next branch.
+
+```odin
+fallback :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
+```
+
+### F. `branch_scoped` (Parent-Bound Fire-and-Forget)
+Spawns a child task that runs concurrently in the background without suspending the parent (Verse `branch:`). If the parent completes, fails, or is cancelled, all scoped branches are automatically aborted bottom-up.
+
+```odin
+branch_scoped :: proc{branch_scoped_nil, branch_scoped_ptr, branch_scoped_val, branch_scoped_desc}
+```
+
+### G. `yield_now` (In-Frame Cooperative Timeslice)
+Relinquishes the CPU timeslice to other ready fibers in the current frame without advancing the clock tick (Verse `Sleep(0.0)`).
+
+```odin
+yield_now :: proc(f: ^Fiber)
 ```
 
 ---

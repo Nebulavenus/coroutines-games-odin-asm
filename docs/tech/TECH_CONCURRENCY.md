@@ -14,17 +14,20 @@ Structured concurrency guarantees that concurrent branches are bounded by lexica
         ┌───────────────────┬────────────┴───────┬───────────────────┐
         ▼                   ▼                    ▼                   ▼
      `sync`              `race`               `rush`            `fallback`
-(Fork-Join All)    (First Finishes)     (First Succeeds)    (Sequential Fallback)
+(Fork-Join All)     (First to Succeed,   (First to Succeed,  (Sequential Priority)
+                     Aborts Rivals)       Losers Continue)
 ```
 
 ### Comprehensive Combinator Specification
 
 | Primitive | Execution Model | Success Criterion | Failure / Cancellation Behavior |
 | :--- | :--- | :--- | :--- |
-| **`sync`** | Parallel Fork-Join | Resumes parent when **all** branches succeed (`state == .Finished`). | If any branch fails or is cancelled, all remaining sibling branches are immediately aborted. Parent marks failure. |
-| **`race`** | Parallel First-to-Finish Preemption | Resumes parent as soon as **any** branch finishes or fails. | The winning branch terminates the race; all losing sibling subtrees are recursively aborted. |
-| **`rush`** | Parallel First-to-Succeed Race | Resumes parent when the **first successful** branch finishes. | Early failures of individual branches are ignored. If all branches fail, parent fails. |
+| **`sync`** | Parallel Fork-Join | Resumes parent when **all** branches succeed (`state == .Completed`). | If any branch fails or is cancelled, all remaining sibling branches are immediately aborted. Parent marks failure. |
+| **`race`** | Parallel First-to-Succeed Preemption | Resumes parent as soon as **any** branch completes successfully (`.Completed`). | Sibling branches that call `fail(f)` drop out without winning. The first successful arm wins and recursively aborts all competing sibling subtrees. If all branches fail, parent fails (`winner_index = -1`). |
+| **`rush`** | Parallel First-to-Succeed Partial Join | Resumes parent as soon as the **first** branch completes successfully (`.Completed`). | Early failures are ignored. **Crucially: losing sibling arms are NOT aborted.** Their join coordinator is detached (`child.join_coord = nil`) and they continue executing concurrently in the background. If all branches fail, parent fails. |
 | **`fallback`** | Sequential Priority Execution | Executes branches sequentially ($A \rightarrow B \rightarrow C$). Stops at first success. | If branch $A$ succeeds, $B$ and $C$ never spawn. If branch $A$ fails, execution cascades to $B$. |
+| **`branch_scoped`** | Parent-Bound Fire-and-Forget | Parent continues immediately without suspending. Subtask runs in background. | Scoped to parent lifetime: if the parent fiber completes, fails, or is cancelled, all attached scoped branches are automatically aborted bottom-up. |
+| **`yield_now`** | In-Frame Cooperative Timeslice | Relinquishes timeslice to other ready fibers in the current frame. | Resumes before the current simulation tick finishes without waiting for the next clock step. |
 | **`with_timeout`** | Time-Bounded Scoped Execution | Branch finishes before deadline $t$. | If timer expires, child fiber subtree is cancelled and `with_timeout` returns `false`. |
 
 ---
@@ -35,7 +38,7 @@ To achieve zero dynamic heap allocations during branch coordination, each `Fiber
 
 ```
                          [ Parent Fiber ]
-                    Join_Coordinator: .Sync / .Race
+                    Join_Coordinator: .Sync / .Race / .Rush
                      ├─ count: 3, completed: 0
                      └─ first_child: ──┐
                                        │
@@ -51,6 +54,9 @@ To achieve zero dynamic heap allocations during branch coordination, each `Fiber
 - `sibling_next`: Pointer to the next sibling in the linked list.
 - `parent`: Pointer back to the parent fiber.
 - `join_coord`: Intrusive struct managing join mode (`.Sync`, `.Race`, `.Rush`), active branch counts, and winner indices.
+  - In `.Race`: the first completed arm wins, parent is unblocked, and all sibling branches are recursively aborted.
+  - In `.Rush`: the first completed arm wins and unblocks the parent; losing siblings have `join_coord` set to `nil` and continue executing concurrently in the background as scoped children of `parent`.
+  - When `parent` terminates or cancels, `fiber_cleanup_and_recycle` sweeps `first_child` to cleanly drain and abort all background children bottom-up.
 
 ---
 

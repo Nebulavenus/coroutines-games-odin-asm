@@ -85,6 +85,39 @@ coroutine.event_emit(&sched, &death_event, Player_Death{"Knight", 42})
 
 ---
 
+## 2.5 Latched Milestones with `Sticky_Event(T)` & `Sticky_Signal`
+
+Standard `Signal` and `Event(T)` are transient broadcasts: if a signal is emitted *before* an actor arrives to await it, the message is dropped.
+
+In games, state transitions (such as `game_started`, `cutscene_finished`, or `boss_defeated`) are **latched milestones**: late-joining fibers should see that the milestone has already occurred and continue immediately without waiting.
+
+```odin
+Game_State :: struct {
+    ready_signal: coroutine.Sticky_Signal,
+    winner_event: coroutine.Sticky_Event(string),
+}
+
+game: Game_State
+
+// Late-joining UI fiber arrives after ready_signal was already emitted:
+ui_fiber :: proc(f: ^coroutine.Fiber) {
+    // If ready_signal was already emitted, sticky_signal_wait returns IMMEDIATELY in O(1)!
+    coroutine.sticky_signal_wait(f, &game.ready_signal)
+    fmt.println("[UI] HUD initialized!")
+
+    // Await sticky payload:
+    winner, ok := coroutine.sticky_event_wait(f, &game.winner_event)
+    if ok {
+        fmt.printf("[UI] Victory banner displayed for %s!\n", winner)
+    }
+}
+```
+
+- **True ZII & Zero Allocations**: Requires no heap memory or dynamic queues.
+- **State Reset**: Call `coroutine.sticky_signal_reset(&game.ready_signal)` or `coroutine.sticky_event_reset(&game.winner_event)` when resetting the game match.
+
+---
+
 ## 3. Shared Resource Arbitration with `Fiber_Mutex` (`coroutine/sync`)
 
 When multiple actors must access an exclusive gameplay station (e.g. an NPC dialogue booth, an ammo recharge station, or a crafting anvil), import `coroutine/sync`. With True ZII, mutexes inside game structs are immediately valid:

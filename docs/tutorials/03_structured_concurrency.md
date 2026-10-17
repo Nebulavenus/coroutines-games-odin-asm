@@ -2,7 +2,7 @@
 
 Structured concurrency guarantees that concurrent branches are strictly bounded by lexical scope. A parent fiber spawning child branches cannot complete or leave its execution scope until all child branches have terminated.
 
-In this chapter, you will build a complete multi-phase Boss encounter using `sync` (parallel fork-join) and `race` (first-to-finish preemption).
+In this chapter, you will build a complete multi-phase Boss encounter using `sync` (parallel fork-join) and `race` (first-to-succeed preemption).
 
 ---
 
@@ -53,7 +53,7 @@ boss_laser_barrage :: proc(f: ^coroutine.Fiber) {
 
 ## 2. Preemptive Cancellation with `race`
 
-Use `race` when multiple branches compete, and the parent wants to resume as soon as the **first** branch completes—automatically aborting and cleaning up the losing branches:
+Use `race` when multiple branches compete, and the parent wants to resume as soon as the **first** branch completes successfully (`.Completed`)—automatically aborting and cleaning up the losing branches. If an arm calls `fail(f)`, it drops out of the competition without winning:
 
 ```
                            [ Parent Fiber ]
