@@ -19,26 +19,19 @@ when ODIN_ARCH == .amd64 {
             #preserve %rbx,
             #preserve %rsi,
             #preserve %rdi,
-            #preserve %rsp,
+            #align_stack,
+            #volatile,
             #clobber %rax,
             #clobber %r8,
             #clobber %r9,
             #clobber %r10,
             #clobber %r11,
-            #clobber %r12,
-            #clobber %r13,
-            #clobber %r14,
-            #clobber %r15,
-            #clobber %xmm6,
-            #clobber %xmm7,
-            #clobber %xmm8,
-            #clobber %xmm9,
-            #clobber %xmm10,
-            #clobber %xmm11,
-            #clobber %xmm12,
-            #clobber %xmm13,
-            #clobber %xmm14,
-            #clobber %xmm15,
+            #clobber %xmm0,
+            #clobber %xmm1,
+            #clobber %xmm2,
+            #clobber %xmm3,
+            #clobber %xmm4,
+            #clobber %xmm5,
             #clobber %flags,
             #clobber memory,
         ] {
@@ -71,7 +64,7 @@ when ODIN_ARCH == .amd64 {
 
             // 3. Swap Stack Pointers (*from_rsp = rsp; rsp = to_rsp)
             mov [from_rsp], %rsp
-            xchg %rsp, %rdx
+            xchg %rsp, to_rsp
 
             // 4. Restore Callee-Saved XMM Registers (160 bytes)
             movdqu %xmm6,  [%rsp + 144]
@@ -110,7 +103,8 @@ when ODIN_ARCH == .amd64 {
             to_rsp   = %rsi,
             #preserve %rbp,
             #preserve %rbx,
-            #preserve %rsp,
+            #align_stack,
+            #volatile,
             #clobber %rax,
             #clobber %rcx,
             #clobber %rdx,
@@ -118,10 +112,22 @@ when ODIN_ARCH == .amd64 {
             #clobber %r9,
             #clobber %r10,
             #clobber %r11,
-            #clobber %r12,
-            #clobber %r13,
-            #clobber %r14,
-            #clobber %r15,
+            #clobber %xmm0,
+            #clobber %xmm1,
+            #clobber %xmm2,
+            #clobber %xmm3,
+            #clobber %xmm4,
+            #clobber %xmm5,
+            #clobber %xmm6,
+            #clobber %xmm7,
+            #clobber %xmm8,
+            #clobber %xmm9,
+            #clobber %xmm10,
+            #clobber %xmm11,
+            #clobber %xmm12,
+            #clobber %xmm13,
+            #clobber %xmm14,
+            #clobber %xmm15,
             #clobber %flags,
             #clobber memory,
         ] {
@@ -139,7 +145,7 @@ when ODIN_ARCH == .amd64 {
 
             // 2. Swap Stack Pointers (*from_rsp = rsp; rsp = to_rsp)
             mov [from_rsp], %rsp
-            xchg %rsp, %rsi
+            mov %rsp, to_rsp
 
             // 3. Restore Callee-Saved Registers for target fiber (48 bytes)
             pop %r15
@@ -164,7 +170,7 @@ when ODIN_ARCH == .amd64 {
     // Read the active CPU stack pointer using high-level inline assembly
     get_rsp :: asm() -> (sp: rawptr) [
         sp = %rax,
-        #preserve %rsp,
+        #volatile,
     ] {
         mov sp, %rsp
     }

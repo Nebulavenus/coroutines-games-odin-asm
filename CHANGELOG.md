@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
+
+### Changed
+- **Mandatory `#align_stack` & Entry-Defined SP Adoption (`asm_amd64.odin`, `asm_arm64.odin`, `asm_riscv64.odin`)**:
+  - Added `#align_stack` and explicit `#volatile` to `fiber_context_switch` across AMD64 (Win64 & SysV), ARM64, and RISC-V 64 as required by Odin commit `1590b7635` (also protecting SysV AMD64 against red-zone overwrites).
+  - Removed now-redundant `#preserve %rsp` / `#preserve %sp` declarations from `fiber_context_switch`, `get_rsp`, and `get_sp` (Odin commit `b40bb67ea` automatically defines `%rsp`/`%sp` on entry and marks it exit-live).
+  - Removed redundant manually-declared written-register clobbers (`%r12..%r15`, `%xmm6..%xmm15`) on AMD64 (automatically inferred by Odin commit `88a10c973`).
+  - Migrated System V AMD64 stack swap from `xchg %rsp, %rsi` to direct `mov %rsp, to_rsp`; updated Windows x64 swap to `xchg %rsp, to_rsp` (auto-tied via Odin commit `b3ea5193a`, avoiding the `CLOBBER_REGS_NAMED` `ClobberReg_RSP` dead-write false positive past `add %rsp, 160`).
+- **ARM64 `#byte` Reduction (`11 -> 8`) via High-Level SP & `#pre`/`#post` Writeback (`asm_arm64.odin`)**:
+  - Eliminated all 3 `#byte` `%sp`-modifying instructions (`sub sp, sp, #160`, `mov sp, x1`, `add sp, sp, #160`) now that Odin commits `f6c1e779f` and `88a10c973` no longer emit `~{sp}` clobbers.
+  - Adopted Odin commit `ea2a0509e` writeback syntax (`stp %x29, %x30, #pre [%sp - 160]`, `mov %sp, to_rsp`, `ldp %x29, %x30, #post [%sp + 160]`), preserving the exact 160-byte frame layout while removing 2 instructions per context switch.
+  - Only the 8 `stp`/`ldp d8..d15` instructions on ARM64 and 24 `fsd`/`fld fs0..fs11` instructions on RISC-V 64 remain `#byte` due to upstream register-table / typing limitations in Odin `89246b0ad`.
+- **Full Caller-Saved Float/SIMD Clobbers Under Aggressive Single-Module Inlining (`asm_amd64.odin`, `asm_riscv64.odin`)**:
+  - Added `#clobber %xmm0..%xmm5` (Windows x64), `#clobber %xmm0..%xmm15` (System V AMD64), and `#clobber %ft0..%ft11`, `%fa0..%fa7` (RISC-V 64) to `fiber_context_switch`.
+  - Fixed floating-point register corruption across aggressively inlined `yield`/`wait_steps` calls under `-o:speed -use-single-module` and `-o:aggressive`.
+- **Regenerated Amalgamated Distributions (`dist/coroutine.odin`, `dist/coroutine_wasm32.odin`)**:
+  - Rebuilt standalone drop-ins via `.\build.ps1 amalgamate` and verified via `.\build.ps1 test-dist`.
+- **Documentation Suite Updated (`docs/ASM.md`, `docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`, `docs/tech/TECH_ASM.md`, `docs/ARCHITECTURE.md`, `docs/DISTRIBUTION.md`, `docs/REPORTS.md`, `README.md`)**:
+  - Updated inline `asm` reference and compiler analysis to Odin `dev-2026-11:89246b0ad`, removed duplicate stale lower sections from `docs/tech/TECH_ASM.md`, and synced target architecture tables in `docs/DISTRIBUTION.md`.
+
 ## [Concurrency Hardening & Developer Ergonomics (Epic Verse Alignment)] - 2026-10-17
 
 ### Added

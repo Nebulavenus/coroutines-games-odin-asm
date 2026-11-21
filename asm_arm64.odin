@@ -16,7 +16,8 @@ when ODIN_ARCH == .arm64 {
     fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
         from_rsp = %x0,
         to_rsp   = %x1,
-        #preserve %sp,
+        #align_stack,
+        #volatile,
         #clobber memory,
         #clobber %x2,
         #clobber %x3,
@@ -60,14 +61,14 @@ when ODIN_ARCH == .arm64 {
         #clobber %v30,
         #clobber %v31,
     ] {
+        // TODO-UPDATE-COMMENT: SP allocation now uses high-level #pre writeback; Odin no longer implicitly clobbers SP
+        // ---
         // 1. Allocate 160-byte stack frame (#byte avoids implicit ~{sp} clobber warning in LLVM AArch64 backend)
-        #byte 0xFF, 0x83, 0x02, 0xD1 // sub sp, sp, #160
-
         // 2. Capture resume address (.switch_done) into Link Register (x30)
         adr %x30, .switch_done
 
         // 3. Save Callee-Saved GPRs (x29, x30, x19..x28)
-        stp %x29, %x30, [%sp]
+        stp %x29, %x30, #pre [%sp - 160]
         stp %x19, %x20, [%sp + 16]
         stp %x21, %x22, [%sp + 32]
         stp %x23, %x24, [%sp + 48]
@@ -83,7 +84,7 @@ when ODIN_ARCH == .arm64 {
         // 5. Swap Stack Pointers (*from_rsp = sp; sp = to_rsp)
         mov %x2, %sp
         str %x2, [from_rsp]
-        #byte 0x3F, 0x00, 0x00, 0x91 // mov sp, x1
+        mov %sp, to_rsp
 
         // 6. Restore Callee-Saved SIMD/FP Registers (d14..d8)
         #byte 0xEE, 0x3F, 0x49, 0x6D // ldp d14, d15, [sp, #144]
@@ -97,10 +98,9 @@ when ODIN_ARCH == .arm64 {
         ldp %x23, %x24, [%sp + 48]
         ldp %x21, %x22, [%sp + 32]
         ldp %x19, %x20, [%sp + 16]
-        ldp %x29, %x30, [%sp]
 
         // 8. Deallocate 160-byte stack frame and return to target fiber (cbz links CFG block to .switch_done; %x2 != 0)
-        #byte 0xFF, 0x83, 0x02, 0x91 // add sp, sp, #160
+        ldp %x29, %x30, #post [%sp + 160]
         cbz %x2, .switch_done
         ret
     .switch_done:
@@ -114,7 +114,7 @@ when ODIN_ARCH == .arm64 {
     // Read active CPU stack pointer using high-level inline assembly
     get_sp :: asm() -> (sp: rawptr) [
         sp = %x0,
-        #preserve %sp,
+        #volatile,
     ] {
         mov sp, %sp
     }

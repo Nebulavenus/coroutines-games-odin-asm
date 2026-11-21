@@ -150,9 +150,9 @@ main :: proc() {
 
 | Architecture | Operating Systems | Context Switch Implementation | ABI Standard |
 | :--- | :--- | :--- | :--- |
-| **AMD64 (x86_64)** | Windows | `#byte` machine code arrays | Microsoft x64 (Win64) |
-| **AMD64 (x86_64)** | Linux, macOS, FreeBSD | `#byte` machine code arrays | System V AMD64 ABI |
-| **ARM64 (aarch64)** | Linux, macOS, Android | `#byte` machine code arrays | AAPCS64 Standard |
-| **RISC-V 64** | Linux | `#byte` machine code arrays | LP64D ABI |
+| **AMD64 (x86_64)** | Windows | 100% high-level inline `asm` (0 `#byte`) | Microsoft x64 (Win64) |
+| **AMD64 (x86_64)** | Linux, macOS, FreeBSD | 100% high-level inline `asm` (0 `#byte`) | System V AMD64 ABI |
+| **ARM64 (aarch64)** | Linux, macOS, Android | Hybrid high-level `asm` (`#pre`/`#post` SP + GPRs; 8 `#byte` for `d8..d15`) | AAPCS64 Standard |
+| **RISC-V 64** | Linux | Hybrid high-level `asm` (SP + GPRs; 24 `#byte` for `fs0..fs11`) | LP64D ABI |
 
-All machine code arrays are verified down to individual opcodes using Odin's `core:rexcode` disassembler.
+All remaining `#byte` sequences are verified down to individual opcodes using Odin's `core:rexcode` disassembler.

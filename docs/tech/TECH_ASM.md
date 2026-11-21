@@ -85,7 +85,7 @@ When switching between fibers:
 | **Frame / Link Regs** | `%x29` (FP) + `%x30` (LR / Return Address) | 16B | Stored / loaded via `stp`/`ldp x29, x30, [sp, #0]` |
 | **Callee-Saved GPRs** | `%x19` through `%x28` (10 registers) | 80B | Stored / loaded in pairs via `stp`/`ldp` |
 | **Callee-Saved SIMD** | `%d8` through `%d15` (8 registers) | 64B | Stored / loaded in pairs via `stp`/`ldp` |
-| **Total Frame Size** | **160 Bytes** | 160B | `sub sp, sp, #160` / `add sp, sp, #160` |
+| **Total Frame Size** | **160 Bytes** | 160B | `stp %x29, %x30, #pre [%sp - 160]` / `ldp %x29, %x30, #post [%sp + 160]` |
 | **Self-Identity Register** | `%x19` | 8B | Extracted via high-level inline `get_x19_reg()` |
 
 ---
@@ -107,11 +107,11 @@ When switching between fibers:
 ### D. Symbolic Resume Label Capture Across Architectures
 Because Odin inlines `asm(...)` templates directly into calling procedures (`wait_steps`, `scheduler_step`), no `call`/`bl`/`jal` instruction is emitted at the call site. To resume cleanly at the end of the template when switched back in, all three architectures capture the address of the trailing `.switch_done:` label using high-level symbolic instructions:
 * **AMD64 (`asm_amd64.odin`)**: `lea %rax, [.switch_done]; push %rax` pushes the RIP-relative resume address onto the stack (`0` `#byte` directives across the entire file).
-* **ARM64 (`asm_arm64.odin`)**: `adr %x30, .switch_done` loads the PC-relative address of `.switch_done:` into `%x30` (LR) before `stp %x29, %x30, [%sp, 0]`, so `ret` jumps directly to `.switch_done:` on the restored fiber's stack.
+* **ARM64 (`asm_arm64.odin`)**: `adr %x30, .switch_done` loads the PC-relative address of `.switch_done:` into `%x30` (LR) before `stp %x29, %x30, #pre [%sp - 160]`, and `ldp %x29, %x30, #post [%sp + 160]` + `ret` jumps directly to `.switch_done:` on the restored fiber's stack.
 * **RISC-V 64 (`asm_riscv64.odin`)**: `lla %ra, .switch_done` expands to `auipc + addi` to load `.switch_done:` into `%ra` before `sd %ra, [%sp + 0]`, so `jalr %zero, %ra, 0` jumps directly to `.switch_done:` on the restored fiber's stack.
 
-### F. High-Level Inline Assembly Register & Stack Extractors
-For register and stack-pointer inspection, the engine uses **100% pure high-level Odin inline assembly templates** (zero `#byte` directives across all architectures):
+### E. High-Level Inline Assembly Register & Stack Extractors
+For register and stack-pointer inspection, the engine uses **100% pure high-level Odin inline assembly templates** (zero `#byte` directives across all architectures). Since Odin `dev-2026-11`, `%rsp`/`%sp` is implicitly defined on entry and live on exit, so `#preserve %rsp`/`#preserve %sp` is not needed:
 * **Fiber Self-Identity Registers**:
   ```odin
   // AMD64
@@ -121,15 +121,22 @@ For register and stack-pointer inspection, the engine uses **100% pure high-leve
   // RISC-V 64
   get_s2_reg  :: asm() -> (res: rawptr) [ res = %s2 ]  { addi res, %s2, 0 }
   ```
-* **Active Stack Pointer Extraction (`#preserve %rsp` / `#preserve %sp`)**:
+* **Active Stack Pointer Extraction**:
   ```odin
   // AMD64
-  get_rsp :: asm() -> (sp: uintptr) [ #preserve %rsp, #volatile ] { mov sp, %rsp }
+  get_rsp :: asm() -> (sp: rawptr) [ sp = %rax, #volatile ] { mov sp, %rsp }
   // ARM64
-  get_sp  :: asm() -> (sp: rawptr)  [ sp = %x0, #preserve %sp, #volatile ] { mov sp, %sp }
+  get_sp  :: asm() -> (sp: rawptr) [ sp = %x0, #volatile ]  { mov sp, %sp }
   // RISC-V 64
-  get_sp  :: asm() -> (sp: rawptr)  [ sp = %a0, #preserve %sp, #volatile ] { addi sp, %sp, 0 }
+  get_sp  :: asm() -> (sp: rawptr) [ sp = %a0, #volatile ]  { addi sp, %sp, 0 }
   ```
+
+### F. Compiler Safety & SSA Invariants
+Modern optimizing compilers (LLVM in Odin) perform aggressive DCE, CSE, red-zone allocation, and register caching across procedure calls. Every `fiber_context_switch` template enforces four invariants:
+1. **`#align_stack` Directive**: Required by Odin `dev-2026-11` for any template that pushes, calls, or writes `%rsp`/`%sp`; enforces stack alignment and disables SysV red-zone storage below `%rsp`.
+2. **`#volatile` Directive**: Prevents the backend from eliminating, duplicating, or reordering the switch.
+3. **Caller-Saved Register Clobbers**: Volatile registers are listed with `#clobber %reg` and `#clobber %flags` (while written named registers are automatically clobbered by Odin `dev-2026-11`).
+4. **Memory Barrier (`#clobber memory`)**: Forces LLVM to flush and reload memory state across fiber suspension points.
 
 ---
 
@@ -174,139 +181,3 @@ The engine is verified across all targets via automated test runners:
 .\run_wsl_qemu.ps1 bench
 ```
 * **GitHub Actions CI Matrix**: Tests native AMD64 (Windows/Ubuntu), native Apple Silicon ARM64 (`macos-14`), and QEMU-emulated Linux ARM64 and RISC-V 64 on every commit.
-
-
-## 2. ABI Register Preservation Specifications
-
-Operating systems and calling conventions dictate which registers are **callee-saved (non-volatile)** and must be preserved across procedure calls and context switches, versus **caller-saved (volatile)** registers.
-
-### Windows x64 ABI vs. System V AMD64 ABI
-
-| Register Class | Windows x64 ABI (Win64) | System V AMD64 ABI (Linux / macOS / BSD) | Engine Preservation Strategy |
-| :--- | :--- | :--- | :--- |
-| **Stack Pointer** | `%rsp` | `%rsp` | Swapped via memory operand |
-| **Callee-Saved GPRs** | `%rbp`, `%rbx`, `%rdi`, `%rsi`, `%r12`, `%r13`, `%r14`, `%r15` | `%rbp`, `%rbx`, `%r12`, `%r13`, `%r14`, `%r15` | Pushed / popped sequentially on fiber stack |
-| **Callee-Saved SIMD** | `%xmm6` through `%xmm15` (10 registers) | None (all XMM registers are volatile) | Stored / loaded via `movdqu` (160 bytes on stack) |
-| **Caller-Saved GPRs** | `%rax`, `%rcx`, `%rdx`, `%r8`, `%r9`, `%r10`, `%r11` | `%rax`, `%rcx`, `%rdx`, `%rsi`, `%rdi`, `%r8`, `%r9`, `%r10`, `%r11` | Explicitly declared in `#clobbers` |
-| **Status Flags** | `rflags` | `rflags` | Declared in `#clobbers` (`"cc"`) |
-
-### Why Windows x64 Requires Preserving `xmm6`–`xmm15`
-
-Under the Microsoft x64 calling convention, the low 128 bits of registers `xmm6` through `xmm15` are non-volatile and **must be preserved** by a callee. If a context switch does not save and restore `xmm6`–`xmm15`:
-- Vector math, floating-point calculations, matrix transforms, and SIMD operations inside one coroutine will silently corrupt floating-point registers in other coroutines or the main engine loop.
-- The engine allocates 160 bytes (10 registers $\times$ 16 bytes) on the stack during every context switch on Windows to store these registers with unaligned 16-byte move instructions (`movdqu`).
-
-### Complete Windows x64 Callee-Saved Stack Layout
-
-When a fiber suspends on Windows x64, its stack frame holds exactly:
-1. 10 SIMD registers $\times$ 16 bytes = 160 bytes (`xmm6` .. `xmm15`).
-2. 8 General Purpose Registers $\times$ 8 bytes = 64 bytes (`rbp`, `rbx`, `rdi`, `rsi`, `r12`, `r13`, `r14`, `r15`).
-3. 1 Return address $\times$ 8 bytes = 8 bytes.
-
-Total context switch frame size: **232 bytes**.
-
-```
-High Address (Stack Base)
-┌────────────────────────────────────────────────────────┐
-│ Return Address (%rip after call)              (8 Bytes)│
-├────────────────────────────────────────────────────────┤
-│ Saved %rbp                                    (8 Bytes)│
-│ Saved %rbx                                    (8 Bytes)│
-│ Saved %rdi                                    (8 Bytes)│
-│ Saved %rsi                                    (8 Bytes)│
-│ Saved %r12                                    (8 Bytes)│
-│ Saved %r13                                    (8 Bytes)│
-│ Saved %r14                                    (8 Bytes)│
-│ Saved %r15                                    (8 Bytes)│
-├────────────────────────────────────────────────────────┤
-│ Saved %xmm6                                  (16 Bytes)│
-│ Saved %xmm7                                  (16 Bytes)│
-│ Saved %xmm8                                  (16 Bytes)│
-│ Saved %xmm9                                  (16 Bytes)│
-│ Saved %xmm10                                 (16 Bytes)│
-│ Saved %xmm11                                 (16 Bytes)│
-│ Saved %xmm12                                 (16 Bytes)│
-│ Saved %xmm13                                 (16 Bytes)│
-│ Saved %xmm14                                 (16 Bytes)│
-│ Saved %xmm15                                 (16 Bytes)│
-└────────────────────────────────────────────────────────┘ ◄── Current %rsp
-Low Address
-```
-
----
-
-## 3. The Call / Ret Trampoline Mechanism
-
-Instead of maintaining a separate Program Counter (`%rip`) field in the fiber struct and manually jumping via `jmp`, the engine leverages the CPU's native `call` and `ret` instructions:
-
-1. When `context_switch(from_rsp, to_rsp)` is invoked:
-   - The CPU pushes the return address (`%rip` immediately after the call) onto the current stack.
-   - The context switch routine pushes all non-volatile GPRs and SIMD registers onto the current stack.
-   - The current stack pointer (`%rsp`) is saved into `from_rsp^`.
-   - The target stack pointer is loaded into `%rsp` from `to_rsp`.
-   - Non-volatile SIMD and GPRs are popped from the target stack.
-   - The `ret` instruction pops the stored return address into `%rip`, seamlessly resuming execution inside the target fiber or scheduler.
-
-This ensures zero branch mispredictions or instruction decoding stalls compared to manual long jumps.
-
----
-
-## 4. The `%r12` Universal Register Passing Trick
-
-During initial fiber bootstrap and subsequent context switches, the target `^Fiber` pointer must be accessible without polluting caller-saved argument registers that could be overwritten during initialization:
-
-- When `scheduler_step` switches to a fiber, `%r12` is loaded with the fiber pointer (`target_fiber`).
-- Because `%r12` is a callee-saved register across both Windows x64 and System V ABIs, procedures inside the fiber can recover self-identity and scheduler references directly from `%r12`.
-- When switching back to the scheduler, `%r12` is restored to its original value, ensuring zero register pollution in the host loop.
-
----
-
-## 5. Compiler Safety & SSA Invalidation
-
-Modern optimizing compilers (such as LLVM in Odin) perform aggressive Dead Code Elimination (DCE), Common Subexpression Elimination (CSE), and register caching across procedure calls. A stack switch violates standard single-stack assumptions if not properly guarded.
-
-### Compiler Invariants Enforced in Engine
-
-1. **`#volatile` Directive:**
-   All inline assembly blocks are marked `#volatile`. This instructs the compiler backend that the assembly block has side effects that cannot be reordered, duplicated, or eliminated.
-
-2. **Caller-Saved Register Clobbers:**
-   All volatile registers are explicitly listed in the `#clobbers` clause:
-   ```odin
-   #clobbers "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "cc", "memory"
-   ```
-
-3. **Memory Barrier (`"memory"` clobber):**
-   The `"memory"` clobber forces LLVM to flush all cached register values to memory before the context switch and reload memory values after resuming. This prevents the compiler from assuming heap or global memory remains unchanged across a yield.
-
----
-
-## 6. Stack Layout & Strict 16-Byte Alignment
-
-AMD64 ABIs require the stack pointer (`%rsp`) to be **16-byte aligned** immediately before any `call` instruction.
-
-```
-Stack High Address (Base)
-┌──────────────────────────────────────────┐ ◄── stack_base (16-byte aligned)
-│ Top-of-Stack Canary (0xDEADBEEF...)      │
-├──────────────────────────────────────────┤
-│ Synthetic Stack Frame (Bootstrap)        │
-│ • Initial Return Address: fiber_entry    │
-│ • Initial Saved GPRs (8 x 8B = 64B)      │
-│ • Initial Saved SIMD (10 x 16B = 160B)   │
-├──────────────────────────────────────────┤ ◄── Initial rsp (aligned to 16B - 8B offset)
-│ Active Execution Call Stack              │
-│ ▼ (Grows Downward)                       │
-│                                          │
-├──────────────────────────────────────────┤ ◄── stack_limit (Stack Overflow Boundary)
-│ Bottom Guard / Canary (0xDEADBEEF...)    │
-└──────────────────────────────────────────┘ ◄── stack_memory (Allocation Base)
-Stack Low Address
-```
-
-### Synthetic Frame Initialization
-When `fiber_init` configures a new fiber stack:
-1. `rsp` is set to `stack_base - size_of(Synthetic_Frame)`.
-2. The synthetic frame's return address is set to `fiber_entry_trampoline`.
-3. When the scheduler switches to this virgin stack for the first time, `ret` pops `fiber_entry_trampoline`, jumping directly into the user procedure with a fully aligned stack.
-4. When the user procedure returns, `fiber_entry_trampoline` marks the fiber as `.Finished`, resets its temporary arena, and switches back to the scheduler loop.

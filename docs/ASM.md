@@ -76,9 +76,11 @@ clobbers are declared in the block directly.
 | `name: T`           | scratch register of type `T`                                 |
 | `name: T = %reg`    | scratch register of type `T` pinned to a physical register   |
 | `view: T = src`     | width-view of `src`'s register at width `T`                  |
-| `#clobber x`        | clobber a register, `flags`, or `memory`                     |
+| `#clobber x`        | clobber a register, `%flags`, or `memory`                    |
+| `#preserve %reg`    | register is defined on entry and saved/restored by template  |
 | `#volatile`         | marks a whole template as volatile                           |
-| `#align_stack`      | forces stack realignment on entry to the template            |
+| `#align_stack`      | forces stack realignment; required when pushing/calling/writing SP |
+| `#pure`             | asserts the template has no observable side effects          |
 
 The right-hand side disambiguates the two `=` forms: `= %reg` (a register) is a
 pin; `= src` (a name) is a width-view of another operand. A bare `->` leaves the
@@ -241,19 +243,44 @@ Three orthogonal axes:
 - `#clobber memory` - memory the compiler cannot see is read or written; also
   forces ordering.
 
-Most clobbers are inferred from the instructions used; write them explicitly
-only for effects that cannot be inferred (e.g. runtime-dependent AVX-512
-masking).
+Most clobbers are inferred from the instructions used, including every physical
+register written by name in the body (except the stack pointer `%rsp`/`%sp`,
+which is never implicitly clobbered). Overwritten inputs are automatically tied
+to discarded outputs. Write `#clobber` explicitly only for effects the compiler
+cannot infer (e.g. runtime-dependent AVX-512 masking or registers trashed across
+a context switch).
 
 ## Template directives
 
 Placed within the `[...]` block:
 
+- `#preserve %reg` marks a physical register as defined on entry so the template
+  may read it (e.g. save and restore callee-saved registers). The stack pointer
+  (`%rsp` on AMD64, `%sp` on ARM64/RISC-V 64) is always treated as defined on
+  entry and live on exit automatically, so `#preserve %rsp` / `#preserve %sp` is
+  not required.
 - `#volatile` marks the whole template as _volatile_: it must not be deleted
   even if its results are unused, nor reordered. This is distinct from
   `#clobber memory` (an ordering/visibility statement) and from `#clobber %flags`.
-- `#align_stack` forces stack realignment on entry to the template, for
-  instructions that require an aligned stack.
+- `#align_stack` forces stack realignment on entry to the template and prevents
+  the compiler from keeping procedure values below the stack pointer (such as
+  the SysV red zone). **Required** by the compiler whenever a template pushes
+  onto the stack, makes a call, or writes the stack pointer (`#pre`/`#post`
+  writeback included).
+- `#pure` asserts that the template has no observable side effects (no memory
+  writes, `#volatile`, `#clobber memory`, or diverging control flow).
+
+## ARM64 writeback & external calls
+
+- On ARM64, pre-indexed and post-indexed memory operands use `#pre` and `#post`
+  before the bracketed operand:
+  ```odin
+  stp %x29, %x30, #pre [%sp - 160]
+  ldp %x29, %x30, #post [%sp + 160]
+  ```
+- Non-Odin procedures (e.g. `proc "c"`) may be called by name inside a template
+  (requiring `#align_stack`); outside calls conservatively clobber all non-reserved
+  registers.
 
 ## Semantic checking
 

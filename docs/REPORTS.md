@@ -8,8 +8,8 @@ This document records the comprehensive verification matrix, architectural analy
 
 | Feature / Subsystem | Verification Method | Status |
 | :--- | :--- | :--- |
-| **Universal Multi-ISA ASM Context Switch** | `asm_amd64.odin` (100% high-level `asm`, 0 `#byte`), `asm_arm64.odin`, `asm_riscv64.odin` — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with 100% `#byte`-free `get_rsp` / `get_sp` and self-ID extractors | **PASS** |
-| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`#preserve %rbp/%rbx/%rsi/%rdi/%rsp/%sp/%ra`, `#clobber %flags`, `#volatile`, `#clobber memory`) preventing LLVM SSA optimization/caching across context switches | **PASS** |
+| **Universal Multi-ISA ASM Context Switch** | `asm_amd64.odin` (100% high-level `asm`, 0 `#byte`), `asm_arm64.odin` (high-level GPRs + `#pre`/`#post` SP, 8 `#byte` for `d8..d15`), `asm_riscv64.odin` (high-level GPRs/SP, 24 `#byte` for `fs0..fs11`) — Zero-allocation register preservation across AMD64 (Win64 240B, SysV 64B), ARM64 (160B AAPCS64), and RISC-V 64 (208B LP64D) with 100% `#byte`-free `get_rsp` / `get_sp` and self-ID extractors | **PASS** |
+| **Compiler ASM Safety & Clobbers** | Full caller-saved register clobber definitions (`#align_stack`, `#volatile`, `#preserve %rbp/%rbx/%rsi/%rdi/%ra`, `#clobber %flags`, `#clobber memory`) verified under Odin `dev-2026-11:89246b0ad` preventing LLVM SSA optimization/caching and red-zone clobbering across context switches | **PASS** |
 | **Per-Fiber Isolated Temporary Allocator** | `types.odin` & `pool.odin` — Embedded 4KB `mem.Arena` in each `Fiber`, assigning `context.temp_allocator` with cross-yield isolation | **PASS** |
 | **Multi-Tiered Stack Safety & Guard Pages** | `pool.odin` — Configurable `Stack_Allocation_Mode` supporting portable heap slabs + canary checks and OS-level `PAGE_NOACCESS` (Windows) / `PROT_NONE` (POSIX) virtual memory | **PASS** |
 | **Stack Overflow Protection** | `pool.odin` — 64-byte `0xDEAD_BEEF_CAFE_BABE` canary guard validation and automatic 100% stack consumption reporting on breach | **PASS** |

@@ -16,7 +16,8 @@ when ODIN_ARCH == .riscv64 {
         from_rsp = %a0,
         to_rsp   = %a1,
         #preserve %ra,
-        #preserve %sp,
+        #align_stack,
+        #volatile,
         #clobber memory,
         #clobber %t0,
         #clobber %t1,
@@ -31,6 +32,26 @@ when ODIN_ARCH == .riscv64 {
         #clobber %a5,
         #clobber %a6,
         #clobber %a7,
+        #clobber %ft0,
+        #clobber %ft1,
+        #clobber %ft2,
+        #clobber %ft3,
+        #clobber %ft4,
+        #clobber %ft5,
+        #clobber %ft6,
+        #clobber %ft7,
+        #clobber %ft8,
+        #clobber %ft9,
+        #clobber %ft10,
+        #clobber %ft11,
+        #clobber %fa0,
+        #clobber %fa1,
+        #clobber %fa2,
+        #clobber %fa3,
+        #clobber %fa4,
+        #clobber %fa5,
+        #clobber %fa6,
+        #clobber %fa7,
     ] {
         // 1. Allocate 208-byte stack frame and capture resume address (.switch_done) into ra
         addi %sp, %sp, -208
@@ -113,7 +134,7 @@ when ODIN_ARCH == .riscv64 {
     // Read active CPU stack pointer using high-level inline assembly
     get_sp :: asm() -> (sp: rawptr) [
         sp = %a0,
-        #preserve %sp,
+        #volatile,
     ] {
         addi sp, %sp, 0
     }

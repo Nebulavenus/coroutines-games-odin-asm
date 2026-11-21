@@ -1,6 +1,6 @@
 # Stackful Coroutines with Structured Concurrency in Odin
 
-> **Compiler Requirement**: Built and verified with Odin `dev-2026-10` (`master` branch commit [`151d53f44`](https://github.com/odin-lang/Odin/commit/151d53f44)).
+> **Compiler Requirement**: Built and verified with Odin `dev-2026-11` (`master` branch commit [`89246b0ad`](https://github.com/odin-lang/Odin/commit/89246b0ad)).
 
 A high-performance, deterministic **stackful coroutine engine** with **structured concurrency** for [Odin](https://odin-lang.org/), context switching via native inline assembly [`asm`](https://odin-lang.org/docs/inline-asm/).
 
@@ -433,7 +433,7 @@ The documentation is organized into **4 structured engineering tracks**:
 * **[Library Distribution & Vendoring Guide (`DISTRIBUTION.md`)](docs/DISTRIBUTION.md)**: Zero-dependency single-file amalgamation (`dist/coroutine.odin`) and `odin:shared` root package vendoring.
 * **[Cookbook & Gameplay Patterns (`COOKBOOK.md`)](docs/COOKBOOK.md)**: Ready-to-use patterns for cutscenes, boss AI, weapon cooldowns, and tweens.
 * **[Hardware Context Switch & ABI Manual (`TECH_ASM.md`)](docs/tech/TECH_ASM.md)**: Production hardware switch mechanics, Link Register trampolines, and register frame layouts for AMD64, ARM64, and RISC-V 64.
-* **[Inline Assembly Guide & Principles (`ASM.md`)](docs/ASM.md)**: Low-level inline assembly conventions and `#byte` machine code standards.
+* **[Inline Assembly Guide & Principles (`ASM.md`)](docs/ASM.md)**: Odin inline assembly (`asm`) specification, `#align_stack` / `#preserve` / `#clobber` rules, and ARM64 writeback syntax.
 * **[Odin Inline Assembly Compiler Analysis & Roadmap (`TECH_ODIN_INLINE_ASM_ANALYSIS.md`)](docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md)**: Compiler frontend internals, SSA register liveness diagnostics, and language roadmap for high-level assembly context switching.
 
 ---

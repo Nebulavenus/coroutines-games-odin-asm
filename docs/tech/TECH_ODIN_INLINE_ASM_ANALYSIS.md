@@ -1,58 +1,76 @@
 # Odin Inline Assembly: Technical Analysis, Compiler Internals & Remaining Constraints (`TECH_ODIN_INLINE_ASM_ANALYSIS.md`)
 
-This technical document provides an exhaustive analysis of **Odin's Inline Assembly System (`asm`)** in `dev-2026-10:151d53f44`, detailing compiler frontend mechanics, Static Single Assignment (SSA) liveness verification, Control Flow Graph (CFG) validation, how AMD64 context switching was migrated to **100% high-level `asm` (zero `#byte`)**, and the specific remaining compiler constraints on ARM64 and RISC-V 64.
+This technical document provides an exhaustive analysis of **Odin's Inline Assembly System (`asm`)** in `dev-2026-11:89246b0ad`, detailing compiler frontend mechanics, Static Single Assignment (SSA) liveness verification, Control Flow Graph (CFG) validation, how AMD64 context switching runs in **100% high-level `asm` (zero `#byte`)**, how ARM64 eliminated all `#byte` stack-pointer operations via `#pre`/`#post` writeback, and the two remaining upstream compiler constraints on ARM64 and RISC-V 64.
 
 ---
 
 ## 1. Executive Summary & Current Architecture Status
 
-In the **Odin Stackful Coroutine Engine** (verified against Odin `dev-2026-10:151d53f44`):
+In the **Odin Stackful Coroutine Engine** (verified against Odin `dev-2026-11:89246b0ad`):
 
 | Architecture | File | `get_rsp` / `get_sp` & Self-ID | `fiber_context_switch` Status | Remaining `#byte` Instructions |
 | :--- | :--- | :--- | :--- | :--- |
 | **AMD64** (`windows_amd64`, `linux_amd64`, `darwin_amd64`) | `asm_amd64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **100% High-Level `asm`** (`0` `#byte`) | **None (`0` `#byte`)** |
-| **ARM64** (`linux_arm64`, `darwin_arm64`) | `asm_arm64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **Hybrid High-Level `asm`** (GPRs `x19..x30`, `adr`, `str`, `cbz`, `ret` in high-level `asm`) | 11 instructions (`stp`/`ldp d8..d15` + 3 `sp`-writing ops) |
+| **ARM64** (`linux_arm64`, `darwin_arm64`) | `asm_arm64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **Hybrid High-Level `asm`** (GPRs `x19..x30`, `#pre`/`#post` SP frame, `mov %sp, to_rsp`, `adr`, `str`, `cbz`, `ret` in high-level `asm`) | 8 instructions (`stp`/`ldp d8..d15` only) |
 | **RISC-V 64** (`linux_riscv64`) | `asm_riscv64.odin` | **100% High-Level `asm`** (`0` `#byte`) | **Hybrid High-Level `asm`** (`addi %sp`, `lla %ra`, `sd`/`ld ra, s0..s11`, `beq`, `jalr` in high-level `asm`) | 24 instructions (`fsd`/`fld fs0..fs11` only) |
 
 1. **Self-Identity & Stack-Pointer Extractors (`100%` High-Level `asm` across all ISAs)**:
    ```odin
    // AMD64
-   get_r12_reg :: asm() -> (res: rawptr)  [ res = %r12 ]                    { mov res, %r12 }
-   get_rsp     :: asm() -> (sp: uintptr)  [ #preserve %rsp, #volatile ]     { mov sp, %rsp }
+   get_r12_reg :: asm() -> (res: rawptr)  [ res = %r12 ]             { mov res, %r12 }
+   get_rsp     :: asm() -> (sp: rawptr)   [ sp = %rax, #volatile ]   { mov sp, %rsp }
    // ARM64
-   get_x19_reg :: asm() -> (res: rawptr)  [ res = %x19 ]                    { mov res, %x19 }
-   get_sp      :: asm() -> (sp: rawptr)   [ sp = %x0, #preserve %sp, #volatile ] { mov sp, %sp }
+   get_x19_reg :: asm() -> (res: rawptr)  [ res = %x19 ]             { mov res, %x19 }
+   get_sp      :: asm() -> (sp: rawptr)   [ sp = %x0, #volatile ]    { mov sp, %sp }
    // RISC-V 64
-   get_s2_reg  :: asm() -> (res: rawptr)  [ res = %s2 ]                     { addi res, %s2, 0 }
-   get_sp      :: asm() -> (sp: rawptr)   [ sp = %a0, #preserve %sp, #volatile ] { addi sp, %sp, 0 }
+   get_s2_reg  :: asm() -> (res: rawptr)  [ res = %s2 ]              { addi res, %s2, 0 }
+   get_sp      :: asm() -> (sp: rawptr)   [ sp = %a0, #volatile ]    { addi sp, %sp, 0 }
    ```
 2. **AMD64 Hardware Context Switch (`100%` High-Level `asm`, Zero `#byte`)**:
-   * Both Windows x64 (`240B` frame with `xmm6..xmm15`) and System V AMD64 (`64B` frame) use pure high-level `asm` mnemonics (`lea %rax, [.switch_done]`, `push`/`pop`, `movdqu`, `xchg %rsp, ...`, `jz .switch_done`, `ret`).
-3. **ARM64 & RISC-V 64 Hardware Context Switch (Hybrid High-Level `asm`)**:
-   * All callee-saved GPRs (`%x19`..`%x30` on ARM64, `%ra` and `%s0`..`%s11` on RISC-V 64), symbolic resume label capture (`adr %x30, .switch_done` and `lla %ra, .switch_done`), stack pointer stores, and return jumps are written in high-level `asm`.
-   * Only the callee-saved float/SIMD instructions (`stp`/`ldp d8..d15` on ARM64, `fsd`/`fld fs0..fs11` on RISC-V 64) and 3 `sp`-modifying instructions on ARM64 retain `#byte` due to three upstream compiler constraints documented in Section 4.
+   * Both Windows x64 (`240B` frame with `xmm6..xmm15`) and System V AMD64 (`64B` frame) use pure high-level `asm` mnemonics with `#align_stack` and `#volatile`.
+   * System V uses direct `mov %rsp, to_rsp`; Windows x64 retains `xchg %rsp, to_rsp` due to `CLOBBER_REGS_NAMED` omitting `ClobberReg_RSP` during backward liveness past `add %rsp, 160` (see Section 3).
+3. **ARM64 Hardware Context Switch (`8` `#byte` instructions — down from `11`)**:
+   * All 3 `%sp`-modifying instructions are now high-level `asm`: `stp %x29, %x30, #pre [%sp - 160]`, `mov %sp, to_rsp`, and `ldp %x29, %x30, #post [%sp + 160]` (also saving 2 instructions per switch while preserving the exact 160-byte frame layout).
+   * Only the 8 callee-saved float instructions (`stp`/`ldp d8..d15`) remain `#byte`.
+4. **RISC-V 64 Hardware Context Switch (`24` `#byte` instructions)**:
+   * All 33 GPR/stack/label/control-flow instructions use high-level `asm` with `#align_stack`.
+   * Only the 24 callee-saved float instructions (`fsd`/`fld fs0..fs11`) remain `#byte`.
 
 ---
 
-## 2. Upstream Compiler Fixes in `dev-2026-10:151d53f44`
+## 2. Upstream Compiler Progression (`dev-2026-10` → `dev-2026-11:89246b0ad`)
 
-Five upstream compiler improvements in `dev-2026-10:151d53f44` (and `docs/ASM.md`) unlocked high-level inline assembly for context switching:
+### 2.1 Foundation Fixes in `dev-2026-10:151d53f44`
+1. **`#preserve %reg` Contract (`94aba2bd6`)**: Seeds entry liveness for preserved registers (`%rbp`, `%rbx`, `%rsi`, `%rdi`, `%ra`) without emitting LLVM output constraints (`={rbp}`).
+2. **`#clobber %flags` Syntax (`45413b78a`)**: Replaces deprecated `#clobber flags`.
+3. **Label Definition Colon Fix (`bea8fc68a`)**: Appends trailing `:` to `.L_<tmpl>_<label>${:uid}:` on AMD64 and RISC-V 64.
+4. **RIP-Relative Label Memory Operands (`c7201725d`, `ab99241ce`)**: Supports `lea %rax, [.switch_done]` on AMD64.
+5. **PC-Relative Symbolic Label Capture (`asm_tables_arm64.cpp`, `check_asm.cpp`)**: Supports `adr %x30, .switch_done` on ARM64 and `lla %ra, .switch_done` on RISC-V 64.
 
-1. **`#preserve %reg` Contract (`94aba2bd6`, `check_asm.cpp:3010`, `check_asm_cfg.cpp:439`)**:
-   * Declaring `#preserve %rbp`, `#preserve %rbx`, `#preserve %rsi`, `#preserve %rdi`, `#preserve %rsp`, `#preserve %sp`, or `#preserve %ra` seeds `seed_regs` and `entry_seed_w` at entry block `0` (permitting entry reads like `push %rbp` or `mov sp, %rsp`) and adds them to `exit_live` (verifying restoration before exit) **without** emitting LLVM output register constraints (`={rbp}`), which previously caused `LLVM Error: Interference usage of base pointer/frame pointer`.
-2. **`#clobber %flags` Syntax (`45413b78a`, `docs/ASM.md:191`)**:
-   * `#clobber flags` is replaced by `#clobber %flags`.
-3. **Label Definition Colon Fix (`bea8fc68a`, `llvm_backend_asm.cpp:90-93`)**:
-   * `lbAsmGenerate::write_label_def` now appends the trailing colon `:` on AMD64 and RISC-V 64 (`.L_<tmpl>_<label>${:uid}:`), allowing internal labels like `.switch_done:` to assemble cleanly across all targets.
-4. **RIP-Relative Label Memory Operands (`c7201725d`, `ab99241ce`, `check_asm.cpp:19-25`)**:
-   * `[.label]` is supported on AMD64 (`lea %rax, [.switch_done]`), lowering to `.L_fiber_context_switch_switch_done0(%rip)` and eliminating the old `call .switch_body` / `jmp .switch_done` `#byte` trampoline.
-5. **PC-Relative Symbolic Label Capture on ARM64 & RISC-V (`check_asm.cpp:1062`, `asm_tables_arm64.cpp`)**:
-   * ARM64 supports `adr %x30, .switch_done` and RISC-V 64 supports `lla %ra, .switch_done`, replacing hardcoded PC-relative byte offsets with assembler-resolved local labels.
+### 2.2 New Compiler Updates in `dev-2026-11:89246b0ad` (`151d53f44..89246b0ad`)
+1. **Mandatory `#align_stack` Enforcement (`1590b7635`, `check_asm.cpp:2339, 3775`)**:
+   * Any `asm` template that executes `push`, makes a `call`, or writes `%rsp`/`%sp` (including ARM64 `#pre`/`#post` writeback on `%sp`) must declare `#align_stack`.
+   * Prevents LLVM from placing caller temporaries below `%rsp` (e.g. SysV AMD64 red zone) where a context switch's `push` instructions would overwrite them.
+2. **Never Clobber Stack Pointer Implicitly (`f6c1e779f`, `check_asm.cpp:2360` & `88a10c973`, `check_asm.cpp:402-454`)**:
+   * Masks `~asm_stack_pointer_bit(asm_ctx)` out of implicit clobbers and returns empty register family names for `%rsp`/`%sp`.
+   * **Resolves former ARM64 Issue 4.2**: writing `%sp` on ARM64 no longer emits `~{sp}`, eliminating the LLVM `inline asm clobber list contains reserved registers: SP` warning completely.
+3. **Stack Pointer Defined on Entry & Exit-Live (`b40bb67ea`, `check_asm_cfg.cpp:456, 731`)**:
+   * Automatically seeds `asm_stack_pointer_bit(asm_ctx)` in entry `preserve_bits` and backward-liveness `exit_live`.
+   * `#preserve %rsp` and `#preserve %sp` are no longer required in `get_rsp`, `get_sp`, or `fiber_context_switch`.
+4. **ARM64 `#pre` / `#post` Writeback Lowering (`ea2a0509e`, `check_asm.cpp`, `llvm_backend_asm.cpp`)**:
+   * Properly emits pre-indexed (`[sp, #-160]!`) and post-indexed (`[sp], #160`) writeback operands and tracks stack-pointer modification for `#align_stack`.
+   * Allows fusing `sub sp, sp, #160` + `stp x29, x30, [sp]` into `stp %x29, %x30, #pre [%sp - 160]` and `ldp x29, x30, [sp]` + `add sp, sp, #160` into `ldp %x29, %x30, #post [%sp + 160]`.
+5. **Automatic Clobbering of Written Named Registers & Input Auto-Tying (`88a10c973`, `0938fda9f`, `b3ea5193a`)**:
+   * Every physical register written by name in a template body (`%r12..%r15`, `%xmm6..%xmm15`, etc.) is automatically added to `clobber_registers_set` by register family (`asm_clobber_written_register`), removing the need for manual `#clobber %r12..%r15` / `#clobber %xmm6..%xmm15` declarations on AMD64.
+   * Overwritten inputs (such as `xchg %rsp, to_rsp`) are automatically lowered as tied to a discarded output rather than emitting conflicting LLVM clobbers.
+6. **Checker Simplification & Terminal `reads_every_register` (`33482b517`, `check_asm.cpp:2325`)**:
+   * Unconditional non-local transfers (`ret`, `jalr`) set `reads_every_register = true` so registers restored immediately before `ret`/`jalr` are treated as live.
 
 ---
 
-## 3. How AMD64 Achieves 100% High-Level `asm` (`asm_amd64.odin`)
+## 3. Key Technical Details Across Architectures
 
+### 3.1 AMD64 (`asm_amd64.odin`)
 ```odin
 fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
     from_rsp = %rcx,
@@ -61,97 +79,66 @@ fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
     #preserve %rbx,
     #preserve %rsi,
     #preserve %rdi,
-    #preserve %rsp,
+    #align_stack,
     #volatile,
+    #clobber %rax,
+    #clobber %r8,
+    #clobber %r9,
+    #clobber %r10,
+    #clobber %r11,
+    #clobber %xmm0,
+    #clobber %xmm1,
+    #clobber %xmm2,
+    #clobber %xmm3,
+    #clobber %xmm4,
+    #clobber %xmm5,
     #clobber %flags,
     #clobber memory,
-    #clobber %rax, %rcx, %rdx, %r8, %r9, %r10, %r11, %xmm0,
 ] {
-    // 1. Push resume RIP (.switch_done) onto current stack
     lea %rax, [.switch_done]
     push %rax
-
-    // 2. Save Callee-Saved GPRs (64 bytes)
-    push %rbp
-    push %rbx
-    push %rsi
-    push %rdi
-    push %r12
-    push %r13
-    push %r14
-    push %r15
-
-    // 3. Save Callee-Saved XMM6..XMM15 (160 bytes)
-    sub %rsp, 160
-    movdqu [%rsp + 0x00], %xmm15
-    // ... %xmm14 .. %xmm6 ...
-
-    // 4. Swap Stack Pointers
+    // ... push GPRs, save XMM6..XMM15 ...
     mov [from_rsp], %rsp
-    xchg %rsp, %rdx
-
-    // 5. Restore Callee-Saved XMM6..XMM15 & GPRs
-    // ... movdqu %xmm6 .. %xmm15 ...
-    add %rsp, 160
-    pop %r15
-    pop %r14
-    pop %r13
-    pop %r12
-    pop %rdi
-    pop %rsi
-    pop %rbx
-    pop %rbp
-
-    // 6. Link CFG to .switch_done (never taken at runtime since %rsp != 0) & return
+    xchg %rsp, to_rsp
+    // ... restore XMM6..XMM15, add %rsp, 160, pop GPRs ...
     jz .switch_done
     ret
-
 .switch_done:
 }
 ```
+1. **Why Win64 uses `xchg %rsp, to_rsp` while SysV uses `mov %rsp, to_rsp`**:
+   * In `asm_tables_amd64.cpp:296`, `CLOBBER_REGS_NAMED` omits `ClobberReg_RSP`. In `check_asm_cfg.cpp:712`, `asm_cfg_live_before` computes `(live_after & ~asm_full_kill_mask(f)) | (asm_cfg_read_regs(cfg, f) & REG_TOP)`.
+   * On Windows x64, `add %rsp, 160` explicitly writes `ClobberReg_RSP` (clearing it from `live`), and `& REG_TOP` fails to re-add `ClobberReg_RSP` from `add`'s read set — causing a false-positive dead-write warning on a plain `mov %rsp, to_rsp`. Using `xchg %rsp, to_rsp` includes `ClobberReg_RSP` in `read_regs`, cleanly suppressing the false positive while `b3ea5193a` auto-ties `to_rsp`.
+   * On System V AMD64, there is no `add %rsp, 160` between the swap and `pop`, so `mov %rsp, to_rsp` compiles with zero warnings.
+2. **Why `jz .switch_done` / `cbz %x2, .switch_done` / `beq %sp, %zero, .switch_done` remain required**:
+   * `check_asm_cfg.cpp:667` requires non-diverging templates to have a reachable path to the implicit end. Because `ret` / `jalr` is terminal (`is_terminal = true`), a never-taken conditional branch to the trailing `.switch_done:` label satisfies `check_asm_cfg_block_leaves`.
 
-### Key Technical Details on AMD64:
-1. **Why `%r12`..`%r15` and `%xmm6`..`%xmm15` are accessed directly**:
-   In `asm_tables_amd64.cpp`, `clobber_bit_for_reg_name` returns `0` for `r12`..`r15` and `xmm6`..`xmm15`. Because they have no clobber bit in `universe_regs`, `check_asm_cfg.cpp` neither rejects entry reads nor warns on exit writes when they are referenced directly as `%r12`..`%r15` and `%xmm6`..`%xmm15` (whereas declaring them as unpinned scratch variables would emit `=&r` / `=&x` early-clobber constraints that exhaust LLVM's register allocator).
-2. **Why `xchg %rsp, %rdx` (Win64) / `xchg %rsp, %rsi` (SysV) is used for the stack swap**:
-   `CLOBBER_REGS_NAMED` (`asm_tables_amd64.cpp:296`) omits `ClobberReg_RSP` from `exit_live`. A plain `mov %rsp, %rdx` writes `ClobberReg_RSP` without reading it, triggering a dead-write warning on the subsequent `pop`. `xchg %rsp, %rdx` sets `ClobberReg_RSP` in both `read_regs` and `write_regs`, satisfying the backward liveness pass.
-3. **Why `jz .switch_done` precedes `ret`**:
-   `ret` is marked `is_terminal = true` with `fallthrough = false`. Placing a conditional jump `jz .switch_done` before `ret` (after `add %rsp, 160` on Win64 or `test %rsp, %rsp` on SysV, where `%rsp != 0` guarantees `ZF = 0`) adds an edge from the basic block to `.switch_done:`. This satisfies `check_asm_cfg_block_leaves` and seeds `live_out` with `exit_live` so `pop %rdi..%rbp` are recognized as live restores.
+### 3.2 ARM64 (`asm_arm64.odin`)
+* Uses `adr %x30, .switch_done` followed by `stp %x29, %x30, #pre [%sp - 160]` to allocate the 160-byte frame and store FP/LR in one instruction, `mov %sp, to_rsp` for the stack swap, and `ldp %x29, %x30, #post [%sp + 160]` to restore FP/LR and release the frame in one instruction.
+* Verified with `odin build -build-mode:obj` on both `darwin_arm64` and `linux_arm64` at `-debug` and `-o:speed` with **0 warnings and 0 errors**.
 
 ---
 
-## 4. What Remains Unfixed in Odin's Inline `asm` Compiler (`dev-2026-10:151d53f44`)
+## 4. Remaining Upstream Constraints in Odin `dev-2026-11:89246b0ad`
 
-Three upstream compiler limitations explain the remaining `#byte` instructions in `asm_arm64.odin` and `asm_riscv64.odin`:
+Two upstream compiler limitations remain and account for all remaining `#byte` instructions in the repository:
 
 ### 4.1 ARM64: Missing 64-bit Scalar SIMD (`d0`–`d31`) Register Names & `vN` Operand Formatting
-- **Compiler Location**: `Odin\src\asm_tables_arm64.cpp:1361` (`register_strings`) and `Odin\src\llvm_backend_asm.cpp:1490` (`lbAsmGenerate_arm64::write_operand`).
+- **Compiler Location**: `Odin\src\asm_tables_arm64.cpp:1361` (`register_strings`) and `Odin\src\llvm_backend_asm.cpp:1587` (`lbAsmGenerate_arm64::write_operand`).
 - **Symptom**:
-  1. `register_strings` on ARM64 only defines 128-bit vector names `v0`..`v31` (`REG_CLASS_V | REG_SIZE_128`). Scalar 64-bit `d0`..`d31` (`REG_CLASS_F | REG_SIZE_64`) and 32-bit `s0`..`s31` names are not in the register table (`Error: Unknown register '%d8'`).
-  2. If `%v8, %v9` (`Ast_AsmRegister`) are used directly in `stp %v8, %v9, [%sp, 96]`, `lbAsmGenerate_arm64::write_operand` emits bare `v8, v9` into the LLVM inline assembly string (whereas bound parameter variables receive `${N:d}` or `${N:q}` modifiers). The AArch64 LLVM assembler rejects `stp v8, v9, [sp, #96]` with `error: invalid operand for instruction` because AArch64 `stp`/`ldp` requires `d8`/`d9` (64-bit) or `q8`/`q9` (128-bit).
+  1. Although `asm_tables_arm64.cpp:89` defines `REG_CLASS_D` and `check_asm.cpp:428` maps `REG_CLASS_D` in `asm_register_family_name`, `register_strings` still omits `d0`..`d31` and `q0`..`q31` (only `v0`..`v31` exist), rejecting `%d8` as an unknown register.
+  2. `lbAsmGenerate_arm64::write_operand` emits literal `Ast_AsmRegister` names verbatim (`v8`), which AArch64 `stp`/`ldp` rejects (requiring `d8`/`q8`).
 - **Current Workaround in `asm_arm64.odin`**: The 8 `stp`/`ldp d8..d15` instructions remain encoded via `#byte`.
-- **Upstream Compiler Fix Needed**: Add `d0`..`d31` (64-bit) and `q0`..`q31` (128-bit) to `register_strings` in `asm_tables_arm64.cpp` (or format `Ast_AsmRegister` in `lbAsmGenerate_arm64::write_operand` as `dN`/`qN`).
+- **Upstream Fix Needed**: Populate `d0`..`d31` (and `s0`..`s31`/`q0`..`q31`) in `asm_tables_arm64.cpp::register_strings` and `register_codes`, or apply `arm64_slot_reg_modifier` to literal `vN` registers in `lbAsmGenerate_arm64::write_operand`.
 
-### 4.2 ARM64: Writing to `%sp` Emits `~{sp}` in LLVM Clobber Constraints
-- **Compiler Location**: `Odin\src\check_asm.cpp:2042-2046`.
-- **Symptom**: Any instruction in an ARM64 `asm` block that writes to `%sp` (such as `sub %sp, %sp, 160` or `add %sp, %sp, 160`) sets `ClobberReg_SP` in `auto_clobber_regs`. Even when `#preserve %sp` is specified, `check_asm.cpp` appends `~{sp}` to the LLVM inline asm constraint string, which causes LLVM's AArch64 backend to emit:
-  `LLVM Warning: inline asm clobber list contains reserved registers: SP`.
-- **Current Workaround in `asm_arm64.odin`**: Read-only `%sp` operations (`mov sp, %sp` in `get_sp` and `mov %x2, %sp` in `fiber_context_switch`) use high-level `asm` with `#preserve %sp`, while the 3 `%sp`-writing instructions (`sub sp, sp, #160`, `mov sp, x1`, `add sp, sp, #160`) remain `#byte` to keep builds 100% warning-free.
-- **Upstream Compiler Fix Needed**: In `check_asm.cpp`, omit registers declared in `preserve_regs` (such as `#preserve %sp`) from the emitted LLVM `~{...}` clobber constraint list.
+### 4.2 RISC-V 64: 64-bit Float Registers `%fs0`–`%fs11` Assigned Integer Type `t_u64`
+- **Compiler Location**: `Odin\src\check_asm.cpp:1297-1315` (`check_register`).
+- **Symptom**: `check_register` assigns `operand->type` solely by bit width (`case 64: operand->type = t_u64;`), ignoring `Asm_riscv::REG_CLASS_FPR`. Consequently, `%fs0`..`%fs11` are classified as `AsmRegClass_Integer`, causing `fsd %fs0, [%sp + 104]` and `fld %fs0, [%sp + 104]` to fail with a register-class mismatch error.
+- **Current Workaround in `asm_riscv64.odin`**: The 24 `fsd`/`fld fs0..fs11` instructions remain encoded via `#byte`.
+- **Upstream Fix Needed**: In `check_register` (`check_asm.cpp:1297`), inspect the register's class and assign `t_f32` / `t_f64` for floating-point registers.
 
-### 4.3 RISC-V 64: 64-bit Float Registers `%fs0`–`%fs11` Assigned Integer Type `t_u64`
-- **Compiler Location**: `Odin\src\check_asm.cpp:947-965` (`check_register`).
-- **Symptom**: Although `asm_tables_riscv64.cpp:587` tags `fs0`..`fs11` with `REG_CLASS_F | REG_SIZE_64`, `check_register` in `check_asm.cpp` assigns `operand->type` solely by byte size:
-  ```cpp
-  case 1: operand->type = t_u8;  break;
-  case 2: operand->type = t_u16; break;
-  case 4: operand->type = t_u32; break;
-  case 8: operand->type = t_u64; break; // <-- Assigns integer t_u64 even when REG_CLASS_F is set!
-  ```
-  Because `operand_reg_class` checks `is_type_float(operand->type)`, `%fs0`..`%fs11` are classified as `AsmRegClass_Integer`, causing `fsd %fs0, [%sp + 104]` to fail with:
-  `Error: 'fsd' operand-1 is in the wrong register class, expected 64-bit float register, got 64-bit integer register`.
-- **Current Workaround in `asm_riscv64.odin`**: The 24 `fsd`/`fld fs0..fs11` instructions remain encoded via `#byte`, while all 33 GPR/stack/label/control-flow instructions use high-level `asm`.
-- **Upstream Compiler Fix Needed**: In `check_register` (`check_asm.cpp:947`), assign `t_f32` / `t_f64` when `(reg_flags & REG_CLASS_F) != 0`.
+### 4.3 Resolved: ARM64 `%sp`-Writing `~{sp}` Warning
+- **Status**: **Fixed in Odin `dev-2026-11:89246b0ad`** via commits `f6c1e779f` and `88a10c973`. All 3 `#byte` `%sp` instructions in `asm_arm64.odin` have been migrated to high-level `asm`.
 
 ---
 
@@ -160,5 +147,5 @@ Three upstream compiler limitations explain the remaining `#byte` instructions i
 Because `fiber_context_switch` preserves all **callee-saved** registers (`%xmm6`..`%xmm15` on Win64, `d8`..`d15` on ARM64, `fs0`..`fs11` on RISC-V 64, and non-volatile GPRs across all platforms), while **caller-saved** scratch registers remain volatile across procedure calls:
 1. **Never `#force_inline` procedures that suspend a fiber**:
    Keeping `wait_steps`, `wait`, and `yield` as standard procedure calls ensures the platform ABI spills any live caller-saved registers before entering the yield function.
-2. **Explicit `#volatile` and `#clobber memory`**:
-   Every context switch template is marked `#volatile` and `#clobber memory`, preventing LLVM from caching memory loads across a fiber suspension point.
+2. **Explicit `#align_stack`, `#volatile`, `#clobber memory`, and Full Caller-Saved Vector/FP Clobbers**:
+   Every context switch template declares `#align_stack`, `#volatile`, `#clobber memory`, and all caller-saved volatile float/SIMD registers (`%xmm0..%xmm5` on Win64, `%xmm0..%xmm15` on SysV AMD64, `%v0..%v7` & `%v16..%v31` on ARM64, `%ft0..%ft11` & `%fa0..%fa7` on RISC-V 64). This protects live floating-point/SIMD locals even when LLVM aggressively inlines `yield` / `wait_steps` under `-o:speed -use-single-module` or `-o:aggressive`.
