@@ -49,7 +49,7 @@ bench_raw_asm_switch :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Dual_Context) {
         d.f1 = f
-        coroutine.yield_frame(f) // Suspend to allow f2 initialization
+        coroutine.yield_frame(f)
 
         for d.switches < TOTAL_SWITCHES {
             d.switches += 1
@@ -60,7 +60,7 @@ bench_raw_asm_switch :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Dual_Context) {
         d.f2 = f
-        coroutine.yield_frame(f) // Suspend to allow f1 initialization
+        coroutine.yield_frame(f)
 
         for d.switches < TOTAL_SWITCHES {
             d.switches += 1
@@ -69,10 +69,8 @@ bench_raw_asm_switch :: proc() {
         coroutine.fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     }, &dual, name = "Direct Pong")
 
-    // Step 1: Both fibers record pointers and yield into frame queue
     coroutine.scheduler_step(&sched, 0.0)
 
-    // Step 2: Resume both fibers and measure direct 5,000,000 context switches
     t0 := time.now()
     coroutine.scheduler_step(&sched, 0.0)
     elapsed_secs := time.duration_seconds(time.since(t0))
@@ -141,7 +139,6 @@ bench_timer_min_heap :: proc() {
         }, Timer_Bench_Ctx{dur = sleep_dur, count = &woken_count})
     }
 
-    // Step scheduler to populate min-heap and advance virtual time
     for woken_count < TIMER_COUNT && len(sched.ready_queue) + len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) > 0 {
         coroutine.scheduler_step(&sched, 0.05)
     }
@@ -234,7 +231,6 @@ bench_headless_fast_forward :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // Spawn 50 simulated entity AI fibers
     Sim_Entity :: struct {
         pos:   [2]f32,
         state: int,

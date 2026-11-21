@@ -20,7 +20,6 @@ fiber_pool_init :: proc(
         fiber_pool_destroy(pool)
     }
     pool.stack_size = max(stack_size, 16 * 1024)
-    // Ensure stack_size is aligned to 16 bytes
     if pool.stack_size % 16 != 0 {
         pool.stack_size = (pool.stack_size + 15) & ~uint(15)
     }
@@ -97,7 +96,6 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
     if fiber == nil || fiber.stack_base == nil do return 0, 0
     total_bytes = fiber.stack_size
 
-    // If canary watermark is breached, report full stack consumption
     if !fiber_check_canary(fiber) {
         return total_bytes, total_bytes
     }
@@ -114,7 +112,6 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
     return 0, total_bytes
 }
 
-// Allocates a new slab of memory for stacks and fibers
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
@@ -178,7 +175,6 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         }
     }
 
-    // Standard slab allocation fallback
     slab, err := mem.alloc(slab_size, 16, alloc)
     if err != nil || slab == nil {
         panic("Failed to allocate memory slab for fiber pool")
@@ -236,7 +232,6 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
         status = .Ready,
     }
 
-    // Reset fields
     fiber.status = .Ready
     fiber.parent = nil
     fiber.first_child = nil
@@ -271,16 +266,12 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.prev_waiter = nil
     fiber.current_wait_queue = nil
 
-    // Initialize isolated temporary arena for this fiber
     mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
     fiber.stored_context = context
     fiber.stored_context.temp_allocator = mem.arena_allocator(&fiber.temp_arena)
 
-    // Watermark stack area and initialize canary
     fiber_watermark_stack(fiber)
     fiber_init_canary(fiber)
-
-    // Synthesize initial stack frame
     fiber_synthesize_initial_stack(fiber)
 
     return fiber
@@ -289,12 +280,10 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
 fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     if fiber.status == .Unused do return
 
-    // Verify stack overflow
     if !fiber_check_canary(fiber) {
         panic("Stack overflow detected in fiber! Canary corrupted.")
     }
 
-    // Record terminal status in handle history before clearing handle
     if fiber.handle != 0 {
         pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
             handle = fiber.handle,
@@ -302,11 +291,9 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
         }
     }
 
-    // Record high-water stack usage before recycle
     used, _ := fiber_calc_stack_usage(fiber)
     fiber.stack_high_water = used
 
-    // Free isolated temporary arena
     mem.arena_free_all(&fiber.temp_arena)
 
     fiber.generation += 1
@@ -377,55 +364,28 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
 
 fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
     top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
-    // Align top to 16 bytes
     top = top & ~uintptr(15)
 
     when ODIN_ARCH == .amd64 {
         when ODIN_OS == .Windows {
-            // Windows x64 stack frame layout:
-            // top - 8:   Dummy slot / alignment pad (so entry has RSP % 16 == 8)
-            // top - 16:  fiber_trampoline_entry (return address for RET in fiber_context_switch)
-            // top - 24:  Saved RBP = nil
-            // top - 32:  Saved RBX = nil
-            // top - 40:  Saved RSI = nil
-            // top - 48:  Saved RDI = nil
-            // top - 56:  Saved R12 = fiber pointer
-            // top - 64:  Saved R13 = nil
-            // top - 72:  Saved R14 = nil
-            // top - 80:  Saved R15 = nil
-            // top - 240: 160 bytes for XMM6..XMM15 (all 0)
-
+            // Windows x64 frame (240B):
+            // top - 8:   alignment pad (RSP % 16 == 8 on entry)
+            // top - 16:  fiber_trampoline_entry (RET)
+            // top - 24..80: RBP, RBX, RSI, RDI, R12 (fiber), R13, R14, R15
+            // top - 240: XMM6..XMM15 (160B)
             sp := top - 240
             mem.zero(rawptr(sp), 240)
 
-            // Fill slots
             sp_words := ([^]rawptr)(rawptr(top - 80))
-            // sp_words[0] -> top-80 (R15)
-            // sp_words[1] -> top-72 (R14)
-            // sp_words[2] -> top-64 (R13)
-            // sp_words[3] -> top-56 (R12)
-            // sp_words[4] -> top-48 (RDI)
-            // sp_words[5] -> top-40 (RSI)
-            // sp_words[6] -> top-32 (RBX)
-            // sp_words[7] -> top-24 (RBP)
-            // sp_words[8] -> top-16 (RET -> trampoline)
-            // sp_words[9] -> top-8  (Dummy pad)
-
             sp_words[3] = rawptr(fiber) // R12
             sp_words[8] = rawptr(fiber_trampoline_entry)
 
             fiber.saved_sp = rawptr(sp)
         } else {
-            // System V AMD64 ABI:
-            // top - 8:  Dummy slot / alignment pad
+            // System V AMD64 frame (64B):
+            // top - 8:  alignment pad
             // top - 16: fiber_trampoline_entry (RET)
-            // top - 24: Saved RBP = nil
-            // top - 32: Saved RBX = nil
-            // top - 40: Saved R12 = fiber pointer
-            // top - 48: Saved R13 = nil
-            // top - 56: Saved R14 = nil
-            // top - 64: Saved R15 = nil
-
+            // top - 24..64: RBP, RBX, R12 (fiber), R13, R14, R15
             sp := top - 64
             mem.zero(rawptr(sp), 64)
 
@@ -436,45 +396,30 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
             fiber.saved_sp = rawptr(sp)
         }
     } else when ODIN_ARCH == .arm64 {
-        // ARM64 (AAPCS64 Standard ABI):
-        // 160-byte frame layout:
-        // sp + 0:   x29 (FP = nil), x30 (LR = fiber_trampoline_entry)
-        // sp + 16:  x19 (fiber pointer), x20 (nil)
-        // sp + 32:  x21 (nil), x22 (nil)
-        // sp + 48:  x23 (nil), x24 (nil)
-        // sp + 64:  x25 (nil), x26 (nil)
-        // sp + 80:  x27 (nil), x28 (nil)
-        // sp + 96:  d8 (0), d9 (0)
-        // sp + 112: d10 (0), d11 (0)
-        // sp + 128: d12 (0), d13 (0)
-        // sp + 144: d14 (0), d15 (0)
+        // ARM64 AAPCS64 frame (160B):
+        // sp + 0..95:  x29, x30 (LR), x19 (fiber), x20..x28
+        // sp + 96..159: d8..d15
         sp := top - 160
         mem.zero(rawptr(sp), 160)
 
         sp_words := ([^]rawptr)(rawptr(sp))
         sp_words[0] = nil                            // x29 (FP)
-        sp_words[1] = rawptr(fiber_trampoline_entry) // x30 (LR / return address)
-        sp_words[2] = rawptr(fiber)                  // x19 (Self-Identity)
+        sp_words[1] = rawptr(fiber_trampoline_entry) // x30 (LR)
+        sp_words[2] = rawptr(fiber)                  // x19
 
         fiber.saved_sp = rawptr(sp)
     } else when ODIN_ARCH == .riscv64 {
-        // RISC-V 64 (LP64D ABI):
-        // 208-byte frame layout:
-        // sp + 0:   ra (fiber_trampoline_entry)
-        // sp + 8:   s0 / fp (nil)
-        // sp + 16:  s1 (nil)
-        // sp + 24:  s2 (fiber pointer)
-        // sp + 32..96: s3..s11 (nil)
-        // sp + 104..192: fs0..fs11 (nil)
-        // sp + 200: Pad
+        // RISC-V 64 LP64D frame (208B):
+        // sp + 0..103:  ra, s0, s1, s2 (fiber), s3..s11
+        // sp + 104..199: fs0..fs11 (+ 8B pad)
         sp := top - 208
         mem.zero(rawptr(sp), 208)
 
         sp_words := ([^]rawptr)(rawptr(sp))
-        sp_words[0] = rawptr(fiber_trampoline_entry) // ra (return address)
+        sp_words[0] = rawptr(fiber_trampoline_entry) // ra
         sp_words[1] = nil                            // s0 (fp)
         sp_words[2] = nil                            // s1
-        sp_words[3] = rawptr(fiber)                  // s2 (Self-Identity)
+        sp_words[3] = rawptr(fiber)                  // s2
 
         fiber.saved_sp = rawptr(sp)
     } else when ODIN_ARCH == .wasm32 {
@@ -509,20 +454,16 @@ fiber_trampoline_entry :: proc "c" () {
 
     if fiber == nil do return
 
-    // 1. Establish stored context
     context = fiber.stored_context
 
-    // 2. Run user entry procedure
     if fiber.entry_proc != nil {
         fiber.entry_proc(fiber, fiber.user_data)
     }
 
-    // 3. Mark completed if not already aborted / failed
     if fiber.status == .Running {
         fiber.status = .Completed
     }
 
-    // 4. Run cleanup procs in LIFO order if registered
     for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
         hook := fiber.cleanups[i]
         if hook.proc_ptr != nil {
@@ -531,10 +472,7 @@ fiber_trampoline_entry :: proc "c" () {
     }
     fiber.cleanup_count = 0
 
-    // 5. Notify completion to coordinator & parent
     fiber_on_finish(fiber)
-
-    // 6. Final yield to scheduler
     fiber_yield_final(fiber)
 }
 
@@ -611,9 +549,7 @@ wait_queue_pop_front :: proc "contextless" (q: ^Wait_Queue) -> (f: ^Fiber, ok: b
 
 wait_queue_remove :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) -> bool {
     if q == nil || f == nil do return false
-    // Defensive check: Ensure fiber actually belongs to this specific queue!
     if f.current_wait_queue != q do return false
-    // Verify f is actually queued (either it has linked neighbors, or it is the head)
     if f.prev_waiter == nil && f.next_waiter == nil && q.head != f do return false
 
     if f.prev_waiter != nil {

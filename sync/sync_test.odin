@@ -83,7 +83,6 @@ test_with_mutex_and_abort_cleanup :: proc(t: ^testing.T) {
     testing.expect(t, mutex_is_locked(&m))
     testing.expect_value(t, mutex_owner(&m), h)
 
-    // Cancel while holding lock inside with_mutex: both mutex unlock and chained cleanup must fire
     coro.fiber_cancel(&sched, h)
     testing.expect(t, !mutex_is_locked(&m))
     testing.expect(t, user_cleanup_called)
@@ -138,7 +137,6 @@ test_channel_rendezvous_and_buffered :: proc(t: ^testing.T) {
     coro.scheduler_init(&sched)
     defer coro.scheduler_destroy(&sched)
 
-    // 1. Unbuffered Rendezvous (Sender before Receiver)
     unbuf: Channel(int)
     chan_init(&unbuf, 0)
     defer chan_destroy(&unbuf)
@@ -165,7 +163,6 @@ test_channel_rendezvous_and_buffered :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, got_unbuf, 42)
 
-    // 2. Buffered Ring Wrap-around
     buf: Channel(int)
     chan_init(&buf, 3)
     defer chan_destroy(&buf)
@@ -235,7 +232,6 @@ test_channel_timeouts_and_select :: proc(t: ^testing.T) {
     testing.expect_value(t, state.val, 99)
 }
 
-
 @(test)
 test_channel_synchronous_rendezvous :: proc(t: ^testing.T) {
     sched: coro.Scheduler
@@ -254,7 +250,6 @@ test_channel_synchronous_rendezvous :: proc(t: ^testing.T) {
     }
     payload := Payload{ch = &ch, out = &received_val}
 
-    // Receiver fiber waits on channel
     coro.spawn(&sched, proc(f: ^coro.Fiber, p: ^Payload) {
         val, ok := chan_recv(f, p.ch)
         if ok {
@@ -262,7 +257,6 @@ test_channel_synchronous_rendezvous :: proc(t: ^testing.T) {
         }
     }, &payload)
 
-    // Sender fiber sends value
     coro.spawn(&sched, proc(f: ^coro.Fiber, p: ^Payload) {
         chan_send(f, p.ch, 777)
     }, &payload)
@@ -291,14 +285,12 @@ test_channel_buffered_fifo :: proc(t: ^testing.T) {
     }
     p := Payload{ch = &ch, res = &results}
 
-    // Producer sends 3 items
     coro.spawn(&sched, proc(f: ^coro.Fiber, p: ^Payload) {
         chan_send(f, p.ch, 10)
         chan_send(f, p.ch, 20)
         chan_send(f, p.ch, 30)
     }, &p)
 
-    // Consumer reads 3 items
     coro.spawn(&sched, proc(f: ^coro.Fiber, p: ^Payload) {
         for _ in 0 ..< 3 {
             val, ok := chan_recv(f, p.ch)
@@ -330,10 +322,8 @@ test_channel_close_and_drain :: proc(t: ^testing.T) {
     chan_try_send(&ch, "beta")
     chan_close(&ch)
 
-    // Cannot send to closed channel
     testing.expect_value(t, chan_try_send(&ch, "gamma"), false)
 
-    // Can still drain buffered values
     val1, ok1 := chan_try_recv(&ch)
     testing.expect_value(t, ok1, true)
     testing.expect_value(t, val1, "alpha")
@@ -342,7 +332,6 @@ test_channel_close_and_drain :: proc(t: ^testing.T) {
     testing.expect_value(t, ok2, true)
     testing.expect_value(t, val2, "beta")
 
-    // Empty and closed
     _, ok3 := chan_try_recv(&ch)
     testing.expect_value(t, ok3, false)
 }
@@ -357,7 +346,6 @@ test_channel_ring_buffer_wraparound :: proc(t: ^testing.T) {
     testing.expect_value(t, chan_is_full(&ch), false)
     testing.expect_value(t, chan_count(&ch), 0)
 
-    // Push 4 items (fills buffer)
     for i in 0 ..< 4 {
         ok := chan_try_send(&ch, (i + 1) * 10)
         testing.expect_value(t, ok, true)
@@ -366,22 +354,17 @@ test_channel_ring_buffer_wraparound :: proc(t: ^testing.T) {
     testing.expect_value(t, chan_is_full(&ch), true)
     testing.expect_value(t, chan_count(&ch), 4)
 
-    // Cannot push into full channel
     testing.expect_value(t, chan_try_send(&ch, 999), false)
 
-    // Stream 1,000 items continuously through 4-slot ring buffer
     for i in 4 ..< 1000 {
-        // Pop oldest item
         val, ok := chan_try_recv(&ch)
         testing.expect_value(t, ok, true)
         testing.expect_value(t, val, (i - 3) * 10)
 
-        // Push new item
         send_ok := chan_try_send(&ch, (i + 1) * 10)
         testing.expect_value(t, send_ok, true)
     }
 
-    // Drain final 4 items
     for i in 996 ..< 1000 {
         val, ok := chan_try_recv(&ch)
         testing.expect_value(t, ok, true)
@@ -453,7 +436,7 @@ test_fiber_semaphore_try_acquire :: proc(t: ^testing.T) {
 
     testing.expect(t, semaphore_try_acquire(&sem))
     testing.expect_value(t, semaphore_available_permits(&sem), 0)
-    testing.expect(t, !semaphore_try_acquire(&sem)) // Depleted
+    testing.expect(t, !semaphore_try_acquire(&sem))
 
     sched: coro.Scheduler
     coro.scheduler_init(&sched)
@@ -478,12 +461,10 @@ test_chan_try_select_recv :: proc(t: ^testing.T) {
 
     ch_list := []^Channel(int){&ch1, &ch2, &ch3}
 
-    // All empty -> returns ok = false, ready_index = -1
     idx, val, ok := chan_try_select_recv(ch_list)
     testing.expect(t, !ok)
     testing.expect_value(t, idx, -1)
 
-    // Send item to ch2
     chan_try_send(&ch2, 42)
 
     idx, val, ok = chan_try_select_recv(ch_list)
@@ -491,7 +472,6 @@ test_chan_try_select_recv :: proc(t: ^testing.T) {
     testing.expect_value(t, idx, 1)
     testing.expect_value(t, val, 42)
 
-    // Now empty again
     idx, val, ok = chan_try_select_recv(ch_list)
     testing.expect(t, !ok)
 }
@@ -530,7 +510,6 @@ test_chan_select_recv_blocking :: proc(t: ^testing.T) {
         out_ok  = &received_ok,
     }
 
-    // Consumer fiber waits on select
     coro.spawn_val(&sched, proc(f: ^coro.Fiber, env: Select_Env) {
         idx, val, ok := chan_select_recv(f, []^Channel(string){env.ch_a, env.ch_b})
         env.out_idx^ = idx
@@ -541,7 +520,6 @@ test_chan_select_recv_blocking :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, !received_ok)
 
-    // Send to ch_b from another fiber
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(string)) {
         coro.wait(f, 0.05)
         chan_send(f, ch, "hello from channel B")
@@ -596,7 +574,6 @@ test_chan_select_closed_channel :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, received_idx, -1)
 
-    // Close ch2
     chan_close(&ch2)
 
     coro.scheduler_step(&sched, 0.01)
@@ -623,10 +600,8 @@ test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, semaphore_waiter_count(&sem), 1)
 
-    // Abort the waiting fiber
     coro.fiber_cancel(&sched, h)
 
-    // Releasing permit should skip the aborted fiber and retain available permits
     semaphore_release(&sched, &sem, 1)
     testing.expect_value(t, semaphore_available_permits(&sem), 1)
 }
@@ -655,7 +630,6 @@ test_cancel_fiber_holding_semaphore_with_cleanup :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, semaphore_available_permits(&sem), 0)
 
-    // Abort the fiber while holding the permit -> cleanup_proc runs and restores permit!
     coro.fiber_cancel(&sched, h)
     testing.expect_value(t, semaphore_available_permits(&sem), 1)
 }
@@ -670,7 +644,6 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     mutex_init(&m)
     defer mutex_destroy(&m)
 
-    // Holder locks the mutex
     holder := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
         coro.wait(f, 1.0)
@@ -680,7 +653,6 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, m.locked)
 
-    // Waiter queues on the mutex
     waiter := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
         coro.wait(f, 0.1)
@@ -690,10 +662,8 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, mutex_waiter_count(&m), 1)
 
-    // Cancel the waiter
     coro.fiber_cancel(&sched, waiter)
 
-    // Unlock by holder -> should not panic or wake cancelled fiber
     mutex_unlock(&sched, &m)
     testing.expect(t, !m.locked)
 }
@@ -715,7 +685,6 @@ test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.
         chan_destroy(&ch_b)
     }
 
-    // Producer A: sends 1, 2, 3...
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         for i := 1; i <= 20; i += 1 {
             chan_send(f, ch, i)
@@ -723,7 +692,6 @@ test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.
         }
     }, &ch_a, scope = &producer_a_scope)
 
-    // Producer B: sends 100, 200, 300...
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         for i := 1; i <= 20; i += 1 {
             chan_send(f, ch, i * 100)
@@ -743,7 +711,6 @@ test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.
         last_val = 0,
     }
 
-    // Consumer fiber selects from both
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Select_Consumer_Ctx) {
         for {
             idx, val, ok := chan_select_recv(f, c.chans)
@@ -754,17 +721,14 @@ test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.
         }
     }, &ctx)
 
-    // Step a few frames
     for _ in 0 ..< 5 {
         coro.scheduler_step(&sched, 0.02)
     }
     testing.expect(t, ctx.items_recv >= 2)
 
-    // Cancel Producer A via Scope
     cancelled_a := coro.scope_cancel(&sched, &producer_a_scope)
     testing.expect_value(t, cancelled_a, 1)
 
-    // Consumer should continue receiving from Producer B
     prev_count := ctx.items_recv
     for _ in 0 ..< 5 {
         coro.scheduler_step(&sched, 0.02)
@@ -802,7 +766,7 @@ test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
             }, c)
             coro.wait(f, 0.05)
             semaphore_release(c.sched, c.sem)
-            coro.fiber_cleanup_pop(f) // Clear cleanup since released normally
+            coro.fiber_cleanup_pop(f)
             c.completed^ += 1
         }, &ctx)
     }
@@ -810,13 +774,11 @@ test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, semaphore_available_permits(&sem), 0)
 
-    // Cancel 4 queued/active fibers
     coro.fiber_cancel(&sched, handles[2])
     coro.fiber_cancel(&sched, handles[5])
     coro.fiber_cancel(&sched, handles[7])
     coro.fiber_cancel(&sched, handles[9])
 
-    // Step until all remaining fibers finish
     for _ in 0 ..< 25 {
         coro.scheduler_step(&sched, 0.05)
     }
@@ -863,7 +825,6 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, m.locked)
 
-    // Cancel 3 queued waiters
     coro.fiber_cancel(&sched, handles[3])
     coro.fiber_cancel(&sched, handles[6])
     coro.fiber_cancel(&sched, handles[8])
@@ -883,7 +844,7 @@ test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
     defer coro.scheduler_destroy(&sched)
 
     ch := new(Channel(int))
-    chan_init(ch, capacity = 0) // Unbuffered rendezvous
+    chan_init(ch, capacity = 0)
 
     woken_count := 0
     ok_count := 0
@@ -907,7 +868,6 @@ test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, chan_recv_waiter_count(ch), 4)
 
-    // Destroying the channel must auto-close and wake all 4 receivers with ok = false
     chan_destroy(ch)
     free(ch)
 
@@ -936,10 +896,8 @@ test_chan_destroy_auto_wakes_blocked_senders :: proc(t: ^testing.T) {
 
     ctx := Chan_Send_Unblock_Ctx{ch = ch, woken = &woken_count, ok_c = &ok_count}
 
-    // Fill the buffer
     chan_try_send(ch, 42)
 
-    // Spawn senders that will block
     for _ in 0 ..< 3 {
         coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Chan_Send_Unblock_Ctx) {
             ok := chan_send(f, c.ch, 99)
@@ -951,7 +909,6 @@ test_chan_destroy_auto_wakes_blocked_senders :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, chan_send_waiter_count(ch), 3)
 
-    // Destroy channel
     chan_destroy(ch)
     free(ch)
 
@@ -979,7 +936,6 @@ test_chan_recv_timeout_success :: proc(t: ^testing.T) {
 
     ctx := Recv_Timeout_Test_Ctx{ch = &ch}
 
-    // Receiver with 0.5s timeout
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Timeout_Test_Ctx) {
         val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
         c.val = val
@@ -987,7 +943,6 @@ test_chan_recv_timeout_success :: proc(t: ^testing.T) {
         c.timed_out = timed_out
     }, &ctx)
 
-    // Delayed producer sends after 0.05s
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         coro.wait(f, 0.05)
         chan_send(f, ch, 777)
@@ -1022,7 +977,6 @@ test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
 
     ctx := Recv_Timeout_Expire_Ctx{ch = &ch}
 
-    // Receiver with 0.05s timeout
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Timeout_Expire_Ctx) {
         val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.05)
         c.val = val
@@ -1031,7 +985,6 @@ test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
         c.finished = true
     }, &ctx)
 
-    // Step scheduler past 0.05s deadline
     for _ in 0 ..< 8 {
         coro.scheduler_step(&sched, 0.02)
     }
@@ -1060,7 +1013,6 @@ test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
 
     ctx := Recv_Closed_Ctx{ch = &ch}
 
-    // Receiver waiting with 1.0s timeout
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Closed_Ctx) {
         val, ok, timed_out := chan_recv_timeout(f, c.ch, 1.0)
         c.val = val
@@ -1070,7 +1022,6 @@ test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
 
     coro.scheduler_step(&sched, 0.01)
 
-    // Close channel mid-coro.wait
     chan_close(&ch)
     coro.scheduler_step(&sched, 0.01)
 
@@ -1131,19 +1082,16 @@ test_chan_recv_timeout_concurrent_producers :: proc(t: ^testing.T) {
     received_val := 0
     ctx := Chan_Recv_Val_Ctx{ch = &ch, val = &received_val}
 
-    // Fast receiver with timeout
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Chan_Recv_Val_Ctx) {
         v, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
         if ok do c.val^ = v
     }, &ctx)
 
-    // Producer 1 (0.04s delay)
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         coro.wait(f, 0.04)
         chan_send(f, ch, 111)
     }, &ch)
 
-    // Producer 2 (0.08s delay)
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         coro.wait(f, 0.08)
         chan_send(f, ch, 222)
@@ -1179,7 +1127,6 @@ test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     }
     f3_ctx := F3_Ctx{ done = false }
 
-    // coro.Fiber 1 holds lock
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^F1_Ctx) {
         mutex_lock(f, p.m)
         coro.wait(f, 0.04)
@@ -1187,36 +1134,28 @@ test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
         p.done = true
     }, &f1_ctx)
 
-    // coro.Fiber 2 blocks waiting for lock
     f2_handle = coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
     }, &m)
 
-    // Run 1 frame so f1 locks and f2 suspends into m.waiters
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, mutex_waiter_count(&m), 1)
 
-    // Cancel fiber 2 externally while in waiters queue
     coro.fiber_cancel(&sched, f2_handle)
     testing.expect(t, !coro.fiber_is_alive(&sched, f2_handle))
 
-    // coro.Fiber 3 is spawned (recycles fiber slot) and sleeps for 0.10s
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^F3_Ctx) {
         coro.wait(f, 0.10)
         p.done = true
     }, &f3_ctx)
 
-    // Step past f1's release (0.04s + 0.01s initial = 0.05s)
     for _ in 0 ..< 6 {
         coro.scheduler_step(&sched, 0.01)
     }
 
-    // coro.Fiber 1 finished and unlocked
     testing.expect(t, f1_ctx.done)
-    // coro.Fiber 3 should NOT have finished yet (needs 0.10s, only ~0.07s elapsed)
     testing.expect(t, !f3_ctx.done)
 
-    // Step until coro.Fiber 3 completes naturally
     for _ in 0 ..< 8 {
         coro.scheduler_step(&sched, 0.01)
     }
@@ -1243,7 +1182,6 @@ test_scoped_mutex_and_semaphore :: proc(t: ^testing.T) {
     }
     m_data := Mutex_Test_Data{ m = &m, counter = 0 }
 
-    // Spawn 2 fibers updating counter via with_mutex
     for _ in 0 ..< 2 {
         coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, d: ^Mutex_Test_Data) {
             with_mutex(f, d.m, proc(f: ^coro.Fiber, data: ^Mutex_Test_Data) {
@@ -1253,14 +1191,12 @@ test_scoped_mutex_and_semaphore :: proc(t: ^testing.T) {
         }, &m_data)
     }
 
-    // Run until mutex tasks finish
     for _ in 0 ..< 6 {
         coro.scheduler_step(&sched, 0.01)
     }
     testing.expect_value(t, m_data.counter, 2)
     testing.expect(t, !m.locked)
 
-    // Test with_semaphore
     sem_executed := false
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^struct { sem: ^Fiber_Semaphore, done: ^bool }) {
         with_semaphore(f, p.sem, proc(f: ^coro.Fiber, done: ^bool) {
@@ -1294,19 +1230,16 @@ test_multi_channel_select :: proc(t: ^testing.T) {
 
     channels := [3]^Channel(int){&ch1, &ch2, &ch3}
 
-    // 1. Try-select on empty channels
     idx, val, ok := chan_try_select_recv(channels[:])
     testing.expect_value(t, ok, false)
     testing.expect_value(t, idx, -1)
 
-    // Push into channel 2
     chan_try_send(&ch2, 42)
     idx, val, ok = chan_try_select_recv(channels[:])
     testing.expect_value(t, ok, true)
     testing.expect_value(t, idx, 1)
     testing.expect_value(t, val, 42)
 
-    // 2. Blocking chan_select_recv in a fiber
     Select_Context :: struct {
         channels:       []^Channel(int),
         received_idx:   int,
@@ -1330,7 +1263,6 @@ test_multi_channel_select :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, !ctx.received_ok)
 
-    // Producer sends to ch3
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         coro.wait(f, 0.02)
         chan_send(f, ch, 999)
@@ -1352,7 +1284,7 @@ test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     defer coro.scheduler_destroy(&sched)
 
     ch: Channel(int)
-    chan_init(&ch, 0) // Rendezvous
+    chan_init(&ch, 0)
     defer chan_destroy(&ch)
 
     f_recv_handle := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Channel(int)) {
@@ -1362,10 +1294,8 @@ test_channel_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, chan_recv_waiter_count(&ch), 1)
 
-    // Cancel receiver while waiting in recv_waiters
     coro.fiber_cancel(&sched, f_recv_handle)
 
-    // Send value to channel - should skip dead waiter and not panic/hang
     sent := chan_try_send(&ch, 100)
     testing.expect(t, !sent)
     testing.expect_value(t, chan_recv_waiter_count(&ch), 0)
@@ -1417,7 +1347,6 @@ test_with_semaphore_val :: proc(t: ^testing.T) {
         id:  int,
     }
 
-    // Spawn 2 fibers using with_semaphore_val
     for i in 0 ..< 2 {
         coro.spawn_val(&sched, proc(f: ^coro.Fiber, p: Value_Payload) {
             with_semaphore(f, p.sem, proc(f: ^coro.Fiber, val: Value_Payload) {
@@ -1459,7 +1388,6 @@ test_chan_select_recv_multiplexing :: proc(t: ^testing.T) {
     res := Select_Result{idx = -1, val = -1, ok = false}
     channels := [3]^Channel(int){&ch_a, &ch_b, &ch_c}
 
-    // Receiver fiber selects across all 3 channels
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^struct { chs: []^Channel(int), r: ^Select_Result }) {
         idx, val, ok_recv := chan_select_recv(f, p.chs)
         p.r.idx = idx
@@ -1467,14 +1395,11 @@ test_chan_select_recv_multiplexing :: proc(t: ^testing.T) {
         p.r.ok = ok_recv
     }, &struct { chs: []^Channel(int), r: ^Select_Result }{ channels[:], &res })
 
-    // Step 1: coro.Fiber runs and yields since all channels are empty
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, !res.ok)
 
-    // Producer sends to ch_b
     chan_try_send(&ch_b, 777)
 
-    // Step 2: Receiver receives from ch_b
     coro.scheduler_step(&sched, 0.01)
     testing.expect(t, res.ok)
     testing.expect_value(t, res.idx, 1)
@@ -1483,7 +1408,6 @@ test_chan_select_recv_multiplexing :: proc(t: ^testing.T) {
 
 @(test)
 test_chan_cap_inspection :: proc(t: ^testing.T) {
-    // Unbuffered channel (rendezvous)
     ch_unbuf: Channel(int)
     chan_init(&ch_unbuf, 0)
     defer chan_destroy(&ch_unbuf)
@@ -1491,7 +1415,6 @@ test_chan_cap_inspection :: proc(t: ^testing.T) {
     testing.expect_value(t, chan_cap(&ch_unbuf), 0)
     testing.expect_value(t, chan_count(&ch_unbuf), 0)
 
-    // Buffered channel (capacity 16)
     ch_buf: Channel(f32)
     chan_init(&ch_buf, 16)
     defer chan_destroy(&ch_buf)
@@ -1509,7 +1432,7 @@ test_chan_recv_timeout_unbuffered_safety :: proc(t: ^testing.T) {
     defer coro.scheduler_destroy(&sched)
 
     ch: Channel(int)
-    chan_init(&ch, capacity = 0) // Unbuffered rendezvous
+    chan_init(&ch, capacity = 0)
     defer chan_destroy(&ch)
 
     timed_out := false
@@ -1528,12 +1451,10 @@ test_chan_recv_timeout_unbuffered_safety :: proc(t: ^testing.T) {
         if ok do c.val_received^ = val
     }, &ctx)
 
-    // Step scheduler past timeout without providing any sender
     for _ in 0 ..< 5 {
         coro.scheduler_step(&sched, 0.02)
     }
 
-    // Must cleanly time out and not hang
     testing.expect(t, timed_out)
     testing.expect_value(t, val_received, 0)
 }
@@ -1554,13 +1475,11 @@ test_chan_unbuffered_sender_before_receiver :: proc(t: ^testing.T) {
     }
     sent_flag := false
 
-    // Spawn Sender FIRST (suspends waiting for receiver)
     coro.spawn_val(&sched, proc(f: ^coro.Fiber, ctx: Sender_Ctx) {
         ok := chan_send(f, ctx.ch, 999)
         if ok do ctx.sent^ = true
     }, Sender_Ctx{ch = &ch, sent = &sent_flag})
 
-    // Step once: sender runs and suspends in send_waiters
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, sent_flag, false)
     testing.expect_value(t, chan_count(&ch), 1)
@@ -1572,14 +1491,12 @@ test_chan_unbuffered_sender_before_receiver :: proc(t: ^testing.T) {
     }
     r_ctx := Recv_Ctx{ch = &ch, received = 0, ok = false}
 
-    // Spawn Receiver SECOND
     coro.spawn(&sched, proc(f: ^coro.Fiber, ctx: ^Recv_Ctx) {
         val, ok := chan_recv(f, ctx.ch)
         ctx.received = val
         ctx.ok = ok
     }, &r_ctx)
 
-    // Step scheduler: receiver runs, consumes value, unblocks sender
     for _ in 0 ..< 5 {
         coro.scheduler_step(&sched, 0.016)
     }
@@ -1601,15 +1518,12 @@ test_chan_select_unbuffered_with_sender :: proc(t: ^testing.T) {
     chan_init(&ch2, capacity = 0)
     defer chan_destroy(&ch2)
 
-    // Sender queues message into unbuffered ch2
     coro.spawn(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         chan_send(f, ch, 777)
     }, &ch2)
 
-    // Step scheduler so sender pushes into ch2
     coro.scheduler_step(&sched, 0.016)
 
-    // Receiver selects across [ch1, ch2]
     Select_Ctx :: struct {
         channels: [2]^Channel(int),
         idx:      int,
@@ -1640,7 +1554,6 @@ test_defensive_semaphore_and_latch_non_positive :: proc(t: ^testing.T) {
     coro.scheduler_init(&sched)
     defer coro.scheduler_destroy(&sched)
 
-    // Semaphore defensive checks
     sem: Fiber_Semaphore
     semaphore_init(&sem, initial_permits = 2, max_permits = 5)
     defer semaphore_destroy(&sem)
@@ -1651,8 +1564,6 @@ test_defensive_semaphore_and_latch_non_positive :: proc(t: ^testing.T) {
     semaphore_release(&sched, &sem, -3)
     testing.expect_value(t, semaphore_available_permits(&sem), 2)
 
-    // removed latch_count_down
-    // removed latch_get_count
 }
 
 @(test)
@@ -1676,7 +1587,6 @@ test_chan_unbuffered_multi_sender_rendezvous :: proc(t: ^testing.T) {
     s2 := Send_Context{ch = &ch, val = 200}
     s3 := Send_Context{ch = &ch, val = 300}
 
-    // Spawn 3 concurrent senders on unbuffered channel
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ctx: ^Send_Context) {
         chan_send(f, ctx.ch, ctx.val)
     }, &s1, name = "Sender 1")
@@ -1726,22 +1636,18 @@ test_chan_unbuffered_sender_abort_cleanup :: proc(t: ^testing.T) {
     defer chan_destroy(&ch)
 
     sender_h := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
-        chan_send(f, ch, 999) // Will suspend waiting for receiver
+        chan_send(f, ch, 999)
     }, &ch, name = "Aborting Sender")
 
-    // Step scheduler: sender puts 999 into buffer[0], count = 1, and suspends in send_waiters
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, chan_count(&ch), 1)
     testing.expect_value(t, chan_send_waiter_count(&ch), 1)
 
-    // Abort the sender while waiting in rendezvous
     cancelled := coro.fiber_cancel(&sched, sender_h)
     testing.expect_value(t, cancelled, true)
-    // Cleanup proc must reset ch.count = 0 and remove from send_waiters
     testing.expect_value(t, chan_count(&ch), 0)
     testing.expect_value(t, chan_send_waiter_count(&ch), 0)
 
-    // Now coro.spawn a valid sender with 42
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
         chan_send(f, ch, 42)
     }, &ch, name = "Valid Sender")
@@ -1782,14 +1688,12 @@ test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
     }
     ctx := Worker_Ctx{m = &m, comp = &worker2_completed}
 
-    // coro.Fiber 1: Enters with_mutex and sleeps
     h1 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
         with_mutex(f, c.m, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
-            coro.wait(f, 10.0) // Long sleep while holding lock
+            coro.wait(f, 10.0)
         }, c)
     }, &ctx, name = "Lock Holder")
 
-    // coro.Fiber 2: Waits for the mutex
     h2 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
         with_mutex(f, c.m, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
             c.comp^ = true
@@ -1801,12 +1705,9 @@ test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
     testing.expect_value(t, worker2_completed, false)
     testing.expect_value(t, mutex_waiter_count(&m), 1)
 
-    // Cancel fiber 1 while it is holding with_mutex
-    // Automatic abort cleanup must unlock m and hand it over to fiber 2!
     coro.fiber_cancel(&sched, h1)
-    testing.expect(t, m.locked) // Transferred to fiber 2
+    testing.expect(t, m.locked)
 
-    // Step scheduler so fiber 2 executes
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, worker2_completed, true)
     testing.expect_value(t, m.locked, false)
@@ -1830,14 +1731,12 @@ test_with_semaphore_automatic_abort_cleanup :: proc(t: ^testing.T) {
     }
     ctx := Sem_Ctx{sem = &sem, comp = &worker2_completed}
 
-    // coro.Fiber 1 acquires permit via with_semaphore and sleeps
     h1 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
         with_semaphore(f, c.sem, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
             coro.wait(f, 10.0)
         }, c)
     }, &ctx, name = "Permit Holder")
 
-    // coro.Fiber 2 tries to acquire permit via with_semaphore
     h2 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
         with_semaphore(f, c.sem, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
             c.comp^ = true
@@ -1849,10 +1748,8 @@ test_with_semaphore_automatic_abort_cleanup :: proc(t: ^testing.T) {
     testing.expect_value(t, worker2_completed, false)
     testing.expect_value(t, semaphore_waiter_count(&sem), 1)
 
-    // Abort fiber 1: automatic cleanup hook must restore permit and wake fiber 2
     coro.fiber_cancel(&sched, h1)
 
-    // Step scheduler so fiber 2 acquires permit and completes
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, worker2_completed, true)
     testing.expect_value(t, semaphore_available_permits(&sem), 1)
@@ -1872,11 +1769,9 @@ test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
     chan_init(&ch_data, 4)
     defer chan_destroy(&ch_data)
 
-    // Preload ch_data with values
     chan_try_send(&ch_data, 42)
     chan_try_send(&ch_data, 99)
 
-    // Close ch_closed (empty closed channel)
     chan_close(&ch_closed)
 
     received_values := make([dynamic]int, context.allocator)
@@ -1895,13 +1790,12 @@ test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
         for {
             idx, val, ok := chan_select_recv(f, c.chans[:])
             if !ok {
-                break // EOF / closed
+                break
             }
             append(c.received, val)
         }
     }, &ctx, name = "Select Consumer")
 
-    // Run until select consumer consumes all buffered messages and exits
     for _ in 0 ..< 5 {
         coro.scheduler_step(&sched, 0.016)
     }
@@ -1938,7 +1832,6 @@ test_unbuffered_chan_sender_first_rendezvous :: proc(t: ^testing.T) {
         recv_ok          = &receiver_ok,
     }
 
-    // Step 1: Sender runs FIRST before receiver even exists
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Unbuf_Ctx) {
         ok := chan_send(f, c.ch, 777)
         c.sender_completed^ = ok
@@ -1946,11 +1839,9 @@ test_unbuffered_chan_sender_first_rendezvous :: proc(t: ^testing.T) {
 
     coro.scheduler_step(&sched, 0.016)
 
-    // Sender should be blocked waiting for receiver rendezvous
     testing.expect_value(t, sender_completed, false)
     testing.expect_value(t, chan_send_waiter_count(&ch), 1)
 
-    // Step 2: Receiver spawns and consumes the rendezvous value
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Unbuf_Ctx) {
         val, ok := chan_recv(f, c.ch)
         c.recv_val^ = val
@@ -1959,7 +1850,6 @@ test_unbuffered_chan_sender_first_rendezvous :: proc(t: ^testing.T) {
 
     coro.scheduler_step(&sched, 0.016)
 
-    // Both sender and receiver must have completed the symmetrical exchange
     testing.expect_value(t, receiver_ok, true)
     testing.expect_value(t, receiver_value, 777)
     testing.expect_value(t, sender_completed, true)
@@ -1990,18 +1880,15 @@ test_unbuffered_chan_multi_sender_fifo_rendezvous :: proc(t: ^testing.T) {
         val: int,
     }
 
-    // Spawn 3 senders in order: 100, 200, 300
     vals := [3]int{100, 200, 300}
     for val in vals {
         v := val
         coro.spawn_val(&sched, proc(f: ^coro.Fiber, arg: Sender_Arg) {
             chan_send(f, arg.ch, arg.val)
         }, Sender_Arg{ch = &ch, val = v}, name = "FIFO Sender")
-        // Step to let each sender queue up in send_waiters
         coro.scheduler_step(&sched, 0.016)
     }
 
-    // Now coro.spawn receiver that consumes 3 items
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Multi_Ctx) {
         for _ in 0 ..< 3 {
             v, ok := chan_recv(f, c.ch)
@@ -2029,7 +1916,6 @@ test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
     coro.scheduler_init(&sched)
     defer coro.scheduler_destroy(&sched)
 
-    // True ZII: 0 permits, max_permits = 0 (unbounded mode)
     sem: Fiber_Semaphore
     acquired_count := 0
 
@@ -2050,13 +1936,11 @@ test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
     testing.expect_value(t, acquired_count, 0)
     testing.expect_value(t, coro.wait_queue_count(&sem.waiters), 5)
 
-    // Release 3 permits
     semaphore_release(&sched, &sem, 3)
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, acquired_count, 3)
     testing.expect_value(t, coro.wait_queue_count(&sem.waiters), 2)
 
-    // Release 2 more permits
     semaphore_release(&sched, &sem, 2)
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, acquired_count, 5)
@@ -2102,19 +1986,16 @@ test_mutex_owner_tracking_and_unlock_safety :: proc(t: ^testing.T) {
         mutex_unlock(f.sched, c.m)
     }, &ctx2, name = "Mutex Owner 2")
 
-    // Frame 1: coro.Fiber 1 locks mutex and yields
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, mutex_is_locked(&m), true)
     testing.expect_value(t, mutex_owner(&m), h1)
     testing.expect_value(t, len(step_log), 1)
     testing.expect_value(t, step_log[0], 11)
 
-    // Frame 2: coro.Fiber 1 finishes and unlocks; lock passes to coro.Fiber 2
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, mutex_is_locked(&m), true)
     testing.expect_value(t, mutex_owner(&m), h2)
 
-    // Frame 3: coro.Fiber 2 finishes and unlocks
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, mutex_is_locked(&m), false)
     testing.expect_value(t, mutex_owner(&m), 0)
@@ -2131,7 +2012,6 @@ test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
     coro.scheduler_init(&sched)
     defer coro.scheduler_destroy(&sched)
 
-    // Unbuffered channel with no receiver -> send must time out after 0.05s
     ch: Channel(int)
     chan_init(&ch, 0)
     defer chan_destroy(&ch)
@@ -2152,7 +2032,6 @@ test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
         c.timed_out^ = timed_out
     }, &ctx, name = "Timeout Sender")
 
-    // Run past 0.05s timeout
     for _ in 0 ..< 10 {
         coro.scheduler_step(&sched, 0.01)
     }
@@ -2160,5 +2039,3 @@ test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
     testing.expect_value(t, timed_out_flag, true)
     testing.expect_value(t, send_ok_flag, false)
 }
-
-

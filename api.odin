@@ -14,7 +14,6 @@ clamp_clock_id :: #force_inline proc "contextless" (clock_id: Clock_ID) -> Clock
     return Clock_ID(cid)
 }
 
-// Spawn with typed pointer (Zero allocations)
 spawn_ptr :: proc(
     sched: ^Scheduler,
     entry: proc(f: ^Fiber, data: ^$T),
@@ -42,7 +41,6 @@ spawn_ptr :: proc(
     return fiber.handle
 }
 
-// Spawn with value / struct copy (Zero heap allocation; copied into 128-byte payload_storage)
 spawn_val :: proc(
     sched: ^Scheduler,
     entry: proc(f: ^Fiber, data: $T),
@@ -83,7 +81,6 @@ spawn_val :: proc(
     return fiber.handle
 }
 
-// Spawn with no user data
 spawn_nil :: proc(
     sched: ^Scheduler,
     entry: proc(f: ^Fiber),
@@ -117,7 +114,6 @@ spawn_nil :: proc(
     return fiber.handle
 }
 
-// Unified overloaded entry point
 spawn :: proc{spawn_ptr, spawn_val, spawn_nil}
 
 // ============================================================================
@@ -181,7 +177,6 @@ yield :: proc(f: ^Fiber) {
 
 yield_frame :: yield
 
-// Cooperative timeslice yield within current tick/frame (Verse Sleep(0.0))
 yield_now :: proc(f: ^Fiber) {
     if f == nil || f.sched == nil do return
     f.status = .Ready
@@ -209,9 +204,6 @@ wait :: proc(f: ^Fiber, seconds: f32) {
     context = f.stored_context
 }
 
-// Built-in fiber-owned zero-drift ticker wait.
-// Stores interval and next wake timestamp directly on the Fiber struct in persistent memory.
-// 100% immune to WebAssembly Asyncify shadow-stack corruption across interleaved yields.
 ticker_wait :: proc(f: ^Fiber, interval_seconds: f32) {
     if f == nil || f.sched == nil do return
     interval := max(0.0001, interval_seconds)
@@ -243,7 +235,6 @@ ticker_wait :: proc(f: ^Fiber, interval_seconds: f32) {
     }
 }
 
-// Reset/rebase the fiber-owned ticker to cleanly start next interval from now + interval
 ticker_rebase :: proc(f: ^Fiber) {
     if f == nil do return
     f.ticker_next_wake = 0.0
@@ -293,7 +284,6 @@ fiber_is_alive :: proc{
 
 fiber_status_sched :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: Fiber_Status, ok: bool) {
     if sched == nil || handle == 0 do return .Completed, false
-    // 1. O(1) Check active fiber slot
     idx := int(fiber_handle_index(handle))
     if idx < len(sched.fiber_pool.all_fibers) {
         f := sched.fiber_pool.all_fibers[idx]
@@ -301,7 +291,6 @@ fiber_status_sched :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: 
             return f.status, true
         }
     }
-    // 2. Check historical record
     entry := sched.fiber_pool.handle_history[u32(handle) % FIBER_HANDLE_HISTORY_CAPACITY]
     if entry.handle == handle {
         return entry.status, true
@@ -340,7 +329,6 @@ fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
     return f != nil ? f.debug_name : ""
 }
 
-// Register a cleanup procedure executed in LIFO order when this fiber finishes, fails, or is cancelled.
 fiber_defer_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
     if f == nil || cleanup_proc == nil do return
     if f.cleanup_count < MAX_FIBER_CLEANUPS {
@@ -363,7 +351,6 @@ fiber_defer :: proc{
     fiber_defer_ptr,
 }
 
-// Pop the most recently registered cleanup hook (used by scoped RAII guards on normal exit)
 fiber_cleanup_pop :: proc(f: ^Fiber) {
     if f != nil && f.cleanup_count > 0 {
         f.cleanup_count -= 1
@@ -371,7 +358,6 @@ fiber_cleanup_pop :: proc(f: ^Fiber) {
     }
 }
 
-// Aliases for backwards compatibility
 fiber_set_cleanup_raw :: fiber_defer_raw
 fiber_set_cleanup_ptr :: fiber_defer_ptr
 fiber_set_cleanup     :: fiber_defer
@@ -447,10 +433,8 @@ branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = 
     }
 }
 
-// Unified overloaded entry point
 branch :: proc{branch_ptr, branch_val, branch_nil}
 
-// Built-in Branch_Desc factories for synchronization primitives
 branch_signal :: proc(sig: ^Signal, name := "signal_wait") -> Branch_Desc {
     return branch_ptr(signal_wait, sig, name)
 }
@@ -976,7 +960,6 @@ event_has_waiters :: #force_inline proc "contextless" (ev: ^Event($T)) -> bool {
     return ev != nil && !wait_queue_is_empty(&ev.waiters)
 }
 
-// Signal Aliases (0-byte Event)
 signal_init :: event_init
 signal_destroy :: event_destroy
 signal_waiter_count :: event_waiter_count
@@ -1074,7 +1057,6 @@ sticky_event_emit_fiber :: proc(f: ^Fiber, ev: ^Sticky_Event($T), payload: T) {
     sticky_event_emit_sched(f.sched, ev, payload)
 }
 
-// Sticky_Signal Aliases (0-byte Sticky_Event)
 sticky_signal_init         :: sticky_event_init
 sticky_signal_destroy      :: sticky_event_destroy
 sticky_signal_reset        :: sticky_event_reset
@@ -1175,7 +1157,6 @@ task_is_ready :: proc(task: ^Task($T)) -> bool {
     return task != nil && task.result.has_value
 }
 
-// Spawn a worker fiber that computes a value and automatically completes the Task(R)
 spawn_task_sched_nil :: proc(
     sched: ^Scheduler,
     task: ^Task($R),

@@ -60,7 +60,6 @@ scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
 
 scheduler_destroy :: proc(sched: ^Scheduler) {
     if sched == nil do return
-    // Abort and unlink all active fibers
     for fiber in sched.fiber_pool.all_fibers {
         if fiber.status != .Unused {
             if fiber.current_wait_queue != nil {
@@ -182,7 +181,6 @@ clock_heap_remove :: proc(clock: ^Clock_Domain, index: int) {
     last.heap_index = index
     clock.timer_heap[index] = last
 
-    // Rebalance
     parent := (index - 1) / 2
     if index > 0 && clock.timer_heap[index].wake_time < clock.timer_heap[parent].wake_time {
         heap_sift_up(&clock.timer_heap, index)
@@ -244,12 +242,10 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
         safe_dt = 0.0
     }
 
-    // 1. Advance Clock Domain Timeline
     c.delta = safe_dt
     c.time += f64(safe_dt)
     c.steps += steps
 
-    // 2. Wake Timers from Clock Domain Min-Heap
     for len(c.timer_heap) > 0 {
         root := c.timer_heap[0]
         if root.wake_time <= c.time {
@@ -263,7 +259,6 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
         }
     }
 
-    // 3. Wake Step Waiters (Linear In-Place Partition)
     if steps > 0 && len(c.step_waiters) > 0 {
         write_idx := 0
         for i := 0; i < len(c.step_waiters); i += 1 {
@@ -285,7 +280,6 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
 scheduler_run :: proc(sched: ^Scheduler) {
     if sched == nil do return
 
-    // Execute Ready Queue (Zero-Shift O(N) Sequential Cursor with Generational Handle Guard)
     for i := 0; i < len(sched.ready_queue); i += 1 {
         h := sched.ready_queue[i]
         f := fiber_find_by_handle(sched, h)
@@ -294,7 +288,6 @@ scheduler_run :: proc(sched: ^Scheduler) {
         f.status = .Running
         sched.current_fiber = f
 
-        // Context switch into the fiber
         if sched.watchdog_enabled {
             t0 := time.tick_now()
             fiber_context_switch(&sched.scheduler_sp, f.saved_sp)
@@ -309,7 +302,7 @@ scheduler_run :: proc(sched: ^Scheduler) {
 
         sched.current_fiber = nil
 
-        // Post-execution check: reload status with volatile semantics to prevent compiler SSA caching across ASM switch
+        // Reload status with volatile semantics to prevent compiler SSA caching across ASM switch
         status := intrinsics.volatile_load(&f.status)
         if status == .Completed || status == .Failed || status == .Aborted {
             fiber_cleanup_and_recycle(sched, f)
@@ -340,12 +333,10 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 
             if coord.kind == .Race {
                 if fiber.status == .Completed && !coord.completed {
-                    // First SUCCESS wins!
                     coord.completed = true
                     coord.winner = fiber
                     coord.winner_index = fiber.branch_index
 
-                    // Abort sibling branches immediately
                     parent := coord.parent
                     if parent != nil {
                         child := parent.first_child
@@ -357,14 +348,12 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                             child = next
                         }
 
-                        // Wake up parent if waiting
                         if parent.status == .Suspended_Join {
                             parent.status = .Ready
                             append(&fiber.sched.ready_queue, parent.handle)
                         }
                     }
                 } else if coord.active_branches <= 0 && !coord.completed {
-                    // All branches finished without any success (or all failed/aborted)
                     coord.completed = true
                     coord.winner = nil
                     coord.winner_index = -1
@@ -376,7 +365,6 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                 }
             } else if coord.kind == .Rush {
                 if fiber.status == .Completed && !coord.completed {
-                    // Verse rush: first SUCCESS wins; losers continue in background!
                     coord.completed = true
                     coord.winner = fiber
                     coord.winner_index = fiber.branch_index
@@ -394,14 +382,12 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                             child = next
                         }
 
-                        // Wake up parent if waiting
                         if parent.status == .Suspended_Join {
                             parent.status = .Ready
                             append(&fiber.sched.ready_queue, parent.handle)
                         }
                     }
                 } else if coord.active_branches <= 0 && !coord.completed {
-                    // All branches finished without any success
                     coord.completed = true
                     coord.winner = nil
                     coord.winner_index = -1
@@ -433,12 +419,10 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 // ============================================================================
 
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
-    // 0. Auto-cancel any remaining child fibers (e.g. branch_scoped or rush background tasks)
     for fiber.first_child != nil {
         fiber_abort_tree(sched, fiber.first_child)
     }
 
-    // 1. Run cleanup procedures in LIFO order if registered
     for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
         hook := fiber.cleanups[i]
         if hook.proc_ptr != nil {
@@ -447,28 +431,23 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     }
     fiber.cleanup_count = 0
 
-    // 2. Unlink from intrusive Wait_Queue if still attached
     if fiber.current_wait_queue != nil {
         wait_queue_remove(fiber.current_wait_queue, fiber)
         fiber.current_wait_queue = nil
     }
 
-    // 3. Unlink from parent
     if fiber.parent != nil {
         fiber_unlink_child(fiber.parent, fiber)
     }
 
-    // 4. Remove from scope if attached (O(1) in-place unlinking)
     if fiber.scope != nil {
         fiber_scope_detach(fiber)
     }
 
-    // 5. Record status in history before recycling
     if fiber.handle != 0 {
         sched.fiber_pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY].status = fiber.status
     }
 
-    // 6. Return to pool
     fiber_pool_recycle(&sched.fiber_pool, fiber)
 }
 
@@ -478,19 +457,16 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     prev_status := root.status
     root.status = .Aborted
 
-    // 1. Recursively abort all children bottom-up (clean in-place drain)
     for root.first_child != nil {
         fiber_abort_tree(sched, root.first_child)
     }
 
-    // 2. Remove root from scheduler clock domain queues
     cid := int(root.clock_id)
     if cid < 0 || cid >= MAX_CLOCKS do cid = 0
     c := &sched.clocks[cid]
 
     switch prev_status {
     case .Ready:
-        // Already marked aborted
     case .Sleeping_Time:
         if root.heap_index >= 0 {
             clock_heap_remove(c, root.heap_index)
@@ -503,10 +479,8 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
             }
         }
     case .Suspended_Join, .Running, .Completed, .Failed, .Aborted, .Unused:
-        // No queue removal required
     }
 
-    // 3. If fiber is sitting in an intrusive synchronization Wait_Queue, safely unlink it in O(1)
     if root.current_wait_queue != nil {
         wait_queue_remove(root.current_wait_queue, root)
         root.current_wait_queue = nil

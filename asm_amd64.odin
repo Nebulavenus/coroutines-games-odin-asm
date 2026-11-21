@@ -167,7 +167,6 @@ when ODIN_ARCH == .amd64 {
         mov res, %r12
     }
 
-    // Read the active CPU stack pointer using high-level inline assembly
     get_rsp :: asm() -> (sp: rawptr) [
         sp = %rax,
         #volatile,

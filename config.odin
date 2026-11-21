@@ -1,7 +1,7 @@
 package coroutine
 
 // ============================================================================
-// ENGINE CONFIGURATION & STATIC BOUNDS (PLAN 5)
+// ENGINE CONFIGURATION & STATIC BOUNDS
 // ============================================================================
 // All tunables can be overridden at compile time using Odin's -define flag:
 //   e.g. odin build . -define:CORO_STACK_SIZE=65536 -define:CORO_PAYLOAD_SIZE=256

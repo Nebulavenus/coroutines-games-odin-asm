@@ -53,13 +53,13 @@ test_stack_local_variables :: proc() {
         stage^ = 2
     }, &stage)
 
-    coroutine.scheduler_step(&sched, 0.016) // t = 0.016
+    coroutine.scheduler_step(&sched, 0.016)
     assert(stage == 1, "Expected stage 1 before sleep elapsed")
 
-    coroutine.scheduler_step(&sched, 0.016) // t = 0.032
+    coroutine.scheduler_step(&sched, 0.016)
     assert(stage == 1, "Expected stage 1 still sleeping")
 
-    coroutine.scheduler_step(&sched, 0.040) // t = 0.072 (wakes up past 0.066!)
+    coroutine.scheduler_step(&sched, 0.040)
     assert(stage == 2, "Expected stage 2 after sleep completed")
     fmt.println("OK")
 }
@@ -95,9 +95,9 @@ test_multiple_concurrent_fibers :: proc() {
     coroutine.spawn(&sched, worker, &arg1)
     coroutine.spawn(&sched, worker, &arg2)
 
-    coroutine.scheduler_step(&sched, 0.016) // Both run step 1
-    coroutine.scheduler_step(&sched, 0.016) // Both run step 2
-    coroutine.scheduler_step(&sched, 0.016) // Both run step 3
+    coroutine.scheduler_step(&sched, 0.016)
+    coroutine.scheduler_step(&sched, 0.016)
+    coroutine.scheduler_step(&sched, 0.016)
 
     assert(len(history) == 6, "Expected 6 entries in interleaved history")
     assert(history[0] == 11 && history[1] == 21, "Expected first step interleaving")
@@ -136,13 +136,13 @@ test_structured_sync :: proc() {
         s.parent_resumed = true
     }, &state)
 
-    coroutine.scheduler_step(&sched, 0.016) // t = 0.016
+    coroutine.scheduler_step(&sched, 0.016)
     assert(!state.branch_a_done && !state.branch_b_done && !state.parent_resumed, "No branch should finish yet")
 
-    coroutine.scheduler_step(&sched, 0.024) // t = 0.040 (Branch A wait(0.020) woke at 0.036!)
+    coroutine.scheduler_step(&sched, 0.024)
     assert(state.branch_a_done && !state.branch_b_done && !state.parent_resumed, "Branch A should finish, parent still waiting")
 
-    coroutine.scheduler_step(&sched, 0.024) // t = 0.064 (Branch B wait(0.040) woke at 0.056!)
+    coroutine.scheduler_step(&sched, 0.024)
     assert(state.branch_a_done && state.branch_b_done && state.parent_resumed, "Both branches and parent must be done")
     fmt.println("OK")
 }
@@ -166,25 +166,25 @@ test_structured_race :: proc() {
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Race_State) {
         s.winner_idx = coroutine.race_with(f, s,
             proc(child: ^coroutine.Fiber, s: ^Race_State) {
-                coroutine.wait(child, 0.020) // Faster
+                coroutine.wait(child, 0.020)
                 s.fast_done = true
             },
             proc(child: ^coroutine.Fiber, s: ^Race_State) {
-                coroutine.wait(child, 0.100) // Slower
+                coroutine.wait(child, 0.100)
                 s.slow_done = true
             },
         )
     }, &state)
 
-    coroutine.scheduler_step(&sched, 0.016) // t = 0.016
+    coroutine.scheduler_step(&sched, 0.016)
     assert(state.winner_idx == -1, "Race should still be running")
 
-    coroutine.scheduler_step(&sched, 0.020) // t = 0.036 (Fast branch completes!)
+    coroutine.scheduler_step(&sched, 0.020)
     assert(state.winner_idx == 0, "Expected branch 0 to win the race")
     assert(state.fast_done, "Fast branch must be marked done")
     assert(!state.slow_done, "Slow branch must have been cancelled without completing")
 
-    coroutine.scheduler_step(&sched, 0.200) // Advance far into future
+    coroutine.scheduler_step(&sched, 0.200)
     assert(!state.slow_done, "Slow branch must remain dead and never run again")
     fmt.println("OK")
 }
@@ -204,7 +204,6 @@ test_csp_channels :: proc() {
 
     received_val := -1
 
-    // Receiver fiber
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, pair: ^[2]rawptr) {
         ch := (cast(^sync.Channel(int))pair[0])
         val_ptr := (cast(^int)pair[1])
@@ -217,7 +216,6 @@ test_csp_channels :: proc() {
     coroutine.scheduler_step(&sched, 0.016)
     assert(received_val == -1, "Receiver should be blocked waiting for sender")
 
-    // Sender fiber
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ch: ^sync.Channel(int)) {
         sync.chan_send(f, ch, 42)
     }, &chan)
@@ -238,18 +236,18 @@ test_multi_domain_clocks :: proc() {
 
     sim_done := false
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, p: ^bool) {
-        coroutine.wait(f, 0.100) // Needs 0.100s of simulated time (0.200s real time)
+        coroutine.wait(f, 0.100)
         p^ = true
     }, &sim_done, clock = coroutine.CLOCK_SIM)
 
     coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.100)
     coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, 0.100 * 0.5)
-    coroutine.scheduler_run(&sched) // dt = 0.100, sim_dt = 0.050 (fiber spawned & sets wake_time = 0.050 + 0.100 = 0.150)
+    coroutine.scheduler_run(&sched)
     assert(!sim_done, "Fiber should still be sleeping under 0.5x time scale")
 
     coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.210)
     coroutine.clock_advance(&sched, coroutine.CLOCK_SIM, 0.210 * 0.5)
-    coroutine.scheduler_run(&sched) // dt = 0.210, sim_dt = 0.105 (total sim = 0.155 >= 0.150)
+    coroutine.scheduler_run(&sched)
     assert(sim_done, "Fiber must wake up after reaching target simulated time")
     fmt.println("OK")
 }
@@ -282,11 +280,10 @@ test_scope_abort :: proc() {
     coroutine.scheduler_step(&sched, 0.016)
     assert(coroutine.scope_active_count(&scope) == 2, "Scope must track 2 active fibers")
 
-    // Cancel all fibers in the scope
     coroutine.scope_cancel(&sched, &scope)
     assert(coroutine.scope_active_count(&scope) == 0, "All fibers must be pruned from scope")
 
-    coroutine.scheduler_step(&sched, 5.0) // Step past original sleep durations
+    coroutine.scheduler_step(&sched, 5.0)
     assert(!f1_done && !f2_done, "Aborted fibers must never execute their wake callbacks")
     fmt.println("OK")
 }
@@ -356,7 +353,6 @@ test_nested_race_sync_signal_abort :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Boss_Sim) {
         w := coroutine.race(f,
-            // Branch 0: Nested sync with 2 infinite attack subloops (sync_with)
             coroutine.branch(proc(f: ^coroutine.Fiber, s: ^Boss_Sim) {
                 coroutine.sync_with(f, s,
                     proc(child: ^coroutine.Fiber, s: ^Boss_Sim) {
@@ -373,13 +369,11 @@ test_nested_race_sync_signal_abort :: proc() {
                     },
                 )
             }, s, "Sync Attack Container"),
-            // Branch 1: Stun signal watcher (branch_signal QoL)
             coroutine.branch_signal(&s.stun_signal, "Stun Watcher"),
         )
         s.winner_idx = w
     }, &sim)
 
-    // Run for 0.12s -> both attacks should have fired at least once
     coroutine.scheduler_step(&sched, 0.05)
     coroutine.scheduler_step(&sched, 0.05)
     coroutine.scheduler_step(&sched, 0.05)
@@ -390,13 +384,11 @@ test_nested_race_sync_signal_abort :: proc() {
     ticks_a_before := sim.attack_a_ticks
     ticks_b_before := sim.attack_b_ticks
 
-    // Player presses EMP: emit stun signal
     coroutine.signal_emit(&sched, &sim.stun_signal)
     coroutine.scheduler_step(&sched, 0.016)
 
     assert(sim.winner_idx == 1, "Stun signal watcher must have won the race")
 
-    // Advance 1.0 full second into future: Attack subloops must be DEAD and never tick again!
     for _ in 0 ..< 20 {
         coroutine.scheduler_step(&sched, 0.05)
     }
@@ -426,26 +418,17 @@ test_ticker_zero_drift_and_abort :: proc() {
         }
     }, &ticks, scope = &scope)
 
-    // Run 5 steps of 0.02s = 0.10s:
-    // T = 0.02s: fiber initializes ticker, sets next_wake = 0.04s, sleeps
-    // T = 0.04s: tick 1, sleeps until 0.06s
-    // T = 0.06s: tick 2, sleeps until 0.08s
-    // T = 0.08s: tick 3, sleeps until 0.10s
-    // T = 0.10s: tick 4, sleeps until 0.12s
     for _ in 0 ..< 5 {
         coroutine.scheduler_step(&sched, 0.02)
     }
     assert(ticks == 4, "Expected exactly 4 discrete ticks after 0.10s (first tick fires at 0.04s)")
 
-    // 6th step (T = 0.12s): tick 5
     coroutine.scheduler_step(&sched, 0.02)
     assert(ticks == 5, "Expected exactly 5 discrete ticks at 0.12s")
 
-    // Cancel fiber via scope
     coroutine.scope_cancel(&sched, &scope)
     assert(coroutine.scope_active_count(&scope) == 0, "Scope must have 0 active fibers")
 
-    // Step into future
     for _ in 0 ..< 10 {
         coroutine.scheduler_step(&sched, 0.02)
     }
@@ -474,7 +457,6 @@ test_rapid_signal_emp_fuzzing :: proc() {
     coroutine.signal_init(&ai.stun_sig)
     defer coroutine.signal_destroy(&ai.stun_sig)
 
-    // Spawn AI master fiber executing 3 consecutive attack-stun rounds
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
         for s.rounds_completed < 3 {
             stunned := coroutine.with_signal(f, &s.stun_sig, proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
@@ -496,16 +478,13 @@ test_rapid_signal_emp_fuzzing :: proc() {
 
             if stunned {
                 s.stuns_handled += 1
-                // Boss stunned for 0.10s
                 coroutine.wait(f, 0.10)
             }
             s.rounds_completed += 1
         }
     }, &ai)
 
-    // Simulate 300 frames with rapid EMP presses
     for frame := 1; frame <= 300; frame += 1 {
-        // Press EMP at frame 20, 60, 100
         if frame == 20 || frame == 60 || frame == 100 {
             coroutine.signal_emit(&sched, &ai.stun_sig)
         }
@@ -515,7 +494,6 @@ test_rapid_signal_emp_fuzzing :: proc() {
     assert(ai.rounds_completed == 3, "All 3 rounds must cleanly complete")
     assert(ai.stuns_handled >= 1, "At least 1 stun must have been processed")
 
-    // Verify fiber pool invariants: all temporary fibers must be recycled!
     stats := coroutine.scheduler_pool_stats(&sched)
     assert(stats.active_fibers == 0, "Zero fibers should remain active after AI finishes")
     assert(len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) == 0, "Zero timer nodes left in heap")
@@ -541,21 +519,19 @@ test_verse_rush_losers_continue :: proc() {
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Rush_State) {
         s.winner_idx = coroutine.rush_with(f, s,
             proc(child: ^coroutine.Fiber, s: ^Rush_State) {
-                coroutine.wait(child, 0.020) // Fast branch: 20ms
+                coroutine.wait(child, 0.020)
                 s.fast_done = true
             },
             proc(child: ^coroutine.Fiber, s: ^Rush_State) {
-                coroutine.wait(child, 0.080) // Slow branch: 80ms
+                coroutine.wait(child, 0.080)
                 s.slow_done = true
             },
         )
 
-        // Parent resumes immediately when fast branch succeeds:
         assert(s.winner_idx == 0, "Fast branch must win rush")
         assert(s.fast_done, "Fast branch must be done")
         assert(!s.slow_done, "Slow branch must NOT be done yet")
 
-        // Wait long enough for slow branch to also finish in background:
         coroutine.wait(f, 0.100)
         assert(s.slow_done, "Slow branch MUST have completed in background without being aborted!")
     }, &state)
@@ -580,7 +556,6 @@ test_branch_scoped_background_and_parent_abort :: proc() {
     child_ticks := 0
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ct: ^int) {
-        // Launch background subtask bound to f:
         coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, ct: ^int) {
             for {
                 coroutine.wait(child, 0.016)
@@ -588,11 +563,9 @@ test_branch_scoped_background_and_parent_abort :: proc() {
             }
         }, ct)
 
-        // Parent runs for 3 ticks then exits naturally:
         coroutine.wait(f, 0.050)
     }, &child_ticks)
 
-    // Step scheduler for parent lifetime:
     for _ in 0 ..< 5 {
         coroutine.scheduler_step(&sched, 0.016)
     }
@@ -600,7 +573,6 @@ test_branch_scoped_background_and_parent_abort :: proc() {
     ticks_at_exit := child_ticks
     assert(ticks_at_exit >= 2, "Scoped child must run while parent is alive")
 
-    // Advance scheduler further: parent is gone, child MUST be aborted!
     for _ in 0 ..< 5 {
         coroutine.scheduler_step(&sched, 0.016)
     }
@@ -621,21 +593,18 @@ test_sticky_event_and_signal :: proc() {
     ready_sig: coroutine.Sticky_Signal
     val_ev:    coroutine.Sticky_Event(int)
 
-    // Emit before any fiber awaits:
     coroutine.sticky_signal_emit(&sched, &ready_sig)
     coroutine.sticky_event_emit(&sched, &val_ev, 99)
 
     sig_received := false
     ev_val := 0
 
-    // Late-joining fiber awaits already-signaled sticky primitives:
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, data: ^[4]rawptr) {
         sig := cast(^coroutine.Sticky_Signal)data[0]
         ev := cast(^coroutine.Sticky_Event(int))data[1]
         sig_rcv := cast(^bool)data[2]
         out_v := cast(^int)data[3]
 
-        // Must return immediately without suspending:
         coroutine.sticky_signal_wait(f, sig)
         sig_rcv^ = true
 
@@ -678,17 +647,15 @@ test_yield_now_same_tick :: proc() {
                 d.history[d.count^] = d.id
                 d.count^ += 1
             }
-            coroutine.yield_now(f) // Relinquishes timeslice in same frame
+            coroutine.yield_now(f)
         }
     }
 
     coroutine.spawn(&sched, worker, &d1)
     coroutine.spawn(&sched, worker, &d2)
 
-    // Step scheduler for EXACTLY 1 frame:
     coroutine.scheduler_step(&sched, 0.016)
 
-    // In 1 single frame step, both fibers interleaved execution via yield_now:
     assert(count == 4, "Both fibers must complete their yield_now iterations in the same frame")
     assert(history[0] == 1 && history[1] == 2 && history[2] == 1 && history[3] == 2, "Fibers must alternate via yield_now")
     fmt.println("OK")
@@ -703,7 +670,6 @@ test_task_futures_and_combinator_helpers :: proc() {
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
-    // 1. Task(T) with spawn_task
     Task_Host :: struct {
         tk:     coroutine.Task(int),
         result: int,
@@ -725,7 +691,6 @@ test_task_futures_and_combinator_helpers :: proc() {
         h.result = val
     }, &host)
 
-    // 2. sync_with and with_signal
     Worker_State :: struct {
         sig:         coroutine.Signal,
         step_a:      bool,
@@ -735,7 +700,6 @@ test_task_futures_and_combinator_helpers :: proc() {
     w_state: Worker_State
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Worker_State) {
-        // sync_with runs arms concurrently with s context
         coroutine.sync_with(f, s,
             proc(child: ^coroutine.Fiber, s: ^Worker_State) {
                 coroutine.wait(child, 0.010)
@@ -747,15 +711,13 @@ test_task_futures_and_combinator_helpers :: proc() {
             },
         )
 
-        // with_signal cancels body if sig fires
         coroutine.with_signal(f, &s.sig, proc(child: ^coroutine.Fiber, s: ^Worker_State) {
-            coroutine.wait(child, 1.0) // Long sleep
+            coroutine.wait(child, 1.0)
             s.interrupted = false
         }, s)
         s.interrupted = true
     }, &w_state)
 
-    // Step scheduler
     for frame := 1; frame <= 10; frame += 1 {
         if frame == 3 {
             coroutine.signal_emit(&sched, &w_state.sig)

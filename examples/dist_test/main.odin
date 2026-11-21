@@ -16,7 +16,6 @@ main :: proc() {
 	executed := false
 	received_val := 0
 
-	// Producer fiber
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ev_ptr: ^coroutine.Event(int)) {
 		coroutine.yield(f)
 		coroutine.event_emit(f.sched, ev_ptr, 42)
@@ -30,7 +29,6 @@ main :: proc() {
 
 	consumer_data := Consumer_Data{&ev, &executed, &received_val}
 
-	// Consumer fiber
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, data: ^Consumer_Data) {
 		v, ok := coroutine.event_wait(f, data.ev)
 		if ok {
@@ -47,7 +45,6 @@ main :: proc() {
 	assert(executed, "Consumer fiber did not complete")
 	assert(received_val == 42, "Received unexpected value from event")
 
-	// Validate branch_scoped and Sticky_Signal in amalgamated dist:
 	sticky_sig: coroutine.Sticky_Signal
 	coroutine.sticky_signal_emit(&sched, &sticky_sig)
 
@@ -71,7 +68,6 @@ main :: proc() {
 	}
 	assert(scoped_ran, "branch_scoped and Sticky_Signal must work in amalgamated dist")
 
-	// Validate Verse Task(T), spawn_task, and task_await in amalgamated dist:
 	task: coroutine.Task(int)
 	task_res := 0
 	Task_Ctx :: struct {
@@ -88,7 +84,6 @@ main :: proc() {
 		if ok do ctx.res^ = val
 	}, &t_ctx)
 
-	// Validate sync_with in amalgamated dist:
 	sync_a, sync_b := false, false
 	Sync_Pair :: struct { a: ^bool, b: ^bool }
 	sp := Sync_Pair{&sync_a, &sync_b}

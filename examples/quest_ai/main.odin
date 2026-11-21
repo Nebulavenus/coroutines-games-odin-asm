@@ -155,11 +155,10 @@ sentinel_switch_phase :: proc(sched: ^coroutine.Scheduler, s: ^Void_Sentinel, ph
 // Zone 1: AI Behavior Tree with Priority Fallbacks & Semaphore
 // ============================================================================
 
-// 1. Priority A: Execute Whirlwind Attack if player is very close and stamina is full
 knight_action_whirlwind :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     dist := linalg.length(g_world.player.pos - k.pos)
     if dist > 85.0 || k.stamina < 60.0 {
-        coroutine.fail(f) // Fallthrough to Priority B
+        coroutine.fail(f)
     }
     coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
     k.current_action = "Whirlwind Attack! (Priority A)"
@@ -168,11 +167,10 @@ knight_action_whirlwind :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     coroutine.wait(f, 0.6)
 }
 
-// 2. Priority B: Shield Bash Dash if player is within medium range
 knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     dist := linalg.length(g_world.player.pos - k.pos)
     if dist > 180.0 || k.stamina < 30.0 {
-        coroutine.fail(f) // Fallthrough to Priority C
+        coroutine.fail(f)
     }
     coroutine.fiber_set_name(f, "Knight AI: Shield Bash (B)")
     k.current_action = "Shield Bash Dash! (Priority B)"
@@ -183,13 +181,11 @@ knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     coroutine.wait(f, 0.5)
 }
 
-// 3. Priority C: Guaranteed Fallback (Patrol & Recover Stamina)
 knight_action_patrol_rest :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     coroutine.fiber_set_name(f, "Knight AI: Tactical Patrol & Rest (C)")
     k.current_action = "Tactical Patrol & Rest (Fallback C)"
     k.action_color = rl.SKYBLUE
     k.stamina = min(100.0, k.stamina + 20.0)
-    // Move towards home position
     tween_vec2(f, &k.pos, k.pos, k.home_pos, 0.8, ease_in_out_quad)
     coroutine.wait(f, 0.4)
 }
@@ -201,7 +197,6 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     for {
         coroutine.ticker_wait(f, 0.2)
 
-        // Evaluate dynamic behavioral fallback cascade every tick with fallback_with:
         coroutine.fallback_with(f, k,
             knight_action_whirlwind,
             knight_action_shield_bash,
@@ -214,7 +209,6 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
 // Zone 2: Competitive Quest Objectives (rush & Event(T) Multicast)
 // ============================================================================
 
-// Objective 0: Hack Security Terminal (Hold near terminal)
 quest_obj_hack_terminal :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     for q.terminal_prog < 1.0 {
         coroutine.yield_frame(f)
@@ -225,7 +219,6 @@ quest_obj_hack_terminal :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     }
 }
 
-// Objective 1: Eliminate 2 Sentry Drones (Sequential combat timing)
 quest_obj_destroy_sentries :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     coroutine.wait(f, 1.8)
     q.drones_defeated = 1
@@ -233,7 +226,6 @@ quest_obj_destroy_sentries :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     q.drones_defeated = 2
 }
 
-// Objective 2: Collect Hidden Keycard (Touch keycard position)
 quest_obj_retrieve_keycard :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     for !q.keycard_found {
         coroutine.yield_frame(f)
@@ -254,12 +246,8 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     q.status_color = rl.YELLOW
     coroutine.fiber_set_name(f, "Quest Director (Active rush)")
 
-    // Broadcast Quest Start via Event(T)
     coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{"Outpost Quest Started: Hack, Slay, or Retrieve!", rl.YELLOW})
 
-    // Run 3 objectives in parallel with Verse rush_with:
-    // First to SUCCEED unblocks the parent immediately!
-    // Crucially: Losing branches are NOT cancelled; they continue executing concurrently in the background!
     winner := coroutine.rush_with(f, q,
         quest_obj_hack_terminal,
         quest_obj_destroy_sentries,
@@ -272,12 +260,8 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         q.status_text = fmt.tprintf("PRIMARY GOAL: %s! Secondary tasks active in background...", q.winner_name)
         q.status_color = rl.GREEN
         coroutine.fiber_set_name(f, "Quest Director (rush background window)")
-        // Broadcast Primary Victory Event
         coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fmt.tprintf("PRIMARY GOAL MET: %s", q.winner_name), rl.GREEN})
 
-        // Verse rush demonstration:
-        // Losing arms continue running concurrently in the background as direct child fibers!
-        // We give the player a 4-second bonus window to complete secondary objectives:
         coroutine.wait(f, 4.0)
 
         q.status_text = fmt.tprintf("QUEST CONCLUDED: %s (Bonus window finished)", q.winner_name)
@@ -293,7 +277,7 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
 }
 
 // ============================================================================
-// Zone 3: Void Sentinel State Machine (Phase_Director & fiber_join)
+// Zone 3: Void Sentinel State Machine (Fiber_Scope & fiber_join)
 // ============================================================================
 
 sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
@@ -307,7 +291,6 @@ sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
     }
 }
 
-// Phase 2: Spawns independent Crystal Minion and uses fiber_join to wait for it!
 sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
     coroutine.fiber_set_name(f, "Sentinel: Phase 2 (Shield & Minion)")
     s.color = rl.SKYBLUE
@@ -316,7 +299,6 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
         g_world.minion_active = true
         g_world.minion_pos = s.pos + {0, 60}
 
-        // Spawn independent Crystal Minion task using Ticker
         minion_handle := coroutine.spawn(&g_world.sched, proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
             coroutine.fiber_set_name(f, "Crystal Minion: Active")
             for i := 0; i < 4; i += 1 {
@@ -326,10 +308,8 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
             g_world.minion_active = false
         }, s, name = "Crystal Minion Task")
 
-        // Sentinel awaits Minion completion with fiber_join!
         coroutine.fiber_join(f, minion_handle)
 
-        // Drop shield and pulse
         tween_f32(f, &s.shield_alpha, 0.95, 0.1, 0.4, ease_out_quad)
         coroutine.wait(f, 0.8)
     }
@@ -346,7 +326,7 @@ sentinel_phase3_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 }
 
 // ============================================================================
-// Zone 4: Headless Simulation Runner (simulate_until)
+// Zone 4: Headless Simulation Runner (Headless Virtual Stepping)
 // ============================================================================
 
 run_simulation_benchmark :: proc(w: ^World) {
@@ -356,7 +336,6 @@ run_simulation_benchmark :: proc(w: ^World) {
 
     counter := 0
 
-    // Spawn 10 synthetic coroutines
     for i in 0 ..< 10 {
         coroutine.spawn(&bench_sched, proc(f: ^coroutine.Fiber, c: ^int) {
             for _ in 0 ..< 600 {
@@ -368,7 +347,6 @@ run_simulation_benchmark :: proc(w: ^World) {
 
     t0 := time.now()
 
-    // Simulate headlessly until 6000 events
     for counter < 6000 && coroutine.scheduler_time(&bench_sched) < 70.0 {
         coroutine.scheduler_step(&bench_sched, 0.016)
     }
@@ -392,7 +370,6 @@ world_init :: proc(w: ^World) {
         world_destroy(w)
     }
     coroutine.scheduler_init(&w.sched)
-    // Pre-warm stack pool for zero-allocation runtime performance
     coroutine.scheduler_prewarm(&w.sched, 64)
 
     sync.semaphore_init(&w.combat_sem, initial_permits = 1, max_permits = 1)
@@ -437,7 +414,6 @@ world_init :: proc(w: ^World) {
     w.show_coroutine_debugger = true
     g_world = w
 
-    // Spawn Quest Toast Listener Fiber (receives Event(Quest_Milestone))
     coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber) {
         for {
             m, ok := coroutine.event_wait(f, &g_world.quest_event)
@@ -448,10 +424,8 @@ world_init :: proc(w: ^World) {
         }
     }, name = "Quest Event Listener")
 
-    // Start Sentinel Phase 1
     sentinel_switch_phase(&w.sched, &w.sentinel, 1, sentinel_phase1_fiber, "Phase 1: Laser Patrol")
 
-    // Start Knight AI decision loop with category tag
     coroutine.spawn(&w.sched, knight_ai_fiber, &w.knight, scope = &w.knight.scope, name = "Knight AI (fallback)")
 }
 
@@ -478,7 +452,6 @@ world_update :: proc(w: ^World, dt: f32) {
         w.milestone_timer = max(0.0, w.milestone_timer - dt)
     }
 
-    // Determine simulation delta-time for this frame
     sim_dt: f32 = 0.0
 
     if !w.is_paused {
@@ -495,12 +468,11 @@ world_update :: proc(w: ^World, dt: f32) {
             w.last_step_dt = sim_dt
             w.step_flash_timer = 0.4
         } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
-            sim_dt = 0.160 // 10 frames (~160ms jump)
+            sim_dt = 0.160
             w.step_count += 10
             w.last_step_dt = sim_dt
             w.step_flash_timer = 0.5
         } else if rl.IsKeyDown(.F4) {
-            // Slow-motion continuous step when holding F4 (~15 FPS slow-mo)
             w.hold_step_timer += dt
             if w.hold_step_timer >= 0.066 {
                 w.hold_step_timer = 0.0
@@ -514,13 +486,11 @@ world_update :: proc(w: ^World, dt: f32) {
         }
     }
 
-    // Latch triggers while running or paused
     if rl.IsKeyPressed(.TWO)   do w.latched_quest = true
     if rl.IsKeyPressed(.THREE) do w.latched_phase = true
     if rl.IsKeyPressed(.T)     do w.latched_bench = true
     if rl.IsKeyPressed(.E)     do w.latched_interact = true
 
-    // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
     if sim_dt <= 0.0 {
         coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
         coroutine.scheduler_run(&w.sched)
@@ -529,7 +499,6 @@ world_update :: proc(w: ^World, dt: f32) {
 
     w.global_time += sim_dt
 
-    // Step coroutine engine
     coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
     if !w.is_paused {
         coroutine.scheduler_step(&w.sched, sim_dt)
@@ -549,7 +518,6 @@ world_update :: proc(w: ^World, dt: f32) {
         w.player.pos += move_dir * w.player.speed * sim_dt
     }
 
-    // Process latched triggers
     do_quest := w.latched_quest || rl.IsKeyPressed(.TWO)
     do_phase := w.latched_phase || rl.IsKeyPressed(.THREE)
     do_bench := w.latched_bench || rl.IsKeyPressed(.T)
@@ -586,13 +554,11 @@ world_update :: proc(w: ^World, dt: f32) {
     // --- Scope Interrupt Trigger (Press [X]): Cancels Knight AI by Scope ---
     if rl.IsKeyPressed(.X) {
         cancelled := coroutine.scope_cancel(&w.sched, &w.knight.scope)
-        // Ensure combat semaphore is restored if interrupted mid-action
         if sync.semaphore_available_permits(&w.combat_sem) < w.combat_sem.max_permits {
             sync.semaphore_release(&w.sched, &w.combat_sem, w.combat_sem.max_permits - sync.semaphore_available_permits(&w.combat_sem))
         }
         w.knight.current_action = fmt.tprintf("STUNNED via Scope Cancellation (Cancelled %d)", cancelled)
         w.knight.action_color = rl.GOLD
-        // Respawn Knight decision fiber after 1.2s stun
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
             coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, name = "Knight AI (fallback)")
@@ -604,7 +570,6 @@ world_render :: proc(w: ^World) {
     rl.BeginDrawing()
     rl.ClearBackground({16, 18, 28, 255})
 
-    // Header Title & Telemetry
     rl.DrawText("ADVANCED CONTROL FLOW & QUEST AI SHOWCASE", 30, 16, 22, rl.RAYWHITE)
 
     stats := coroutine.scheduler_pool_stats(&w.sched)
@@ -628,7 +593,6 @@ world_render :: proc(w: ^World) {
     rl.DrawText("ZONE 2: Quest Objectives (rush + Event(T))", 435, 90, 15, rl.GOLD)
     rl.DrawText("Rush: First goal unblocks parent; secondary goals continue in background!", 435, 112, 11, rl.GRAY)
 
-    // Terminal (Option 0)
     rl.DrawRectangleV(w.quest.terminal_pos - {16, 16}, {32, 32}, rl.DARKBLUE)
     rl.DrawText("Terminal", i32(w.quest.terminal_pos.x) - 24, i32(w.quest.terminal_pos.y) - 30, 11, rl.SKYBLUE)
     if w.quest.is_active || w.quest.terminal_prog > 0.0 {
@@ -636,17 +600,14 @@ world_render :: proc(w: ^World) {
         rl.DrawRectangle(i32(w.quest.terminal_pos.x) - 20, i32(w.quest.terminal_pos.y) + 20, i32(40.0 * w.quest.terminal_prog), 6, rl.GREEN)
     }
 
-    // Sentries (Option 1)
     rl.DrawCircleV({630, 200}, 14.0, w.quest.drones_defeated >= 2 ? rl.DARKGREEN : (w.quest.drones_defeated == 1 ? rl.ORANGE : rl.MAROON))
     rl.DrawText(fmt.ctprintf("Sentries (%d/2)", w.quest.drones_defeated), 590, 172, 11, rl.RAYWHITE)
 
-    // Keycard (Option 2)
     rl.DrawCircleV(w.quest.keycard_pos, 12.0, w.quest.keycard_found ? rl.DARKGREEN : rl.GOLD)
     rl.DrawText("Keycard", i32(w.quest.keycard_pos.x) - 20, i32(w.quest.keycard_pos.y) - 26, 11, rl.YELLOW)
 
     rl.DrawText(fmt.ctprintf("Status: %s", w.quest.status_text), 435, 330, 12, w.quest.status_color)
 
-    // Toast Milestone Banner
     if w.milestone_timer > 0.0 {
         rl.DrawRectangle(435, 350, 410, 20, {20, 40, 60, 220})
         rl.DrawText(fmt.ctprintf("Event(T) Toast: %s", w.last_milestone), 440, 353, 11, rl.LIME)
@@ -663,7 +624,6 @@ world_render :: proc(w: ^World) {
         rl.DrawText("INVULNERABLE", i32(w.sentinel.pos.x) - 40, i32(w.sentinel.pos.y) - 44, 10, rl.SKYBLUE)
     }
 
-    // Minion
     if w.minion_active {
         rl.DrawCircleV(w.minion_pos, 14.0, rl.VIOLET)
         rl.DrawCircleLines(i32(w.minion_pos.x), i32(w.minion_pos.y), 16.0, rl.WHITE)
@@ -694,7 +654,6 @@ world_render :: proc(w: ^World) {
     rl.DrawCircleV(w.player.pos, w.player.radius, rl.LIME)
     rl.DrawCircleLines(i32(w.player.pos.x), i32(w.player.pos.y), w.player.radius + 2, rl.WHITE)
 
-    // Bottom HUD Instructions & Pause Banner
     if w.is_paused {
         flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)

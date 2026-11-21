@@ -66,7 +66,6 @@ mutex_lock :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         return
     }
 
-    // Already locked: suspend this fiber until unlock
     coro.wait_queue_push_back(&m.waiters, f)
     coro.fiber_suspend(f)
     m.owner = f.handle

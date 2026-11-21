@@ -104,7 +104,6 @@ Game :: struct {
     latched_shoot:           bool,
 }
 
-// Global Game Reference for Coroutines
 g_game: ^Game
 
 g_rng_state: u32 = 0x853c49e6
@@ -228,7 +227,6 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
     start_y := curr_ft.pos.y
     target_y := start_y - 45.0
 
-    // Tween upward position with juicy back-easing and fade out
     dur: f32 = 0.8
     elapsed: f32 = 0.0
 
@@ -260,27 +258,22 @@ player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
     p.can_dash = false
     p.is_dashing = true
 
-    // Dash burst speed
     orig_speed := p.speed
     p.speed *= 3.2
     trigger_camera_shake(5.0)
     spawn_particles(p.pos, 15, rl.SKYBLUE)
 
-    // Register LIFO cleanup hook: guarantees player state restoration if cancelled or interrupted
     coroutine.fiber_defer(f, proc(p: ^Player) {
         p.speed = 300.0
         p.is_dashing = false
     }, p)
 
-    // Dash duration
     coroutine.wait(f, 0.18)
 
-    // Restore speed normally and pop cleanup hook
     p.speed = orig_speed
     p.is_dashing = false
     coroutine.fiber_cleanup_pop(f)
 
-    // Dash Cooldown
     coroutine.wait(f, 0.8)
     p.can_dash = true
 }
@@ -325,7 +318,6 @@ boss_targeted_burst_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         coroutine.wait(f, 1.8)
         if !b.alive do break
 
-        // Fire 3 targeted bursts towards player
         for _ in 0 ..< 3 {
             coroutine.wait(f, 0.12)
             if !b.alive do break
@@ -342,7 +334,6 @@ boss_enraged_laser_sweep :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         coroutine.wait(f, 1.2)
         if !b.alive do break
 
-        // Rapid 360 ring burst
         trigger_camera_shake(8.0)
         spawn_particles(b.pos, 30, rl.PURPLE)
         ring_count := 18
@@ -358,7 +349,6 @@ boss_enraged_laser_sweep :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.hp > 700.0 && b.alive && b.phase == 1 {
-        // Verse with_signal: runs combo attack until completed or interrupted by stun signal
         stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
             coroutine.sync_with(f, b, boss_spiral_shoot_subloop, boss_targeted_burst_subloop)
         }, b, "Phase 1 Attacks")
@@ -402,7 +392,6 @@ boss_attack_loop_phase3 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     }
 }
 
-// Master Boss AI Timeline
 boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     center_x := f32(SCREEN_WIDTH) / 2.0
     center_y := f32(180.0)
@@ -417,7 +406,6 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     spawn_floating_text("PHASE 1: ENGAGED", b.pos, rl.GOLD)
 
     coroutine.race_with(f, b,
-        // Condition branch: End Phase 1 when HP < 700
         proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.hp > 700.0 && b.alive {
                 coroutine.yield(f)
@@ -439,10 +427,8 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     spawn_floating_text("PHASE 2: SHIELD CHARGE!", b.pos, rl.SKYBLUE)
     trigger_camera_shake(10.0)
 
-    // 1. Move to Center
     tween_vec2(f, &b.pos, b.pos, [2]f32{f32(SCREEN_WIDTH) / 2.0, 180.0}, 1.0, ease_in_out_cubic)
 
-    // 2. Shield Charge Cinematic (sync_with shared ^Boss context)
     coroutine.sync_with(f, b,
         proc(f: ^coroutine.Fiber, b: ^Boss) {
             tween_f32(f, &b.shield_alpha, 0.0, 0.85, 1.2, ease_in_out_quad)
@@ -457,7 +443,6 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         },
     )
 
-    // 3. Super Radial Blast
     trigger_camera_shake(15.0)
     spawn_floating_text("SUPER NOVA BURST!", b.pos, rl.VIOLET)
     for i in 0 ..< 32 {
@@ -466,7 +451,6 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
         spawn_projectile(b.pos, dir * 280.0, 10.0, rl.PURPLE, true)
     }
 
-    // 4. Phase 2 Combat Loop until HP < 350 (race_with shared ^Boss context)
     coroutine.race_with(f, b,
         proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.hp > 350.0 && b.alive {
@@ -489,7 +473,6 @@ boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     spawn_floating_text("PHASE 3: BERSERK MODE!", b.pos, rl.RED)
     trigger_camera_shake(20.0)
 
-    // Phase 3 Combat Loop (race_with shared ^Boss context)
     coroutine.race_with(f, b,
         proc(f: ^coroutine.Fiber, b: ^Boss) {
             for b.alive {
@@ -547,7 +530,6 @@ game_init :: proc(g: ^Game) {
 
     g_game = g
 
-    // Spawn Boss AI timeline coroutine
     coroutine.spawn(&g.sched, boss_master_ai, &g.boss, scope = &g.boss.scope, name = "Boss AI Timeline")
 }
 
@@ -559,13 +541,11 @@ game_destroy :: proc(g: ^Game) {
 }
 
 game_update :: proc(g: ^Game, dt: f32) {
-    // Global restart at any time
     if rl.IsKeyPressed(.R) {
         game_init(g)
         return
     }
 
-    // Debug & Inspection Controls (P / Esc: Pause, H / Tab: Hierarchy)
     if rl.IsKeyPressed(.P) || rl.IsKeyPressed(.ESCAPE) || rl.IsKeyPressed(.F3) {
         g.is_paused = !g.is_paused
     }
@@ -579,7 +559,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         sim_dt = dt
         g.step_flash_timer = 0.0
     } else {
-        // Paused state: check for single-step, 10-frame jump, or slow-motion hold
         if g.step_flash_timer > 0.0 {
             g.step_flash_timer = max(0.0, g.step_flash_timer - dt)
         }
@@ -600,7 +579,7 @@ game_update :: proc(g: ^Game, dt: f32) {
             g.step_flash_timer = 0.5
         } else if step_hold {
             g.hold_step_timer += dt
-            if g.hold_step_timer >= 0.15 { // Slow-motion ~6-7 FPS
+            if g.hold_step_timer >= 0.15 {
                 sim_dt = 1.0 / 60.0
                 g.step_count += 1
                 g.last_step_dt = sim_dt
@@ -612,7 +591,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         }
     }
 
-    // Latch actions while paused or running
     if rl.IsKeyPressed(.SPACE) || rl.IsKeyPressed(.K) {
         g.latched_dash = true
     }
@@ -620,7 +598,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         g.latched_shoot = true
     }
 
-    // If simulation is completely paused with no step this frame, pump real-time clock and halt world updates
     if sim_dt <= 0.0 {
         coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
         coroutine.scheduler_run(&g.sched)
@@ -642,13 +619,10 @@ game_update :: proc(g: ^Game, dt: f32) {
         g.player.slowmo_charge = min(g.player.slowmo_max, g.player.slowmo_charge + RECHARGE_RATE * dt)
     }
 
-    // Non-linear slowdown curve:
-    // When bar is full (t=1.0), factor=1.0 (maximum world slowdown).
-    // As bar empties (t->0), world slowdown smoothly diminishes back to normal speed.
     t := clamp(g.player.slowmo_charge / g.player.slowmo_max, 0.0, 1.0)
     factor: f32 = 0.0
     if g.player.is_slowmo {
-        factor = t * math.sqrt(t) // t^1.5 curve
+        factor = t * math.sqrt(t)
     }
     g.player.slowmo_factor = factor
 
@@ -662,7 +636,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         g.game_time += world_sim_dt
     }
 
-    // Step Coroutines Engine (Multi-Clock Driven)
     coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
     if g.is_paused {
         coroutine.scheduler_single_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
@@ -722,7 +695,7 @@ game_update :: proc(g: ^Game, dt: f32) {
 
     do_emp := rl.IsKeyPressed(.E) || rl.IsKeyPressed(.B) || rl.IsKeyPressed(.X)
     if do_emp && g.player.emp_cooldown <= 0.0 {
-        g.player.emp_cooldown = 1.8 // Prevent runaway EMP spamming while boss is stunned
+        g.player.emp_cooldown = 1.8
         coroutine.signal_emit(&g.sched, &g.boss.stun_signal)
         bullets_destroyed := 0
         for i := g.projectile_count - 1; i >= 0; i -= 1 {
@@ -738,7 +711,6 @@ game_update :: proc(g: ^Game, dt: f32) {
         spawn_floating_text(fmt.tprintf("EMP PARRY! Stunned Boss (%d Bullets Vaporized)", bullets_destroyed), g.player.pos, rl.GOLD)
     }
 
-    // Player Shooting (Left Click, J/Z, or Latched)
     g.player.shoot_timer += player_dt
     is_shooting := g.latched_shoot || rl.IsMouseButtonDown(.LEFT) || rl.IsKeyDown(.J) || rl.IsKeyDown(.Z)
     g.latched_shoot = false
@@ -766,17 +738,14 @@ game_update :: proc(g: ^Game, dt: f32) {
         p_dt := p.is_enemy ? world_sim_dt : sim_dt
         p.pos += p.vel * p_dt
 
-        // Check Out of bounds
         if p.pos.x < -50 || p.pos.x > SCREEN_WIDTH + 50 || p.pos.y < -50 || p.pos.y > SCREEN_HEIGHT + 50 {
             g.projectiles[i] = g.projectiles[g.projectile_count - 1]
             g.projectile_count -= 1
             continue
         }
 
-        // Collision: Player projectile -> Boss
         if !p.is_enemy && g.boss.alive {
             if linalg.length(p.pos - g.boss.pos) < (p.radius + g.boss.radius) {
-                // If boss shield is up, reduce damage
                 dmg: f32 = 12.0
                 if g.boss.shield_alpha > 0.3 {
                     dmg = 2.0
@@ -802,7 +771,6 @@ game_update :: proc(g: ^Game, dt: f32) {
             }
         }
 
-        // Collision: Enemy projectile -> Player
         if p.is_enemy && !g.player.is_dashing {
             if linalg.length(p.pos - g.player.pos) < (p.radius + g.player.radius) {
                 dmg: f32 = 15.0
@@ -840,7 +808,6 @@ game_render :: proc(g: ^Game) {
     rl.BeginDrawing()
     rl.ClearBackground({18, 20, 30, 255})
 
-    // Camera offset for shake
     cam_x := i32(g.camera_offset.x)
     cam_y := i32(g.camera_offset.y)
 
@@ -869,18 +836,15 @@ game_render :: proc(g: ^Game) {
     // --- Draw Boss ---
     if g.boss.alive {
         boss_screen_pos := g.boss.pos + g.camera_offset
-        // Boss body
         rl.DrawCircleV(boss_screen_pos, g.boss.radius, g.boss.color)
         rl.DrawCircleLinesV(boss_screen_pos, g.boss.radius + 4, rl.WHITE)
 
-        // Shield aura
         if g.boss.shield_alpha > 0.01 {
             shield_col := rl.SKYBLUE
             shield_col.a = u8(g.boss.shield_alpha * 255.0)
             rl.DrawCircleV(boss_screen_pos, g.boss.radius + 20, shield_col)
         }
 
-        // Boss eye/core
         rl.DrawCircleV(boss_screen_pos, 16.0, rl.BLACK)
         rl.DrawCircleV(boss_screen_pos, 8.0, rl.WHITE)
     }
@@ -903,7 +867,6 @@ game_render :: proc(g: ^Game) {
         rl.DrawCircleV(player_screen_pos, g.player.radius, player_col)
         rl.DrawCircleLinesV(player_screen_pos, g.player.radius + 2, rl.WHITE)
 
-        // Direction indicator to mouse
         mouse_pos := rl.GetMousePosition()
         dir := linalg.normalize(mouse_pos - g.player.pos)
         rl.DrawLineV(player_screen_pos, player_screen_pos + dir * 24.0, rl.LIME)
@@ -946,7 +909,6 @@ game_render :: proc(g: ^Game) {
     // UI OVERLAY
     // ========================================================================
 
-    // 1. Boss HP Bar (Top)
     boss_bar_w: f32 = 700.0
     boss_bar_h: f32 = 24.0
     boss_bar_x := (f32(SCREEN_WIDTH) - boss_bar_w) / 2.0
@@ -961,13 +923,11 @@ game_render :: proc(g: ^Game) {
     boss_info := fmt.ctprintf("BOSS: %s (HP: %.0f / %.0f)", g.boss.phase_name, g.boss.hp, g.boss.max_hp)
     rl.DrawText(boss_info, i32(boss_bar_x) + 10, i32(boss_bar_y) + 4, 16, rl.BLACK)
 
-    // 2. Player HP, Slowmo Recovery & Dash UI (Bottom Left)
     player_bar_w: f32 = 240.0
     player_bar_h: f32 = 16.0
     player_bar_x: f32 = 30.0
     base_y := f32(SCREEN_HEIGHT) - 78.0
 
-    // (a) Matrix Slowmo Recovery Bar
     slowmo_y := base_y
     rl.DrawRectangle(i32(player_bar_x) - 2, i32(slowmo_y) - 2, i32(player_bar_w) + 4, i32(player_bar_h) + 4, {10, 20, 15, 200})
     rl.DrawRectangle(i32(player_bar_x), i32(slowmo_y), i32(player_bar_w), i32(player_bar_h), {25, 40, 30, 255})
@@ -981,7 +941,6 @@ game_render :: proc(g: ^Game) {
     slowmo_label := fmt.ctprintf("SLOWMO: %.0f%% (WORLD: %.0f%%)", g.player.slowmo_charge, speed_pct)
     rl.DrawText(slowmo_label, i32(player_bar_x) + 6, i32(slowmo_y) + 2, 12, rl.BLACK)
 
-    // (b) Player HP Bar
     hp_y := base_y + 22.0
     rl.DrawRectangle(i32(player_bar_x) - 2, i32(hp_y) - 2, i32(player_bar_w) + 4, i32(player_bar_h) + 4, {15, 15, 20, 200})
     rl.DrawRectangle(i32(player_bar_x), i32(hp_y), i32(player_bar_w), i32(player_bar_h), {40, 40, 50, 255})
@@ -990,13 +949,11 @@ game_render :: proc(g: ^Game) {
     rl.DrawRectangleLines(i32(player_bar_x), i32(hp_y), i32(player_bar_w), i32(player_bar_h), rl.WHITE)
     rl.DrawText(fmt.ctprintf("HP: %.0f/%.0f", g.player.hp, g.player.max_hp), i32(player_bar_x) + 6, i32(hp_y) + 2, 12, rl.BLACK)
 
-    // (c) Dash indicator & Status
     dash_text := g.player.can_dash ? "DASH: READY [SPACE]" : "DASH: RECHARGING..."
     dash_color := g.player.can_dash ? rl.SKYBLUE : rl.GRAY
     rl.DrawText(fmt.ctprintf(dash_text), i32(player_bar_x), i32(base_y) - 20, 15, dash_color)
     rl.DrawText("SLOWMO: [HOLD RMB]", i32(player_bar_x) + 155, i32(base_y) - 20, 13, g.player.is_slowmo ? rl.LIME : rl.DARKGREEN)
 
-    // 3. Engine Diagnostics (Top Right)
     active_fibers := 0
     for f in g.sched.fiber_pool.all_fibers {
         if f.status != .Unused do active_fibers += 1
@@ -1011,7 +968,6 @@ game_render :: proc(g: ^Game) {
     rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
     rl.DrawText(fmt.ctprintf("Projectiles: %d", len(g.projectiles)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
 
-    // Instructions & Pause Banner
     if g.is_paused {
         flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
         step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | N / .: 1-Frame | M: 10-Frames | Hold N: Slow-Mo | P: Resume", g.step_count, g.last_step_dt, g.game_time)
@@ -1125,7 +1081,6 @@ game_render :: proc(g: ^Game) {
 
 when ODIN_OS == .JS {
     main :: proc() {
-        // Default WebAssembly entrypoint executed upon module instantiation
     }
 
     g_wasm_game: Game
