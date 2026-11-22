@@ -33,9 +33,8 @@ Floating_Text :: struct {
     color:    rl.Color,
     alpha:    f32,
     scale:    f32,
+    alive:    bool,
 }
-
-#assert(size_of(Floating_Text) <= coroutine.FIBER_PAYLOAD_SIZE)
 
 Particle :: struct {
     pos:      rl.Vector2,
@@ -83,8 +82,9 @@ Boss :: struct {
     alive:        bool,
 }
 
-MAX_PROJECTILES :: 512
-MAX_PARTICLES   :: 1024
+MAX_PROJECTILES    :: 512
+MAX_PARTICLES      :: 1024
+MAX_FLOATING_TEXTS :: 64
 
 Game :: struct {
     sched:                   coroutine.Scheduler,
@@ -97,6 +97,7 @@ Game :: struct {
     projectile_count:        int,
     particles:               [MAX_PARTICLES]Particle,
     particle_count:          int,
+    floating_texts:          [MAX_FLOATING_TEXTS]Floating_Text,
     camera_offset:           rl.Vector2,
     game_time:               f32,
     is_paused:               bool,
@@ -260,9 +261,12 @@ trigger_camera_shake :: proc(intensity: f32) {
     )
 }
 
-floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
-    curr_ft := ft
-    start_y := curr_ft.pos.y
+floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: ^Floating_Text) {
+    coroutine.fiber_defer(f, proc(ft: ^Floating_Text) {
+        ft.alive = false
+    }, ft)
+
+    start_y := ft.pos.y
     target_y := start_y - 45.0
 
     dur: f32 = 0.8
@@ -273,26 +277,36 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
         elapsed += coroutine.delta_time(f)
         t := clamp(elapsed / dur, 0.0, 1.0)
         eased_t := ease_out_back(t)
-        curr_ft.pos.y = start_y + (target_y - start_y) * eased_t
-        curr_ft.alpha = 1.0 - t
-        (cast(^Floating_Text)&f.payload_storage[0])^ = curr_ft
+        ft.pos.y = start_y + (target_y - start_y) * eased_t
+        ft.alpha = 1.0 - t
     }
+    ft.alive = false
 }
 
 spawn_floating_text :: proc(text: string, pos: rl.Vector2, color: rl.Color = rl.GOLD, scale: f32 = 18.0) {
     if g_game == nil do return
-    ft := Floating_Text{
+    slot: ^Floating_Text = nil
+    for i in 0 ..< MAX_FLOATING_TEXTS {
+        if !g_game.floating_texts[i].alive {
+            slot = &g_game.floating_texts[i]
+            break
+        }
+    }
+    if slot == nil do return
+
+    slot^ = Floating_Text{
         pos   = pos + {game_rand_f32(-20, 20), game_rand_f32(-10, 10)},
         color = color,
         alpha = 1.0,
         scale = scale,
+        alive = true,
     }
     n := min(len(text), FLOATING_TEXT_MAX_LEN)
     if n > 0 {
-        copy(ft.text_buf[:n], text[:n])
+        copy(slot.text_buf[:n], text[:n])
     }
-    ft.text_len = u8(n)
-    coroutine.spawn(&g_game.sched, floating_text_coroutine, ft, scope = &g_game.vfx_scope, name = "Floating Text")
+    slot.text_len = u8(n)
+    coroutine.spawn(&g_game.sched, floating_text_coroutine, slot, scope = &g_game.vfx_scope, name = "Floating Text")
 }
 
 player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
@@ -593,6 +607,7 @@ game_init :: proc(g: ^Game) {
     g.camera_shake_intensity = 0.0
     g.projectile_count = 0
     g.particle_count = 0
+    g.floating_texts = {}
     g.camera_offset = {0, 0}
     g.game_time = 0.0
     g.is_paused = false
@@ -1013,23 +1028,16 @@ game_render :: proc(g: ^Game) {
         rl.DrawCircleV(p.pos + g.camera_offset, p.radius, p.color)
     }
 
-    // --- Draw Floating Texts (Zero-Allocation via Fiber Payloads) ---
-    Floating_Draw_Ctx :: struct {
-        cam_x: i32,
-        cam_y: i32,
+    // --- Draw Floating Texts ---
+    for i in 0 ..< MAX_FLOATING_TEXTS {
+        ft := &g.floating_texts[i]
+        if !ft.alive do continue
+        c := ft.color
+        c.a = u8(clamp(ft.alpha * 255.0, 0, 255))
+        text := string(ft.text_buf[:min(int(ft.text_len), FLOATING_TEXT_MAX_LEN)])
+        cstr := fmt.ctprintf("%s", text)
+        rl.DrawText(cstr, i32(ft.pos.x) + cam_x, i32(ft.pos.y) + cam_y, i32(ft.scale), c)
     }
-    draw_ctx := Floating_Draw_Ctx{cam_x = cam_x, cam_y = cam_y}
-    coroutine.scheduler_walk_tree(&g.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
-        if f != nil && f.debug_name == "Floating Text" && f.status != .Unused && f.status != .Completed && f.status != .Aborted && f.status != .Failed {
-            ft := (cast(^Floating_Text)&f.payload_storage[0])^
-            ctx := (cast(^Floating_Draw_Ctx)user_data)^
-            c := ft.color
-            c.a = u8(clamp(ft.alpha * 255.0, 0, 255))
-            text := string(ft.text_buf[:min(int(ft.text_len), FLOATING_TEXT_MAX_LEN)])
-            cstr := fmt.ctprintf("%s", text)
-            rl.DrawText(cstr, i32(ft.pos.x) + ctx.cam_x, i32(ft.pos.y) + ctx.cam_y, i32(ft.scale), c)
-        }
-    }, &draw_ctx)
 
     // ========================================================================
     // UI OVERLAY

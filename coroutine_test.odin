@@ -2742,7 +2742,7 @@ test_fiber_dynamic_renaming :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plan5_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
+test_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
     h1 := fiber_handle_pack(0, 1)
     testing.expect_value(t, fiber_handle_index(h1), 0)
     testing.expect_value(t, fiber_handle_gen(h1), 1)
@@ -2762,7 +2762,7 @@ test_plan5_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plan5_handle_slot_reuse_and_aba_safety :: proc(t: ^testing.T) {
+test_handle_slot_reuse_and_aba_safety :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
@@ -2801,7 +2801,7 @@ test_plan5_handle_slot_reuse_and_aba_safety :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plan5_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
+test_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
     q: Wait_Queue
     testing.expect(t, wait_queue_is_empty(&q))
     testing.expect_value(t, wait_queue_count(&q), 0)
@@ -2862,7 +2862,7 @@ test_plan5_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plan5_o1_handle_lookups_under_high_fiber_load :: proc(t: ^testing.T) {
+test_o1_handle_lookups_under_high_fiber_load :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
@@ -2902,7 +2902,7 @@ test_plan5_o1_handle_lookups_under_high_fiber_load :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_plan5_config_constants_integration :: proc(t: ^testing.T) {
+test_config_constants_integration :: proc(t: ^testing.T) {
     testing.expect(t, STACK_SIZE >= 16 * 1024)
     testing.expect_value(t, STACK_SIZE % 16, 0)
     testing.expect(t, STACKS_PER_SLAB >= 1)
@@ -4012,8 +4012,7 @@ test_fuzz_scheduler_invariants :: proc(t: ^testing.T) {
     event_init(&shared.ev)
 
     fuzz_worker :: proc(f: ^Fiber, s: ^Fuzz_Shared) {
-        fiber_defer(f, proc(raw: rawptr) {
-            sh := cast(^Fuzz_Shared)raw
+        fiber_defer(f, proc(sh: ^Fuzz_Shared) {
             sh.aborted += 1
         }, s)
 
@@ -4144,8 +4143,7 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
     st := State{rng = 0x9988_7766_5544_3322}
 
     nested_entry :: proc(f: ^Fiber, s: ^State) {
-        fiber_defer(f, proc(raw: rawptr) {
-            st_ptr := cast(^State)raw
+        fiber_defer(f, proc(st_ptr: ^State) {
             st_ptr.cleaned += 1
         }, s)
 
@@ -4153,14 +4151,14 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
         if pstats.active_fibers < 24 {
             _ = race(f,
                 branch(proc(f: ^Fiber, st_inner: ^State) {
-                    fiber_defer(f, proc(raw: rawptr) {
-                        (cast(^State)raw).cleaned += 1
+                    fiber_defer(f, proc(st_ptr: ^State) {
+                        st_ptr.cleaned += 1
                     }, st_inner)
                     wait(f, 0.05)
                 }, s),
                 branch(proc(f: ^Fiber, st_inner: ^State) {
-                    fiber_defer(f, proc(raw: rawptr) {
-                        (cast(^State)raw).cleaned += 1
+                    fiber_defer(f, proc(st_ptr: ^State) {
+                        st_ptr.cleaned += 1
                     }, st_inner)
                     wait(f, 0.02)
                 }, s),
@@ -4277,11 +4275,11 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_scheduler_walk_tree_traversal", test_scheduler_walk_tree_traversal },
         { "test_structured_task_preemption_via_race_and_signal", test_structured_task_preemption_via_race_and_signal },
         { "test_fiber_dynamic_renaming", test_fiber_dynamic_renaming },
-        { "test_plan5_packed_generational_handles_bitwise", test_plan5_packed_generational_handles_bitwise },
-        { "test_plan5_handle_slot_reuse_and_aba_safety", test_plan5_handle_slot_reuse_and_aba_safety },
-        { "test_plan5_intrusive_wait_queue_operations", test_plan5_intrusive_wait_queue_operations },
-        { "test_plan5_o1_handle_lookups_under_high_fiber_load", test_plan5_o1_handle_lookups_under_high_fiber_load },
-        { "test_plan5_config_constants_integration", test_plan5_config_constants_integration },
+        { "test_packed_generational_handles_bitwise", test_packed_generational_handles_bitwise },
+        { "test_handle_slot_reuse_and_aba_safety", test_handle_slot_reuse_and_aba_safety },
+        { "test_intrusive_wait_queue_operations", test_intrusive_wait_queue_operations },
+        { "test_o1_handle_lookups_under_high_fiber_load", test_o1_handle_lookups_under_high_fiber_load },
+        { "test_config_constants_integration", test_config_constants_integration },
         { "test_wait_queue_auto_unlinking_on_abort", test_wait_queue_auto_unlinking_on_abort },
         { "test_scope_multi_cycle_emp_stun_and_recovery", test_scope_multi_cycle_emp_stun_and_recovery },
         { "test_interruption_race_attack_recovery_loop", test_interruption_race_attack_recovery_loop },
@@ -4317,8 +4315,8 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_primitives_custom_arena_allocation_fidelity", test_primitives_custom_arena_allocation_fidelity },
         { "test_headless_boss_ai_fuzzing_simulation", test_headless_boss_ai_fuzzing_simulation },
         { "test_phase_transition_emp_coincidence_fuzzing", test_phase_transition_emp_coincidence_fuzzing },
-        { "test_wait_queue_defensive_and_paused_dispatch", test_wait_queue_defensive_and_paused_dispatch },
-        { "test_time_scale_defensive_clamping", test_time_scale_defensive_clamping },
+        { "test_wait_queue_defensive_remove", test_wait_queue_defensive_remove },
+        { "test_clock_advance_defensive_clamping", test_clock_advance_defensive_clamping },
         { "test_scheduler_destroy_wait_queue_unlinking", test_scheduler_destroy_wait_queue_unlinking },
         { "test_spawn_real_val_while_paused", test_spawn_real_val_while_paused },
         { "test_real_time_fiber_paused_yield", test_real_time_fiber_paused_yield },
@@ -4968,11 +4966,7 @@ test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_wait_queue_defensive_and_paused_dispatch :: proc(t: ^testing.T) {
-    sched: Scheduler
-    scheduler_init(&sched)
-    defer scheduler_destroy(&sched)
-
+test_wait_queue_defensive_remove :: proc(t: ^testing.T) {
     q1, q2: Wait_Queue
     f: Fiber
     f.handle = 1
@@ -4990,7 +4984,7 @@ test_wait_queue_defensive_and_paused_dispatch :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_time_scale_defensive_clamping :: proc(t: ^testing.T) {
+test_clock_advance_defensive_clamping :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)

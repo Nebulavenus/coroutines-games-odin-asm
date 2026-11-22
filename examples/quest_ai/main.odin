@@ -537,7 +537,7 @@ world_sim_step :: proc(w: ^World, sim_dt: f32, real_dt: f32) {
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
             coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, name = "Knight AI (fallback)")
-        }, &w.knight)
+        }, &w.knight, scope = &w.knight.scope, name = "Knight Stun Recovery")
     }
 
     if real_dt > 0.0 {

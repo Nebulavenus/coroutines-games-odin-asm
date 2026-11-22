@@ -656,7 +656,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     }, &m)
 
     coro.scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
+    testing.expect(t, mutex_is_locked(&m))
 
     waiter := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
@@ -670,7 +670,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     coro.fiber_cancel(&sched, waiter)
 
     mutex_unlock(&sched, &m)
-    testing.expect(t, !m.locked)
+    testing.expect(t, !mutex_is_locked(&m))
 }
 
 @(test)
@@ -828,7 +828,7 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
     }
 
     coro.scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
+    testing.expect(t, mutex_is_locked(&m))
 
     coro.fiber_cancel(&sched, handles[3])
     coro.fiber_cancel(&sched, handles[6])
@@ -839,7 +839,7 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
     }
 
     testing.expect_value(t, completed, 7)
-    testing.expect(t, !m.locked)
+    testing.expect(t, !mutex_is_locked(&m))
 }
 
 @(test)
@@ -1191,7 +1191,7 @@ test_scoped_mutex_and_semaphore :: proc(t: ^testing.T) {
         coro.scheduler_step(&sched, 0.01)
     }
     testing.expect_value(t, m_data.counter, 2)
-    testing.expect(t, !m.locked)
+    testing.expect(t, !mutex_is_locked(&m))
 
     sem_executed := false
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^struct { sem: ^Fiber_Semaphore, done: ^bool }) {
@@ -1320,12 +1320,12 @@ test_with_mutex_val :: proc(t: ^testing.T) {
     }, Value_Payload{m = &m, tag = 10, delta = 5.5})
 
     coro.scheduler_step(&sched, 0.01)
-    testing.expect(t, m.locked)
+    testing.expect(t, mutex_is_locked(&m))
 
     for _ in 0 ..< 4 {
         coro.scheduler_step(&sched, 0.01)
     }
-    testing.expect(t, !m.locked)
+    testing.expect(t, !mutex_is_locked(&m))
 }
 
 @(test)
@@ -1697,16 +1697,16 @@ test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
     }, &ctx, name = "Lock Waiter")
 
     coro.scheduler_step(&sched, 0.016)
-    testing.expect(t, m.locked)
+    testing.expect(t, mutex_is_locked(&m))
     testing.expect_value(t, worker2_completed, false)
     testing.expect_value(t, mutex_waiter_count(&m), 1)
 
     coro.fiber_cancel(&sched, h1)
-    testing.expect(t, m.locked)
+    testing.expect(t, mutex_is_locked(&m))
 
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, worker2_completed, true)
-    testing.expect_value(t, m.locked, false)
+    testing.expect_value(t, mutex_is_locked(&m), false)
 }
 
 @(test)
