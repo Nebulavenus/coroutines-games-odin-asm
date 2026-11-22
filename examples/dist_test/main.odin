@@ -38,7 +38,7 @@ main :: proc() {
 		}
 	}, &consumer_data)
 
-	for step in 0..<10 {
+	for _ in 0..<10 {
 		coroutine.scheduler_step(&sched, 0.016)
 		if executed do break
 	}
@@ -113,23 +113,51 @@ main :: proc() {
 	Hetero_Ctx :: struct {
 		ch_int:  ^sync.Channel(int),
 		ch_str:  ^sync.Channel(string),
-		got_int: int,
 		got_str: string,
 		winner:  int,
 	}
 	h_ctx := Hetero_Ctx{ch_int = &ch_int, ch_str = &ch_str, winner = -1}
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Hetero_Ctx) {
+		local_int := 0
+		local_str := ""
 		c.winner = coroutine.race(f,
-			sync.branch_chan_recv(c.ch_int, &c.got_int),
-			sync.branch_chan_recv(c.ch_str, &c.got_str),
+			sync.branch_chan_recv(c.ch_int, &local_int),
+			sync.branch_chan_recv(c.ch_str, &local_str),
 			coroutine.branch_wait(1.0),
 		)
+		c.got_str = local_str
 	}, &h_ctx)
 
 	coroutine.scheduler_step(&sched, 0.016)
 	sync.chan_try_send(&ch_str, "hello-dist-sync")
 	coroutine.scheduler_step(&sched, 0.016)
 	assert(h_ctx.winner == 1 && h_ctx.got_str == "hello-dist-sync", "dist/sync heterogeneous branch_chan_recv must work")
+
+	paused_ran := false
+	coroutine.clock_set_paused(&sched, coroutine.CLOCK_SIM, true)
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, ran: ^bool) {
+		ran^ = true
+	}, &paused_ran)
+	coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.016)
+	coroutine.scheduler_run(&sched)
+	assert(!paused_ran, "Paused CLOCK_SIM must not run while CLOCK_REAL runs")
+	coroutine.clock_set_paused(&sched, coroutine.CLOCK_SIM, false)
+	coroutine.scheduler_step(&sched, 0.016)
+	assert(paused_ran, "Unpaused CLOCK_SIM fiber must run cleanly")
+
+	trace_spawns := 0
+	coroutine.scheduler_set_trace_hook(&sched, proc(ev: coroutine.Trace_Event, f: ^coroutine.Fiber, ud: rawptr) {
+		if f != nil && ev == .Spawn {
+			(^int)(ud)^ += 1
+		}
+	}, &trace_spawns)
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+		coroutine.yield(f)
+	})
+	coroutine.scheduler_step(&sched, 0.016)
+	coroutine.scheduler_step(&sched, 0.016)
+	coroutine.scheduler_set_trace_hook(&sched, nil, nil)
+	assert(trace_spawns == 1, "Trace hook must fire in amalgamated dist")
 
 	fmt.printf("[dist_test] SUCCESS: Amalgamated dist/coroutine.odin + dist/sync/sync.odin verified! (received %d, scoped: %t, task: %d, sync: %t, hetero: %s)\n", received_val, scoped_ran, task_res, sync_a && sync_b, h_ctx.got_str)
 }

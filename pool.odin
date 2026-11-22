@@ -17,12 +17,12 @@ fiber_pool_init :: proc(
         fiber_pool_destroy(pool)
     }
     when ODIN_ARCH == .wasm32 {
-        pool.stack_size = ASYNCIFY_STORAGE_SIZE
+        pool.stack_size = max(uint(WASM_SHADOW_STACK_SIZE), 4 * 1024)
     } else {
         pool.stack_size = max(stack_size, 16 * 1024)
-        if pool.stack_size % 16 != 0 {
-            pool.stack_size = (pool.stack_size + 15) & ~uint(15)
-        }
+    }
+    if pool.stack_size % 16 != 0 {
+        pool.stack_size = (pool.stack_size + 15) & ~uint(15)
     }
     pool.stacks_per_slab = max(stacks_per_slab, 1)
     pool.alloc_mode = alloc_mode
@@ -60,7 +60,11 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     pool.all_fibers = nil
     pool.free_fibers = nil
 
-    when ODIN_ARCH != .wasm32 {
+    when ODIN_ARCH == .wasm32 {
+        for slab in pool.slabs {
+            mem.free(slab, alloc)
+        }
+    } else {
         if pool.alloc_mode == .Virtual_Memory_OS {
             slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
             for slab in pool.slabs {
@@ -87,7 +91,7 @@ fiber_watermark_stack :: proc(fiber: ^Fiber) {
     }
 }
 
-fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
+fiber_calc_asyncify_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
     if fiber == nil do return 0, 0
     when ODIN_ARCH == .wasm32 {
         total_bytes = ASYNCIFY_STORAGE_SIZE
@@ -99,53 +103,44 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
         }
         return used_bytes, total_bytes
     } else {
-        if fiber.stack_base == nil do return 0, 0
-        total_bytes = fiber.stack_size
-
-        if !fiber_check_canary(fiber) {
-            return total_bytes, total_bytes
-        }
-
-        bytes := ([^]u8)(fiber.stack_base)
-        start_offset := CANARY_SIZE
-
-        for i in start_offset ..< int(fiber.stack_size) {
-            if bytes[i] != STACK_WATERMARK {
-                used_bytes = fiber.stack_size - uint(i)
-                return used_bytes, total_bytes
-            }
-        }
-        return 0, total_bytes
+        return 0, 0
     }
+}
+
+fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
+    if fiber == nil || fiber.stack_base == nil do return 0, 0
+    total_bytes = fiber.stack_size
+
+    if !fiber_check_canary(fiber) {
+        return total_bytes, total_bytes
+    }
+
+    bytes := ([^]u8)(fiber.stack_base)
+    start_offset := CANARY_SIZE
+
+    for i in start_offset ..< int(fiber.stack_size) {
+        if bytes[i] != STACK_WATERMARK {
+            used_bytes = fiber.stack_size - uint(i)
+            return used_bytes, total_bytes
+        }
+    }
+    return 0, total_bytes
 }
 
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
+    slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
 
+    slab: rawptr
+    has_guard := false
     when ODIN_ARCH == .wasm32 {
-        fibers := make([]Fiber, pool.stacks_per_slab, alloc)
-        append(&pool.fiber_slabs, fibers)
-
-        for i in 0 ..< pool.stacks_per_slab {
-            fiber := &fibers[i]
-            fiber.stack_base = nil
-            fiber.stack_size = ASYNCIFY_STORAGE_SIZE
-            fiber.pool_index = u32(len(pool.all_fibers))
-            fiber.generation = 1
-            fiber.status = .Unused
-            fiber.heap_index = -1
-            fiber.step_index = -1
-            fiber.async_index = -1
-
-            append(&pool.all_fibers, fiber)
-            append(&pool.free_fibers, fiber)
+        err: mem.Allocator_Error
+        slab, err = mem.alloc(int(slab_size), 16, alloc)
+        if err != nil || slab == nil {
+            panic("Failed to allocate shadow stack slab for WebAssembly fiber pool")
         }
     } else {
-        slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
-
-        slab: rawptr
-        has_guard := false
         if pool.alloc_mode == .Virtual_Memory_OS {
             slab, has_guard = pool_vmem_alloc_slab(slab_size, pool.stack_size, pool.stacks_per_slab, alloc)
         } else {
@@ -155,29 +150,29 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 panic("Failed to allocate memory slab for fiber pool")
             }
         }
+    }
 
-        append(&pool.slabs, slab)
-        fibers := make([]Fiber, pool.stacks_per_slab, alloc)
-        append(&pool.fiber_slabs, fibers)
+    append(&pool.slabs, slab)
+    fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+    append(&pool.fiber_slabs, fibers)
 
-        guard_offset: uint = has_guard ? 4096 : 0
-        for i in 0 ..< pool.stacks_per_slab {
-            raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-            fiber := &fibers[i]
-            fiber.stack_base = rawptr(uintptr(raw_base) + uintptr(guard_offset))
-            fiber.stack_size = pool.stack_size - guard_offset
-            fiber.pool_index = u32(len(pool.all_fibers))
-            fiber.generation = 1
-            fiber.status = .Unused
-            fiber.heap_index = -1
-            fiber.step_index = -1
-            fiber.async_index = -1
-            fiber_watermark_stack(fiber)
-            fiber_init_canary(fiber)
+    guard_offset: uint = has_guard ? 4096 : 0
+    for i in 0 ..< pool.stacks_per_slab {
+        raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
+        fiber := &fibers[i]
+        fiber.stack_base = rawptr(uintptr(raw_base) + uintptr(guard_offset))
+        fiber.stack_size = pool.stack_size - guard_offset
+        fiber.pool_index = u32(len(pool.all_fibers))
+        fiber.generation = 1
+        fiber.status = .Unused
+        fiber.heap_index = -1
+        fiber.step_index = -1
+        fiber.async_index = -1
+        fiber_watermark_stack(fiber)
+        fiber_init_canary(fiber)
 
-            append(&pool.all_fibers, fiber)
-            append(&pool.free_fibers, fiber)
-        }
+        append(&pool.all_fibers, fiber)
+        append(&pool.free_fibers, fiber)
     }
 }
 
@@ -341,11 +336,7 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
     free_count := len(pool.free_fibers)
     active := total - free_count
     slabs := len(pool.fiber_slabs)
-    when ODIN_ARCH == .wasm32 {
-        slab_bytes := uint(0)
-    } else {
-        slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(len(pool.slabs))
-    }
+    slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(len(pool.slabs))
     fiber_bytes := uint(total) * size_of(Fiber)
 
     return Pool_Stats{
@@ -363,14 +354,16 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
 // ============================================================================
 
 fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
+    top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
+    top = top & ~uintptr(15)
+
     when ODIN_ARCH == .wasm32 {
         fiber.wasm_started = false
+        fiber.wasm_shadow_sp = rawptr(top)
         fiber.asyncify_buf.top = u32(uintptr(&fiber.asyncify_buf.storage[0]))
         fiber.asyncify_buf.end = u32(uintptr(&fiber.asyncify_buf.storage[0]) + ASYNCIFY_STORAGE_SIZE)
         fiber.saved_sp = fiber
     } else {
-        top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
-        top = top & ~uintptr(15)
 
         when ODIN_ARCH == .amd64 {
             when ODIN_OS == .Windows {

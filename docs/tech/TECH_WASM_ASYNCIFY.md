@@ -239,6 +239,7 @@ Fiber :: struct {
 
     // WebAssembly Asyncify Execution State (wasm32 only)
     wasm_started:     bool,
+    wasm_shadow_sp:   rawptr,          // Saved per-fiber LLVM $__stack_pointer (8 KB private shadow stack)
     asyncify_buf:     Asyncify_Buffer, // 4,104 bytes embedded inline
 
     // Structured Concurrency & Synchronization
@@ -259,11 +260,12 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
         // Synthesize AArch64 AAPCS64 frame with LR/x30 trampoline
     } else when ODIN_ARCH == .riscv64 {
         // Synthesize RISC-V LP64D frame with RA trampoline
-    } else when ODIN_ARCH == .wasm32 {
+    when ODIN_ARCH == .wasm32 {
         fiber.wasm_started = false
+        fiber.wasm_shadow_sp = rawptr(top)
         fiber.asyncify_buf.top = u32(uintptr(&fiber.asyncify_buf.storage[0]))
         fiber.asyncify_buf.end = u32(uintptr(&fiber.asyncify_buf.storage[0]) + ASYNCIFY_STORAGE_SIZE)
-        fiber.saved_sp = rawptr(fiber)
+        fiber.saved_sp = fiber
     }
 }
 ```
@@ -370,8 +372,8 @@ When a downstream project vendors the `dist/` folder, Odin automatically selects
 
 ## 8. Test Verification Matrix & Tooling
 
-### 8.1 The 17-Suite WebAssembly Test Matrix
-The WebAssembly backend is verified by [`examples/wasm_test/main.odin`](../../examples/wasm_test/main.odin), exercising every engine primitive under Asyncify transformation:
+### 8.1 The 21-Suite WebAssembly Test Matrix
+The WebAssembly backend is verified by [`examples/wasm_test/main.odin`](../../examples/wasm_test/main.odin), exercising every engine primitive under Binaryen Asyncify + per-fiber `$__stack_pointer` switching:
 
 | Test ID | Test Suite | Verified Subsystems & Behavioral Invariants | Status |
 | :---: | :--- | :--- | :---: |
@@ -393,6 +395,12 @@ The WebAssembly backend is verified by [`examples/wasm_test/main.odin`](../../ex
 | **Test 16** | In-Frame Timeslice (`yield_now`) | Cooperative timeslice sharing within a single simulation tick. | **PASS** |
 | **Test 17** | `Task(T)` Futures & Combinator Helpers | `spawn_task`, `task_await`, `sync_with`, and `with_signal` under Binaryen Asyncify. | **PASS** |
 | **Test 18** | Wasm-Hardened Sync & Outcomes | `Chan_Outcome` timeouts, event-driven `chan_select_recv`, `with_mutex` abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)`. | **PASS** |
+| **Test 19** | Clock Pause, Self/Ancestor Cancel & Stack Telemetry | `clock_set_paused` gating, self/ancestor cancellation under Asyncify, and live shadow-stack + Asyncify usage telemetry. | **PASS** |
+| **Test 20** | Shadow Stack Slabs, Heterogeneous Select & Trace | Per-fiber shadow-stack slab allocation, heterogeneous `branch_chan_recv` `race`, aborted wakeup relay, and `scheduler_set_trace_hook`. | **PASS** |
+| **Test 21** | Per-Fiber Shadow Stack Isolation & 0-Leak Abort | 8 interleaved `&local_struct` / `[32]u64` fibers across yields, stack-local `race` out-pointers, and 500 mid-frame aborts with 0 host SP leak. | **PASS** |
+
+> [!TIP]
+> For the full bytecode-level analysis of per-fiber `$__stack_pointer` switching (`tools/wasm_asyncify.py`), see [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md). For upstream Odin compiler improvements (`intrinsics.set_stack_pointer`, Wasm inline `asm`, deferred `when`/`asm` parsing, WasmFX), see [`docs/wasm/05_STACK_SWITCHING_ROADMAP.md`](../wasm/05_STACK_SWITCHING_ROADMAP.md).
 
 ### 8.2 Automation Commands ([`build.ps1`](../../build.ps1))
 

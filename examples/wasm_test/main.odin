@@ -879,8 +879,11 @@ test_wasm_pause_self_cancel_and_asyncify_usage :: proc() {
     f_usage := coroutine.fiber_find_by_handle(&sched, h_usage)
     assert(f_usage != nil, "Sleeping fiber must be alive")
     used, total := coroutine.fiber_calc_stack_usage(f_usage)
-    assert(total == coroutine.WASM_ASYNCIFY_STORAGE_SIZE, "Wasm stack total must match WASM_ASYNCIFY_STORAGE_SIZE")
-    assert(used > 0 && used <= total, "Suspended Wasm fiber must report non-zero Asyncify stack usage")
+    assert(total == coroutine.WASM_SHADOW_STACK_SIZE, "Wasm stack total must match WASM_SHADOW_STACK_SIZE")
+    assert(used > 0 && used <= total, "Suspended Wasm fiber must report non-zero shadow stack usage")
+    a_used, a_total := coroutine.fiber_calc_asyncify_usage(f_usage)
+    assert(a_total == coroutine.WASM_ASYNCIFY_STORAGE_SIZE, "Wasm asyncify total must match WASM_ASYNCIFY_STORAGE_SIZE")
+    assert(a_used > 0 && a_used <= a_total, "Suspended Wasm fiber must report non-zero Asyncify unwind usage")
 
     coroutine.scheduler_step(&sched, 0.016)
     assert(!coroutine.fiber_is_alive(&sched, h_self), "Self-cancelled fiber must not be alive")
@@ -893,16 +896,16 @@ test_wasm_pause_self_cancel_and_asyncify_usage :: proc() {
     fmt.println("OK")
 }
 
-test_wasm_zero_stack_slabs_and_heterogeneous_branch_select :: proc() {
-    fmt.print("  [Test 20] Wasm Zero Native Stack Slabs & Heterogeneous Select/Relay... ")
+test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select :: proc() {
+    fmt.print("  [Test 20] Wasm Shadow Stack Slabs, Heterogeneous Select/Relay & Trace... ")
     sched: coroutine.Scheduler
     coroutine.scheduler_init(&sched)
     defer coroutine.scheduler_destroy(&sched)
 
     coroutine.scheduler_prewarm(&sched, 16)
     stats := coroutine.scheduler_pool_stats(&sched)
-    assert(len(sched.fiber_pool.slabs) == 0, "Wasm pool must not allocate unused native stack slabs")
-    assert(stats.stack_size_bytes == coroutine.WASM_ASYNCIFY_STORAGE_SIZE, "Wasm stack_size_bytes must equal WASM_ASYNCIFY_STORAGE_SIZE")
+    assert(len(sched.fiber_pool.slabs) >= 1, "Wasm pool must allocate per-fiber shadow stack slabs")
+    assert(stats.stack_size_bytes == coroutine.WASM_SHADOW_STACK_SIZE, "Wasm stack_size_bytes must equal WASM_SHADOW_STACK_SIZE")
     assert(stats.slabs_count >= 1, "Wasm pool must report fiber slab count")
 
     ch_int: sync.Channel(int)
@@ -977,6 +980,119 @@ test_wasm_zero_stack_slabs_and_heterogeneous_branch_select :: proc() {
     fmt.println("OK")
 }
 
+test_wasm_per_fiber_shadow_stack_isolation_and_no_leak :: proc() {
+    fmt.print("  [Test 21] Per-Fiber Shadow Stack (&local Across Yields & 0-Leak Abort)... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    host_sp_before := coroutine.get_sp()
+    assert(host_sp_before != nil, "get_sp() must return non-nil host $__stack_pointer on Wasm")
+
+    Local_State :: struct {
+        id:     u32,
+        magic:  u64,
+        values: [32]u64,
+        ticks:  int,
+    }
+
+    verify_local_ptr :: #force_no_inline proc(f: ^coroutine.Fiber, st: ^Local_State, expected_id: u32) {
+        for round in 0 ..< 12 {
+            scratch: [128]u8
+            for k in 0 ..< len(scratch) {
+                scratch[k] = u8((int(expected_id) * 31 + round + k) & 0xFF)
+            }
+            coroutine.yield(f)
+            assert(st.id == expected_id, "Local struct id corrupted across yield!")
+            assert(st.magic == 0xCAFE_BABE_0000_0000 | u64(expected_id), "Local struct magic corrupted across yield!")
+            for j in 0 ..< 32 {
+                assert(st.values[j] == u64(expected_id) * 1000 + u64(j), "Local array element corrupted across yield!")
+            }
+            for k in 0 ..< len(scratch) {
+                assert(scratch[k] == u8((int(expected_id) * 31 + round + k) & 0xFF), "Local scratch buffer corrupted across yield!")
+            }
+            st.ticks += 1
+        }
+    }
+
+    FIBER_COUNT :: 8
+    completed: [FIBER_COUNT]bool
+    Worker_Arg :: struct {
+        id:   u32,
+        done: ^bool,
+    }
+
+    for i in 0 ..< FIBER_COUNT {
+        coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, arg: Worker_Arg) {
+            local_st: Local_State
+            local_st.id = arg.id
+            local_st.magic = 0xCAFE_BABE_0000_0000 | u64(arg.id)
+            for j in 0 ..< 32 {
+                local_st.values[j] = u64(arg.id) * 1000 + u64(j)
+            }
+            verify_local_ptr(f, &local_st, arg.id)
+            assert(local_st.ticks == 12, "Expected 12 local ticks")
+            arg.done^ = true
+        }, Worker_Arg{id = u32(i + 1), done = &completed[i]})
+    }
+
+    for _ in 0 ..< 20 {
+        coroutine.scheduler_step(&sched, 0.016)
+    }
+    for i in 0 ..< FIBER_COUNT {
+        assert(completed[i], "All shadow-stack isolation fibers must complete")
+    }
+
+    ch_a: sync.Channel(int)
+    ch_b: sync.Channel(string)
+    sync.chan_init(&ch_a, 1)
+    sync.chan_init(&ch_b, 1)
+    defer {
+        sync.chan_destroy(&ch_a)
+        sync.chan_destroy(&ch_b)
+    }
+
+    Race_Arg :: struct {
+        ch_a:   ^sync.Channel(int),
+        ch_b:   ^sync.Channel(string),
+        passed: bool,
+    }
+    rarg := Race_Arg{ch_a = &ch_a, ch_b = &ch_b}
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, r: ^Race_Arg) {
+        local_int := 0
+        local_str := ""
+        w := coroutine.race(f,
+            sync.branch_chan_recv(r.ch_a, &local_int),
+            sync.branch_chan_recv(r.ch_b, &local_str),
+            coroutine.branch_wait(1.0),
+        )
+        r.passed = (w == 1 && local_str == "stack-local-win" && local_int == 0)
+    }, &rarg)
+
+    coroutine.scheduler_step(&sched, 0.016)
+    sync.chan_try_send(&ch_b, "stack-local-win")
+    coroutine.scheduler_step(&sched, 0.016)
+    assert(rarg.passed, "Stack-local out pointers in heterogeneous race must work on Wasm")
+
+    for _ in 0 ..< 500 {
+        h := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+            big_local: [1024]u8
+            big_local[0] = 0x5A
+            big_local[1023] = 0xA5
+            ptr := &big_local[0]
+            coroutine.wait(f, 10.0)
+            assert(ptr^ == 0x5A, "Local stack byte corrupted")
+        })
+        coroutine.scheduler_step(&sched, 0.016)
+        coroutine.fiber_cancel(&sched, h)
+    }
+
+    host_sp_after := coroutine.get_sp()
+    assert(host_sp_after == host_sp_before, "Host $__stack_pointer must not leak a single byte after 500 mid-frame aborts!")
+    assert(!coroutine.scheduler_has_active(&sched), "All aborted fibers must be cleanly recycled")
+    fmt.println("OK")
+}
+
 // ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
@@ -1005,10 +1121,11 @@ main :: proc() {
     test_task_futures_and_combinator_helpers()
     test_wasm_hardened_sync_and_outcomes()
     test_wasm_pause_self_cancel_and_asyncify_usage()
-    test_wasm_zero_stack_slabs_and_heterogeneous_branch_select()
+    test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select()
+    test_wasm_per_fiber_shadow_stack_isolation_and_no_leak()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 20 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 21 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

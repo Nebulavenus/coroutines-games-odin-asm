@@ -285,8 +285,8 @@ switch ($Action)
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $wasmOpt = Get-WasmOptPath
         if ($wasmOpt) {
-            Write-Host "Post-processing with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
-            & $wasmOpt --asyncify "$wasmDir/test.wasm" -o "$wasmDir/test_opt.wasm"
+            Write-Host "Post-processing with Binaryen Asyncify + per-fiber shadow stacks ($wasmOpt)..." -ForegroundColor Cyan
+            python "$PSScriptRoot/tools/wasm_asyncify.py" "$wasmDir/test.wasm" "$wasmDir/test_opt.wasm" --wasm-opt "$wasmOpt"
         } else {
             Write-Host "[WARNING] wasm-opt not found. Run tools/download_binaryen.ps1 or python tools/download_binaryen.py" -ForegroundColor Yellow
         }
@@ -299,8 +299,8 @@ switch ($Action)
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $wasmOpt = Get-WasmOptPath
         if ($wasmOpt) {
-            Write-Host "Post-processing with Binaryen Asyncify..." -ForegroundColor Cyan
-            & $wasmOpt --asyncify "$wasmDir/test.wasm" -o "$wasmDir/test_opt.wasm"
+            Write-Host "Post-processing with Binaryen Asyncify + per-fiber shadow stacks..." -ForegroundColor Cyan
+            python "$PSScriptRoot/tools/wasm_asyncify.py" "$wasmDir/test.wasm" "$wasmDir/test_opt.wasm" --wasm-opt "$wasmOpt"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node "$PSScriptRoot/tools/run_wasm.js" "$wasmDir/test_opt.wasm"
         } else {
@@ -320,8 +320,8 @@ switch ($Action)
 
         $wasmOpt = Get-WasmOptPath
         if ($wasmOpt) {
-            Write-Host "Post-processing game with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
-            & $wasmOpt --asyncify "$webDir/game.wasm" -o "$webDir/game_opt.wasm"
+            Write-Host "Post-processing game with Binaryen Asyncify + per-fiber shadow stacks ($wasmOpt)..." -ForegroundColor Cyan
+            python "$PSScriptRoot/tools/wasm_asyncify.py" "$webDir/game.wasm" "$webDir/game_opt.wasm" --wasm-opt "$wasmOpt"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         } else {
             Write-Host "[ERROR] wasm-opt not found. Required for Asyncify! Run tools/download_binaryen.ps1 or python tools/download_binaryen.py" -ForegroundColor Red
@@ -378,8 +378,8 @@ switch ($Action)
 
         $wasmOpt = Get-WasmOptPath
         if ($wasmOpt) {
-            Write-Host "Post-processing game with Binaryen Asyncify ($wasmOpt)..." -ForegroundColor Cyan
-            & $wasmOpt --asyncify "$webDir/game.wasm" -o "$webDir/game_opt.wasm"
+            Write-Host "Post-processing game with Binaryen Asyncify + per-fiber shadow stacks ($wasmOpt)..." -ForegroundColor Cyan
+            python "$PSScriptRoot/tools/wasm_asyncify.py" "$webDir/game.wasm" "$webDir/game_opt.wasm" --wasm-opt "$wasmOpt"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         } else {
             Write-Host "[ERROR] wasm-opt not found. Required for Asyncify!" -ForegroundColor Red

@@ -9,9 +9,9 @@ Welcome to the **WebAssembly Documentation Suite** for the Odin coroutine engine
 On native operating systems (Windows, Linux, macOS) across AMD64, ARM64, and RISC-V 64, this engine performs cooperative fiber context switching via custom inline assembly (100% high-level `asm` on AMD64, hybrid high-level `asm` with minimal `#byte` on ARM64 and RISC-V 64) in **~16–19 nanoseconds**, allocating an isolated physical stack buffer for each fiber.
 
 Standard WebAssembly 1.0 does not provide physical stack pointers, register access, or first-class delimited continuations. To achieve full cross-platform parity for web browsers and Node.js:
-1. **Binaryen Asyncify (`wasm-opt --asyncify`)**: Transforms standard Odin procedure call graphs into resumable state machines capable of unwinding and rewinding the WebAssembly execution stack.
+1. **Binaryen Asyncify + Per-Fiber Shadow Stacks (`tools/wasm_asyncify.py`)**: Transforms standard Odin procedure call graphs into resumable state machines (`wasm-opt --asyncify`) while swapping LLVM's `(global $__stack_pointer)` to a private 8 KB linear-memory shadow stack per fiber—giving 100% native parity for `&local_struct` across yields and 0-byte abort leaks with zero JS host changes.
 2. **Zero-C HTML5 Canvas 2D Adapter (`tools/web/raylib_canvas.js`)**: Emulates Raylib graphics and input APIs directly in browser JavaScript with zero external C/C++ dependencies or Emscripten SDK overhead.
-3. **Fiber-Owned Memory Hardening**: Solves the WebAssembly dual-stack dilemma (shared LLVM shadow stack) by storing timing, payload, and temporary state directly in heap-allocated fiber structures.
+3. **Fiber-Owned Memory Hardening**: Complements per-fiber shadow stacks with fiber-owned `ticker_wait`, 128-byte inline `payload_storage`, and private 4 KB `temp_arena` scratchpads.
 
 ---
 
@@ -19,16 +19,16 @@ Standard WebAssembly 1.0 does not provide physical stack pointers, register acce
 
 | Feature | Native OS (AMD64, ARM64, RISC-V 64) | WebAssembly (`js_wasm32`) |
 | :--- | :--- | :--- |
-| **Context Switch Mechanism** | Physical register push/pop & stack pointer swap | Binaryen Asyncify stack unwinding / rewinding |
-| **Context Switch Latency** | **~16 ns** | ~100–300 ns (traverses active call frames) |
-| **Fiber Stacks** | Private, isolated memory buffer per fiber (32 KB) | Shared VM execution stack + Shared LLVM shadow stack |
-| **Memory Isolation** | Full hardware page and stack frame isolation | Shared linear memory (`memory.buffer`) |
-| **Local Variables** | Reside on private fiber stack | Wasm VM locals saved/restored; stack structs shared |
+| **Context Switch Mechanism** | Physical register push/pop & stack pointer swap | Binaryen Asyncify unwind/rewind + `$__stack_pointer` swap |
+| **Context Switch Latency** | **~16 ns** | ~120–300 ns (traverses active call frames) |
+| **Fiber Stacks** | Private isolated stack buffer per fiber (32 KB + canary) | Private 8 KB shadow stack (+ 64B canary) + 4 KB Asyncify buffer |
+| **Memory Isolation** | Per-fiber stack buffer (+ optional OS guard pages) | Per-fiber linear shadow stack + per-fiber Asyncify unwind buffer |
+| **Local Variables** | Reside on private fiber stack | Scalar locals in Asyncify buffer; `&local_struct` in private shadow stack |
 | **Structured Concurrency** | Fully supported (`sync`, `race`, `rush`, `branch_scoped`) | Fully supported (`sync`, `race`, `rush`, `branch_scoped`) |
 | **CSP Channels** | Symmetrical rendezvous & buffered ring buffers | Symmetrical rendezvous & buffered ring buffers |
 | **Multi-Domain Clocks** | Indexed `Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`) | Indexed `Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`) |
 | **Graphics Runtime** | Native Desktop Raylib (OpenGL / DirectX) | Pure HTML5 2D Canvas Adapter (`tools/web/raylib_canvas.js`) |
-| **Build Artifact** | Native PE / ELF / Mach-O executable | Standalone `.wasm` bundle (with Asyncify passes) |
+| **Build Artifact** | Native PE / ELF / Mach-O executable | Standalone `.wasm` bundle (`tools/wasm_asyncify.py`) |
 
 ---
 
@@ -40,23 +40,23 @@ The documentation track is organized into five deep-dive technical modules:
 docs/wasm/
 ├── README.md                      # This document (Navigation Hub & Overview)
 ├── 01_ARCHITECTURE_ASYNCIFY.md   # Asyncify Integration, Leaf Protocol & Event Loop
-├── 02_MEMORY_AND_LIMITATIONS.md   # Dual-Stack Dilemma, Shadow-Stack Aliasing & 3 Golden Rules
+├── 02_MEMORY_AND_LIMITATIONS.md   # Dual-Stack Mechanics, Per-Fiber $__stack_pointer Swap & Telemetry
 ├── 03_BROWSER_GAME_AND_CANVAS.md  # Porting Raylib Games, C ABI Struct Unpacking & Controls
-├── 04_TESTING_AND_AUTOMATION.md   # 18-Suite Test Harness, Headless Node.js CI & Fuzzing
-├── 05_STACK_SWITCHING_ROADMAP.md  # Future Wasm Stack-Switching, Pointer Swapping & WasmFX
+├── 04_TESTING_AND_AUTOMATION.md   # 21-Suite Test Harness, Headless Node.js CI & Fuzzing
+├── 05_STACK_SWITCHING_ROADMAP.md  # Phase 2 Shadow Stacks, Future Odin Compiler Features & WasmFX
 ```
 
 ### Module Summaries:
 - **[01. Architecture & Asyncify Integration](01_ARCHITECTURE_ASYNCIFY.md)**:
   Examines how Odin procedures are rewritten by Binaryen Asyncify, why the leaf unwind/rewind protocol (`start_unwind` on yield, `stop_rewind` upon entry in `yield`) is required, and how the browser event loop schedules fibers.
-- **[02. Memory Architecture & Limitations](02_MEMORY_AND_LIMITATIONS.md)**:
-  Analyzes the fundamental difference between the WebAssembly VM execution stack and the LLVM shadow stack in linear memory. Explains shadow-stack aliasing across yields, details the Boss EMP post-mortem, and codifies the **3 Golden Rules**.
+- **[02. Memory Architecture & Per-Fiber Shadow Stacks](02_MEMORY_AND_LIMITATIONS.md)**:
+  Dissects LLVM's `$__stack_pointer` bytecode under Asyncify, explains how per-fiber 8 KB shadow stacks + `tools/wasm_asyncify.py` eliminate both `&local_struct` corruption and abort leaks with zero JS overhead, and documents canary/watermark telemetry.
 - **[03. Browser Game & Canvas Adapter](03_BROWSER_GAME_AND_CANVAS.md)**:
   Details the architecture of the browser-playable Boss Battle demo. Explains how Odin passes C structs by pointer across the Wasm boundary, how `raylib_canvas.js` unpacks colors, and how modern browser keyboard controls work.
 - **[04. Testing & CI Automation](04_TESTING_AND_AUTOMATION.md)**:
-  Catalogs the 18 automated test suites in `examples/wasm_test/main.odin` and explains how headless Node.js harnesses verify 1000+ simulation frames with zero visual regression and zero runtime panics.
-- **[05. Future Stack-Switching Roadmap](05_STACK_SWITCHING_ROADMAP.md)**:
-  Surveys upcoming WebAssembly capabilities: Phase 2 shadow-stack pointer swapping (`$__stack_pointer`) and Phase 3 native hardware delimited continuations (W3C WasmFX: `cont.new`, `suspend`, `resume`).
+  Catalogs all 21 automated test suites in `examples/wasm_test/main.odin` and explains how headless Node.js harnesses verify 1000+ interactive simulation frames with zero visual regression, zero `NaN`/`Inf`, and zero runtime panics.
+- **[05. Stack-Switching, Future Odin Features & Roadmap](05_STACK_SWITCHING_ROADMAP.md)**:
+  Documents implemented Phase 2 per-fiber shadow-stack switching, catalogs concrete upstream Odin compiler features (`intrinsics.set_stack_pointer`, Wasm inline `asm`, deferred `when`/`asm` parsing, WasmFX intrinsics), and outlines Phase 3 WasmFX migration.
 
 ---
 
@@ -97,8 +97,8 @@ Both downloaders fetch the official release from GitHub, unpack into `tools/bina
 
 All WebAssembly workflows are orchestrated through `build.ps1`:
 
-### 1. Build and Run the Complete 18-Suite Automated Wasm Tests
-Compiles `examples/wasm_test`, applies `wasm-opt --asyncify`, and runs the suite under Node.js:
+### 1. Build and Run the Complete 21-Suite Automated Wasm Tests
+Compiles `examples/wasm_test`, applies `tools/wasm_asyncify.py` (per-fiber shadow stacks + `wasm-opt --asyncify`), and runs the suite under Node.js:
 ```powershell
 .\build.ps1 test-wasm
 ```

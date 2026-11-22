@@ -1195,9 +1195,15 @@ game_render :: proc(g: ^Game) {
 
             used, total := coroutine.fiber_calc_stack_usage(f)
             pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
+            resumes := coroutine.fiber_resume_count(f)
 
             prefix := depth > 0 ? "├─ " : "▼ "
-            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct)
+            when ODIN_ARCH == .wasm32 {
+                a_used, a_total := coroutine.fiber_calc_asyncify_usage(f)
+                row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Asyncify: %.1fKB/%.0fKB | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, f32(a_used)/1024.0, f32(a_total)/1024.0, resumes)
+            } else {
+                row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, resumes)
+            }
             rl.DrawText(fmt.ctprintf("%s", row_text), 40 + indent, ctx.cur_y, 12, status_col)
             ctx.cur_y += 18
         }, &draw_ctx)

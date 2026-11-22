@@ -389,19 +389,20 @@ boss_ai :: proc(f: ^coroutine.Fiber, boss: ^Boss) {
 }
 ```
 
-### What Happens
-WebAssembly uses a **dual-stack model**. Asyncify serializes and restores the **VM Execution Stack** (local primitives `i32`, `f32`), but **does NOT save or partition linear memory** (`memory.buffer`). Local variables whose addresses are taken (`&cfg`) reside on the C/LLVM shadow stack pointed to by `(global $__stack_pointer)`.
+### What Happens (Historical — Resolved by Per-Fiber Wasm Shadow Stacks)
+WebAssembly uses a **dual-stack model**: the VM execution stack (saved by Binaryen Asyncify) and the LLVM linear-memory shadow stack pointed to by `(global $__stack_pointer)`.
 
-Because all fibers share the single shadow stack, when `boss_ai` sleeps or yields, other interleaved fibers push their stack frames down from `$__stack_pointer` and **physically overwrite `cfg` in linear memory**. When `boss_ai` wakes, `cfg` has been corrupted by another fiber!
+Previously, all Wasm fibers shared a single global `$__stack_pointer`, so interleaved yields could overwrite `&local_struct` in linear memory and mid-frame aborts leaked shadow-stack frames.
 
-### The Solution
-1. **Use Fiber-Owned Timing**: Use `coroutine.ticker_wait(f, interval)`. Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
-2. **Keep Scalar Values in Locals**: Primitive values (`timer: f32`, `ticks: int`, `interval: f64`) live in Wasm VM registers and are perfectly restored by Asyncify.
-3. **Store Composite State in Entities**: Store multi-field cross-yield state in persistent entities (`^Boss`, `^Player`) or inside the fiber's private 4KB arena (`f.temp_arena`).
-4. **Deep Dive**: See [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md) for full architectural analysis and stack-switching roadmap.
+### How the Engine Solves It Automatically
+`asm_wasm32.odin` + `tools/wasm_asyncify.py` now give every Wasm fiber its own **private linear-memory shadow stack** (`CORO_WASM_SHADOW_STACK_SIZE`, default **8 KB** with 64-byte canary & watermark checking) and swap `(global $__stack_pointer)` inside uninstrumented `wasm_dispatch_fiber`:
+- **Full Native Parity**: Taking `&local_struct` or passing pointers to local buffers across `yield`/`wait`/`race`/`sync` is **100% isolated and safe** on `js_wasm32`.
+- **Zero Abort Leaks**: Aborting a suspended fiber simply recycles its private shadow stack without leaking a single byte of the host `$__stack_pointer`.
+- **Build Requirement**: Always post-process Wasm builds via `python tools/wasm_asyncify.py <in.wasm> <out.wasm>` (handled automatically by `.\build.ps1 wasm`, `test-wasm`, `web-game`, `test-web-game`, `pack-itch`).
+- **Deep Dive**: See [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md) for full dual-stack mechanics.
 
 ### The Rule
-> **Never retain pointers to local stack-allocated structs across yields when targeting WebAssembly. Use fiber-owned primitives (`ticker_wait`), fiber temp arenas (`f.temp_arena`), or persistent entity structs.**
+> **Keep individual Wasm stack frames within `CORO_WASM_SHADOW_STACK_SIZE` (default 8 KB, overridable via `-define:CORO_WASM_SHADOW_STACK_SIZE=N`) and use `tools/wasm_asyncify.py` so per-fiber `$__stack_pointer` switching is active.**
 
 ---
 
@@ -510,7 +511,7 @@ dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 64-bit handles are 100% ABA safe.    │
 │ 12. Never #force_inline yield points: Keep ABI boundaries & FP clobbers.    │
-│ 13. On Wasm, avoid &local_struct across yields: Use entities or temp_arena. │
+│ 13. On Wasm, size CORO_WASM_SHADOW_STACK_SIZE (8KB def) for local structs.  │
 │ 14. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
 │ 15. Use fiber_defer for abort cleanup: Native defer won't run on cancel!    │
 └─────────────────────────────────────────────────────────────────────────────┘

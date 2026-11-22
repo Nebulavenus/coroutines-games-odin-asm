@@ -16,17 +16,60 @@ import sync "../../sync"
 // Constants & Configuration
 // ============================================================================
 
-SCREEN_WIDTH  :: 1280
-SCREEN_HEIGHT :: 720
+SCREEN_WIDTH       :: 1280
+SCREEN_HEIGHT      :: 720
+FIXED_TEXT_MAX_LEN :: 96
+
+Fixed_Text :: struct {
+    buf: [FIXED_TEXT_MAX_LEN]u8,
+    len: u8,
+}
+
+fixed_text_make :: proc(s: string) -> Fixed_Text {
+    res: Fixed_Text
+    n := min(len(s), FIXED_TEXT_MAX_LEN)
+    if n > 0 {
+        copy(res.buf[:n], s[:n])
+    }
+    res.len = u8(n)
+    return res
+}
+
+fixed_text_str :: proc(t: ^Fixed_Text) -> string {
+    return string(t.buf[:t.len])
+}
+
+SENTRY_NAMES := [6]string{
+    "Sentry #1", "Sentry #2", "Sentry #3",
+    "Sentry #4", "Sentry #5", "Sentry #6",
+}
+
+DRONE_NAMES := [4]string{
+    "Drone #1 (Mutex)", "Drone #2 (Mutex)",
+    "Drone #3 (Mutex)", "Drone #4 (Mutex)",
+}
+
+TURRET_NAMES := [4]string{
+    "Turret #1 (Semaphore)", "Turret #2 (Semaphore)",
+    "Turret #3 (Semaphore)", "Turret #4 (Semaphore)",
+}
 
 // ============================================================================
 // Data Types & Tags for Showcase Stations
 // ============================================================================
 
 Showcase_Event :: struct {
-    title: string,
-    desc:  string,
+    title: Fixed_Text,
+    desc:  Fixed_Text,
     color: rl.Color,
+}
+
+showcase_emit_event :: proc(sched: ^coroutine.Scheduler, hub: ^coroutine.Event(Showcase_Event), title, desc: string, color: rl.Color) {
+    coroutine.event_emit(sched, hub, Showcase_Event{
+        title = fixed_text_make(title),
+        desc  = fixed_text_make(desc),
+        color = color,
+    })
 }
 
 // --- Station 1: The Ritual Circle (sync) ---
@@ -130,7 +173,7 @@ Lab_Station :: struct {
     job:            Research_Job,
     drone_task:     coroutine.Task(int),
     is_working:     bool,
-    status_text:    string,
+    status_text:    Fixed_Text,
     status_color:   rl.Color,
     drone_active:   bool,
     drone_pos:      rl.Vector2,
@@ -142,9 +185,9 @@ MAX_RECENT_LOGS :: 8
 
 Channel_Station :: struct {
     pos:           rl.Vector2,
-    user_channel:  sync.Channel(string),
-    sys_channel:   sync.Channel(string),
-    recent_logs:   [MAX_RECENT_LOGS]string,
+    user_channel:  sync.Channel(Fixed_Text),
+    sys_channel:   sync.Channel(Fixed_Text),
+    recent_logs:   [MAX_RECENT_LOGS]Fixed_Text,
     log_count:     int,
     log_head:      int,
     items_sent:    int,
@@ -211,8 +254,8 @@ Showcase_World :: struct {
     station_channel:         Channel_Station,
     station_gate:            Gate_Station,
     station_defense:         Defense_Station,
-    toast_title:             string,
-    toast_desc:              string,
+    toast_title:             Fixed_Text,
+    toast_desc:              Fixed_Text,
     toast_color:             rl.Color,
     toast_timer:             f32,
     is_paused:               bool,
@@ -224,6 +267,7 @@ Showcase_World :: struct {
     hold_step_timer:         f32,
     latched_station:         int,
     latched_interact:        bool,
+    latched_lockdown:        bool,
 }
 
 g_world: ^Showcase_World
@@ -286,7 +330,17 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
     s.completed = false
     s.result_alpha = 0.0
 
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Started", "3 Runes charging in parallel (sync + branch_scoped)", rl.SKYBLUE})
+    coroutine.fiber_defer(f, proc(s: ^Ritual_Station) {
+        for i in 0 ..< 3 {
+            s.runes[i].active = false
+            s.runes[i].progress = 0.0
+        }
+        s.is_active = false
+        s.completed = false
+        s.result_alpha = 0.0
+    }, s)
+
+    showcase_emit_event(f.sched, &g_world.event_hub, "Ritual Started", "3 Runes charging in parallel (sync + branch_scoped)", rl.SKYBLUE)
 
     coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, s: ^Ritual_Station) {
         for {
@@ -302,18 +356,13 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
     )
 
     s.completed = true
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Ritual Complete", "All 3 runes synchronized successfully!", rl.GREEN})
+    showcase_emit_event(f.sched, &g_world.event_hub, "Ritual Complete", "All 3 runes synchronized successfully!", rl.GREEN)
 
     tween_f32(f, &s.result_alpha, 0.0, 1.0, 0.5, ease_out_quad)
     coroutine.wait(f, 2.0)
     tween_f32(f, &s.result_alpha, 1.0, 0.0, 0.5, ease_in_quad)
 
-    for i in 0 ..< 3 {
-        s.runes[i].active = false
-        s.runes[i].progress = 0.0
-    }
-    s.is_active = false
-    s.completed = false
+    coroutine.fiber_defer_run_top(f)
 }
 
 // --- 2. Capture Contest (race & with_timeout) ---
@@ -325,7 +374,14 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
     s.status_color = rl.YELLOW
     coroutine.fiber_set_name(f, "Capture Contest: Active (3.5s limit)")
 
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW})
+    coroutine.fiber_defer(f, proc(s: ^Capture_Station) {
+        s.is_capturing = false
+        s.progress = 0.0
+        s.status_text = "Step into circle & Press [E] to contest"
+        s.status_color = rl.RAYWHITE
+    }, s)
+
+    showcase_emit_event(f.sched, &g_world.event_hub, "Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW)
 
     outcome := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         for s.progress < 1.0 {
@@ -344,20 +400,17 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
         coroutine.fiber_set_name(f, "Capture Contest: Captured!")
-        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Point Captured", "Player secured the zone in time!", rl.GREEN})
+        showcase_emit_event(f.sched, &g_world.event_hub, "Point Captured", "Player secured the zone in time!", rl.GREEN)
     } else {
         s.capture_success = false
         s.status_text = "FAILED: Timeout Expired!"
         s.status_color = rl.RED
         coroutine.fiber_set_name(f, "Capture Contest: Timed Out")
-        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Failed", "Timeout expired before completion!", rl.RED})
+        showcase_emit_event(f.sched, &g_world.event_hub, "Capture Failed", "Timeout expired before completion!", rl.RED)
     }
 
     coroutine.wait(f, 2.0)
-    s.is_capturing = false
-    s.progress = 0.0
-    s.status_text = "Step into circle & Press [E] to contest"
-    s.status_color = rl.RAYWHITE
+    coroutine.fiber_defer_run_top(f)
 }
 
 // --- 3. Energy Charger (Fiber_Mutex & with_mutex) ---
@@ -437,10 +490,17 @@ research_worker_thread :: proc(data: rawptr) {
 
 lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     s.is_working = true
-    s.status_text = "Worker Thread Computing (await_async)..."
+    s.status_text = fixed_text_make("Worker Thread Computing (await_async)...")
     s.status_color = rl.YELLOW
 
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Async Job Dispatched", "Background OS thread spawned (await_async)", rl.YELLOW})
+    coroutine.fiber_defer(f, proc(s: ^Lab_Station) {
+        s.is_working = false
+        s.drone_active = false
+        s.status_text = fixed_text_make("Press [6] or [E] to launch background worker")
+        s.status_color = rl.RAYWHITE
+    }, s)
+
+    showcase_emit_event(f.sched, &g_world.event_hub, "Async Job Dispatched", "Background OS thread spawned (await_async)", rl.YELLOW)
 
     coroutine.async_token_init(&s.job.token)
     s.job.complexity = 10
@@ -451,7 +511,7 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     ok := coroutine.await_async(f, &s.job.token)
 
     if ok {
-        s.status_text = fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (spawn_task)...", s.job.elapsed_worker)
+        s.status_text = fixed_text_make(fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (spawn_task)...", s.job.elapsed_worker))
         s.status_color = rl.SKYBLUE
 
         s.drone_active = true
@@ -468,31 +528,35 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
 
         found_nodes, _ := coroutine.task_await(f, &s.drone_task)
 
-        s.status_text = fmt.tprintf("Research & Drone Complete! Found %d nodes", found_nodes)
+        s.status_text = fixed_text_make(fmt.tprintf("Research & Drone Complete! Found %d nodes", found_nodes))
         s.status_color = rl.GREEN
-        coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Analysis Complete", "Async job & Analysis Drone joined successfully!", rl.GREEN})
+        showcase_emit_event(f.sched, &g_world.event_hub, "Analysis Complete", "Async job & Analysis Drone joined successfully!", rl.GREEN)
     } else {
-        s.status_text = "Async Compute Failed"
+        s.status_text = fixed_text_make("Async Compute Failed")
         s.status_color = rl.RED
     }
 
     coroutine.wait(f, 3.0)
-    s.is_working = false
-    s.status_text = "Press [6] or [E] to launch background worker"
-    s.status_color = rl.RAYWHITE
+    coroutine.fiber_defer_run_top(f)
 }
 
 // --- 7. Telemetry Channel (Channel(T) & Multi-Channel Select) ---
 
 channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
-    channels := []^sync.Channel(string){&s.user_channel, &s.sys_channel}
-
     for {
-        ready_idx, msg, ok := sync.chan_select_recv(f, channels)
-        if !ok do break
+        user_msg: Fixed_Text
+        sys_msg: Fixed_Text
+        ready_idx := coroutine.race(f,
+            sync.branch_chan_recv(&s.user_channel, &user_msg),
+            sync.branch_chan_recv(&s.sys_channel, &sys_msg),
+        )
+        if ready_idx < 0 do break
+
+        msg := ready_idx == 0 ? user_msg : sys_msg
+        if msg.len == 0 do break
 
         tag_prefix := ready_idx == 0 ? "[USER]" : "[SYS]"
-        formatted := fmt.tprintf("%s %s", tag_prefix, msg)
+        formatted := fixed_text_make(fmt.tprintf("%s %s", tag_prefix, fixed_text_str(&msg)))
 
         idx := (s.log_head + s.log_count) % MAX_RECENT_LOGS
         s.recent_logs[idx] = formatted
@@ -508,7 +572,7 @@ system_heartbeat_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
     count := 1
     for {
         coroutine.ticker_wait(f, 3.5)
-        sync.chan_send(f, &s.sys_channel, fmt.tprintf("Pulse #%d (Nominal)", count))
+        sync.chan_send(f, &s.sys_channel, fixed_text_make(fmt.tprintf("Pulse #%d (Nominal)", count)))
         count += 1
     }
 }
@@ -532,7 +596,18 @@ gate_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Gate_Station) {
     s.portal_alpha = 0.0
     s.status_text = "Building: 3 Tasks Synchronizing (sync)..."
 
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Gate Construction", "3 subtasks rendezvous on sync", rl.SKYBLUE})
+    coroutine.fiber_defer(f, proc(s: ^Gate_Station) {
+        for i in 0 ..< 3 {
+            s.tasks[i].done = false
+            s.tasks[i].progress = 0.0
+        }
+        s.is_building = false
+        s.portal_open = false
+        s.portal_alpha = 0.0
+        s.status_text = "Press [7] or [E] to construct gate"
+    }, s)
+
+    showcase_emit_event(f.sched, &g_world.event_hub, "Gate Construction", "3 subtasks rendezvous on sync", rl.SKYBLUE)
 
     coroutine.sync(f,
         coroutine.branch(builder_subtask_fiber, &s.tasks[0], "Builder #1"),
@@ -542,19 +617,13 @@ gate_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Gate_Station) {
 
     s.portal_open = true
     s.status_text = "PORTAL ACTIVATED! All 3 builders rendezvoused!"
-    coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Portal Open", "Structured sync barrier unblocked!", rl.GREEN})
+    showcase_emit_event(f.sched, &g_world.event_hub, "Portal Open", "Structured sync barrier unblocked!", rl.GREEN)
 
     tween_f32(f, &s.portal_alpha, 0.0, 1.0, 0.5, ease_out_quad)
     coroutine.wait(f, 3.0)
     tween_f32(f, &s.portal_alpha, 1.0, 0.0, 0.5, ease_in_quad)
 
-    for i in 0 ..< 3 {
-        s.tasks[i].done = false
-        s.tasks[i].progress = 0.0
-    }
-    s.is_building = false
-    s.portal_open = false
-    s.status_text = "Press [7] or [E] to construct gate"
+    coroutine.fiber_defer_run_top(f)
 }
 
 // --- 9. Laser Defense Turrets (Fiber_Semaphore) ---
@@ -563,20 +632,22 @@ turret_defense_fiber :: proc(f: ^coroutine.Fiber, t: ^Turret) {
     for {
         coroutine.wait(f, f32(t.id) * 0.4)
 
-        sync.semaphore_acquire(f, &g_world.station_defense.sem)
+        sync.with_semaphore(f, &g_world.station_defense.sem, proc(f: ^coroutine.Fiber, t: ^Turret) {
+            t.is_firing = true
+            t.laser_alpha = 1.0
 
-        t.is_firing = true
-        t.laser_alpha = 1.0
+            coroutine.fiber_defer(f, proc(t: ^Turret) {
+                t.is_firing = false
+                t.laser_alpha = 0.0
+            }, t)
 
-        for i := 0; i < 20; i += 1 {
-            coroutine.yield(f)
-            t.laser_alpha = 0.6 + 0.4 * math.sin(g_world.global_time * 25.0)
-        }
+            for i := 0; i < 20; i += 1 {
+                coroutine.yield(f)
+                t.laser_alpha = 0.6 + 0.4 * math.sin(g_world.global_time * 25.0)
+            }
 
-        t.is_firing = false
-        t.laser_alpha = 0.0
-
-        sync.semaphore_release(f.sched, &g_world.station_defense.sem)
+            coroutine.fiber_defer_run_top(f)
+        }, t)
 
         coroutine.wait(f, 1.2)
     }
@@ -635,14 +706,14 @@ showcase_init :: proc(w: ^Showcase_World) {
             home_pos = home,
             color    = rl.ORANGE,
         }
-        coroutine.spawn(&w.sched, sentry_watch_fiber, &w.station_beacon.sentries[i], scope = &w.station_beacon.scope, name = fmt.tprintf("Sentry #%d", i + 1))
+        coroutine.spawn(&w.sched, sentry_watch_fiber, &w.station_beacon.sentries[i], scope = &w.station_beacon.scope, name = SENTRY_NAMES[i])
     }
 
     w.station_forge.pos = {460, 440}
     w.station_forge.loot_idx = 0
 
     w.station_lab.pos = {760, 440}
-    w.station_lab.status_text = "Press [6] or [E] to launch worker"
+    w.station_lab.status_text = fixed_text_make("Press [6] or [E] to launch worker")
     w.station_lab.status_color = rl.RAYWHITE
 
     w.station_channel.pos = {1060, 160}
@@ -667,7 +738,7 @@ showcase_init :: proc(w: ^Showcase_World) {
             color      = rl.RED,
             id         = i + 1,
         }
-        coroutine.spawn(&w.sched, turret_defense_fiber, &w.station_defense.turrets[i], scope = &w.station_defense.scope, name = fmt.tprintf("Turret #%d (Semaphore)", i + 1))
+        coroutine.spawn(&w.sched, turret_defense_fiber, &w.station_defense.turrets[i], scope = &w.station_defense.scope, name = TURRET_NAMES[i])
     }
 
     coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber) {
@@ -708,71 +779,8 @@ showcase_destroy :: proc(w: ^Showcase_World) {
 // Update & Input Handling
 // ============================================================================
 
-showcase_update :: proc(w: ^Showcase_World, dt: f32) {
-    if rl.IsKeyPressed(.F3) {
-        w.is_paused = !w.is_paused
-    }
-
-    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
-        w.show_coroutine_debugger = !w.show_coroutine_debugger
-    }
-
-    if w.toast_timer > 0.0 {
-        w.toast_timer = max(0.0, w.toast_timer - dt)
-    }
-
-    sim_dt: f32 = 0.0
-
-    if !w.is_paused {
-        sim_dt = dt
-        w.step_flash_timer = 0.0
-    } else {
-        if w.step_flash_timer > 0.0 {
-            w.step_flash_timer = max(0.0, w.step_flash_timer - dt)
-        }
-
-        if rl.IsKeyPressed(.F4) {
-            sim_dt = 0.016
-            w.step_count += 1
-            w.last_step_dt = sim_dt
-            w.step_flash_timer = 0.4
-        } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
-            sim_dt = 0.160
-            w.step_count += 10
-            w.last_step_dt = sim_dt
-            w.step_flash_timer = 0.5
-        } else if rl.IsKeyDown(.F4) {
-            w.hold_step_timer += dt
-            if w.hold_step_timer >= 0.066 {
-                w.hold_step_timer = 0.0
-                sim_dt = 0.016
-                w.step_count += 1
-                w.last_step_dt = sim_dt
-                w.step_flash_timer = 0.2
-            }
-        } else {
-            w.hold_step_timer = 0.0
-        }
-    }
-
-    if rl.IsKeyPressed(.ONE)   do w.latched_station = 1
-    if rl.IsKeyPressed(.TWO)   do w.latched_station = 2
-    if rl.IsKeyPressed(.THREE) do w.latched_station = 3
-    if rl.IsKeyPressed(.FOUR)  do w.latched_station = 4
-    if rl.IsKeyPressed(.FIVE) || rl.IsKeyPressed(.L) do w.latched_station = 5
-    if rl.IsKeyPressed(.SIX)   do w.latched_station = 6
-    if rl.IsKeyPressed(.SEVEN) do w.latched_station = 7
-    if rl.IsKeyPressed(.E)     do w.latched_interact = true
-
-    coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
-    if sim_dt <= 0.0 {
-        coroutine.scheduler_run(&w.sched)
-        return
-    }
-
+showcase_sim_step :: proc(w: ^Showcase_World, sim_dt: f32, real_dt: f32) {
     w.global_time += sim_dt
-
-    coroutine.scheduler_step(&w.sched, sim_dt)
 
     // --- Player Movement ---
     move_dir: rl.Vector2
@@ -787,16 +795,18 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     }
 
     trigger_station := w.latched_station
-    interact := w.latched_interact || rl.IsKeyPressed(.E)
+    interact := w.latched_interact
+    trigger_lockdown := w.latched_lockdown
     w.latched_station = 0
     w.latched_interact = false
+    w.latched_lockdown = false
 
     // --- Station 1: Ritual (Press [1] or [E] near station) ---
     dist1 := linalg.length(w.player.pos - w.station_ritual.pos)
     if (dist1 < 80.0 && interact) || trigger_station == 1 {
         if !coroutine.scope_is_busy(&w.station_ritual.scope) {
             coroutine.spawn(&w.sched, ritual_master_fiber, &w.station_ritual, scope = &w.station_ritual.scope, name = "Ritual Master (sync)")
-            sync.chan_try_send(&w.station_channel.user_channel, "Ritual [sync] triggered")
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("Ritual [sync] triggered"))
         }
     }
 
@@ -805,7 +815,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist2 < w.station_capture.radius && interact) || trigger_station == 2 {
         if !coroutine.scope_is_busy(&w.station_capture.scope) {
             coroutine.spawn(&w.sched, capture_contest_fiber, &w.station_capture, scope = &w.station_capture.scope, name = "Capture [race/timeout]")
-            sync.chan_try_send(&w.station_channel.user_channel, "Capture Contest [race] started")
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("Capture Contest [race] started"))
         }
     }
 
@@ -815,9 +825,9 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         if !coroutine.scope_is_busy(&w.station_charger.scope) {
             for i in 0 ..< 4 {
                 d := &w.station_charger.drones[i]
-                coroutine.spawn(&w.sched, drone_charge_fiber, d, scope = &w.station_charger.scope, name = fmt.tprintf("Drone #%d (Mutex)", d.id))
+                coroutine.spawn(&w.sched, drone_charge_fiber, d, scope = &w.station_charger.scope, name = DRONE_NAMES[i])
             }
-            sync.chan_try_send(&w.station_channel.user_channel, "4 Drones dispatched to [Mutex]")
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("4 Drones dispatched to [Mutex]"))
         }
     }
 
@@ -825,11 +835,11 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     dist4 := linalg.length(w.player.pos - w.station_beacon.pos)
     if (dist4 < 80.0 && interact) || trigger_station == 4 {
         coroutine.signal_emit(&w.sched, &w.station_beacon.alarm_signal)
-        sync.chan_try_send(&w.station_channel.user_channel, "Alarm [Signal] broadcast to 6 sentries")
-        coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"Alarm Tripped", "Signal broadcast woken 6 sentries!", rl.RED})
+        sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("Alarm [Signal] broadcast to 6 sentries"))
+        showcase_emit_event(&w.sched, &w.event_hub, "Alarm Tripped", "Signal broadcast woken 6 sentries!", rl.RED)
     }
 
-    if rl.IsKeyPressed(.K) {
+    if trigger_lockdown {
         if !w.station_beacon.is_lockdown {
             w.station_beacon.is_lockdown = true
             coroutine.scope_cancel(&w.sched, &w.station_beacon.scope)
@@ -840,8 +850,8 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
                 s.color = rl.RED
             }
 
-            sync.chan_try_send(&w.station_channel.user_channel, "LOCKDOWN: Cancelled sentries via Structured Scope")
-            coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{"EMERGENCY LOCKDOWN", "Latched via Sticky_Signal & Scope!", rl.RED})
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("LOCKDOWN: Cancelled sentries via Structured Scope"))
+            showcase_emit_event(&w.sched, &w.event_hub, "EMERGENCY LOCKDOWN", "Latched via Sticky_Signal & Scope!", rl.RED)
             coroutine.sticky_signal_emit(&w.sched, &w.station_beacon.lockdown_signal)
 
             coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, b: ^Beacon_Station) {
@@ -852,10 +862,10 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
                     b.sentries[i].color = rl.ORANGE
                     b.sentries[i].is_alerted = false
                     b.sentries[i].alert_timer = 0.0
-                    coroutine.spawn(f.sched, sentry_watch_fiber, &b.sentries[i], scope = &b.scope, name = fmt.tprintf("Sentry #%d", i + 1))
+                    coroutine.spawn(f.sched, sentry_watch_fiber, &b.sentries[i], scope = &b.scope, name = SENTRY_NAMES[i])
                 }
-                g_world.toast_title = "LOCKDOWN ENDED"
-                g_world.toast_desc = "Sticky_Signal reset; sentries resumed watch"
+                g_world.toast_title = fixed_text_make("LOCKDOWN ENDED")
+                g_world.toast_desc = fixed_text_make("Sticky_Signal reset; sentries resumed watch")
                 g_world.toast_color = rl.GREEN
                 g_world.toast_timer = 2.5
             }, &w.station_beacon)
@@ -869,8 +879,8 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
         w.station_forge.current_item = item
         w.station_forge.has_item = true
         w.station_forge.total_forged += 1
-        sync.chan_try_send(&w.station_channel.user_channel, fmt.tprintf("Forged %s (%s)", item.name, item.tier))
-        coroutine.event_emit(&w.sched, &w.event_hub, Showcase_Event{fmt.tprintf("Forged %s", item.name), fmt.tprintf("Tier: %s | Pwr: %d", item.tier, item.power), item.color})
+        sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make(fmt.tprintf("Forged %s (%s)", item.name, item.tier)))
+        showcase_emit_event(&w.sched, &w.event_hub, fmt.tprintf("Forged %s", item.name), fmt.tprintf("Tier: %s | Pwr: %d", item.tier, item.power), item.color)
     }
 
     // --- Station 6: Async Research (Press [6] or [E] near station) ---
@@ -878,7 +888,7 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist6 < 80.0 && interact) || trigger_station == 6 {
         if !coroutine.scope_is_busy(&w.station_lab.scope) {
             coroutine.spawn(&w.sched, lab_research_fiber, &w.station_lab, scope = &w.station_lab.scope, name = "Async Research Lab")
-            sync.chan_try_send(&w.station_channel.user_channel, "Dispatched [await_async] background worker")
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("Dispatched [await_async] background worker"))
         }
     }
 
@@ -887,8 +897,93 @@ showcase_update :: proc(w: ^Showcase_World, dt: f32) {
     if (dist8 < 80.0 && interact) || trigger_station == 7 {
         if !coroutine.scope_is_busy(&w.station_gate.scope) {
             coroutine.spawn(&w.sched, gate_master_fiber, &w.station_gate, scope = &w.station_gate.scope, name = "Gate Master (sync)")
-            sync.chan_try_send(&w.station_channel.user_channel, "Gate Construction [sync] started")
+            sync.chan_try_send(&w.station_channel.user_channel, fixed_text_make("Gate Construction [sync] started"))
         }
+    }
+
+    if real_dt > 0.0 {
+        coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, real_dt)
+    }
+    coroutine.scheduler_step(&w.sched, sim_dt)
+}
+
+showcase_update :: proc(w: ^Showcase_World, dt: f32) {
+    if rl.IsKeyPressed(.F3) {
+        w.is_paused = !w.is_paused
+    }
+
+    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
+        w.show_coroutine_debugger = !w.show_coroutine_debugger
+    }
+
+    if w.toast_timer > 0.0 {
+        w.toast_timer = max(0.0, w.toast_timer - dt)
+    }
+
+    if rl.IsKeyPressed(.ONE)   do w.latched_station = 1
+    if rl.IsKeyPressed(.TWO)   do w.latched_station = 2
+    if rl.IsKeyPressed(.THREE) do w.latched_station = 3
+    if rl.IsKeyPressed(.FOUR)  do w.latched_station = 4
+    if rl.IsKeyPressed(.FIVE) || rl.IsKeyPressed(.L) do w.latched_station = 5
+    if rl.IsKeyPressed(.SIX)   do w.latched_station = 6
+    if rl.IsKeyPressed(.SEVEN) do w.latched_station = 7
+    if rl.IsKeyPressed(.E)     do w.latched_interact = true
+    if rl.IsKeyPressed(.K)     do w.latched_lockdown = true
+
+    STEP_DT :: f32(1.0 / 60.0)
+    steps_to_run := 0
+    step_dt: f32 = 0.0
+
+    if !w.is_paused {
+        steps_to_run = 1
+        step_dt = dt
+        w.step_flash_timer = 0.0
+    } else {
+        if w.step_flash_timer > 0.0 {
+            w.step_flash_timer = max(0.0, w.step_flash_timer - dt)
+        }
+
+        if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
+            steps_to_run = 10
+            step_dt = STEP_DT
+            w.step_count += 10
+            w.last_step_dt = STEP_DT * 10.0
+            w.step_flash_timer = 0.5
+        } else if rl.IsKeyPressed(.F4) {
+            steps_to_run = 1
+            step_dt = STEP_DT
+            w.step_count += 1
+            w.last_step_dt = STEP_DT
+            w.step_flash_timer = 0.4
+        } else if rl.IsKeyDown(.F4) {
+            w.hold_step_timer += dt
+            if w.hold_step_timer >= 0.066 {
+                w.hold_step_timer = 0.0
+                steps_to_run = 1
+                step_dt = STEP_DT
+                w.step_count += 1
+                w.last_step_dt = STEP_DT
+                w.step_flash_timer = 0.2
+            }
+        } else {
+            w.hold_step_timer = 0.0
+        }
+    }
+
+    if steps_to_run == 0 {
+        coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, true)
+        coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
+        coroutine.scheduler_run(&w.sched)
+        return
+    }
+
+    coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, false)
+    for i in 0 ..< steps_to_run {
+        real_slice := i == 0 ? dt : f32(0.0)
+        showcase_sim_step(w, step_dt, real_slice)
+    }
+    if w.is_paused {
+        coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, true)
     }
 }
 
@@ -996,7 +1091,7 @@ showcase_render :: proc(w: ^Showcase_World) {
     rl.DrawRectangleLines(i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 45, 110, 90, rl.LIME)
     rl.DrawText("6. ASYNC LAB", i32(w.station_lab.pos.x) - 40, i32(w.station_lab.pos.y) - 68, 13, rl.LIME)
     rl.DrawText("[await_async & join]", i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 55, 10, rl.GRAY)
-    rl.DrawText(fmt.ctprintf("%s", w.station_lab.status_text), i32(w.station_lab.pos.x) - 75, i32(w.station_lab.pos.y) + 52, 9, w.station_lab.status_color)
+    rl.DrawText(fmt.ctprintf("%s", fixed_text_str(&w.station_lab.status_text)), i32(w.station_lab.pos.x) - 75, i32(w.station_lab.pos.y) + 52, 9, w.station_lab.status_color)
 
     if w.station_lab.drone_active {
         rl.DrawCircleV(w.station_lab.drone_pos, 8.0, rl.PINK)
@@ -1015,7 +1110,8 @@ showcase_render :: proc(w: ^Showcase_World) {
 
     log_y := panel_y + 30
     for i in 0 ..< w.station_channel.log_count {
-        msg := w.station_channel.recent_logs[(w.station_channel.log_head + i) % MAX_RECENT_LOGS]
+        msg_slot := &w.station_channel.recent_logs[(w.station_channel.log_head + i) % MAX_RECENT_LOGS]
+        msg := fixed_text_str(msg_slot)
         color := strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY
         rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, color)
         log_y += 18
@@ -1057,7 +1153,7 @@ showcase_render :: proc(w: ^Showcase_World) {
     if w.toast_timer > 0.0 {
         rl.DrawRectangle(25, SCREEN_HEIGHT - 65, 450, 24, {20, 30, 45, 235})
         rl.DrawRectangleLines(25, SCREEN_HEIGHT - 65, 450, 24, w.toast_color)
-        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s — %s", w.toast_title, w.toast_desc), 35, SCREEN_HEIGHT - 60, 11, w.toast_color)
+        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s — %s", fixed_text_str(&w.toast_title), fixed_text_str(&w.toast_desc)), 35, SCREEN_HEIGHT - 60, 11, w.toast_color)
     }
 
     // --- Player Character ---
@@ -1147,10 +1243,11 @@ showcase_render :: proc(w: ^Showcase_World) {
             }
 
             used, total := coroutine.fiber_calc_stack_usage(f)
-            pct := f32(used) / f32(total) * 100.0
+            pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
+            resumes := coroutine.fiber_resume_count(f)
 
             prefix := depth > 0 ? "├─ " : "▼ "
-            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct)
+            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, resumes)
             rl.DrawText(fmt.ctprintf("%s", row_text), 45 + indent, ctx.cur_y, 11, status_col)
             ctx.cur_y += 18
         }, &draw_ctx)
@@ -1186,5 +1283,6 @@ main :: proc() {
         dt := rl.GetFrameTime()
         showcase_update(&world, dt)
         showcase_render(&world)
+        free_all(context.temp_allocator)
     }
 }

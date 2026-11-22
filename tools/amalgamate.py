@@ -64,7 +64,6 @@ WASM_IMPORTS = [
 
 SYNC_IMPORTS = [
     'import "base:intrinsics"',
-    'import "core:mem"',
     'import coro ".."',
 ]
 

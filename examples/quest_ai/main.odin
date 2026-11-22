@@ -1,9 +1,7 @@
 package main
 
 import "core:fmt"
-import "core:math"
 import "core:math/linalg"
-import "core:math/rand"
 import "core:mem"
 import "core:time"
 import rl "vendor:raylib"
@@ -15,8 +13,28 @@ import sync "../../sync"
 // Constants & Configuration
 // ============================================================================
 
-SCREEN_WIDTH  :: 1280
-SCREEN_HEIGHT :: 720
+SCREEN_WIDTH       :: 1280
+SCREEN_HEIGHT      :: 720
+FIXED_TEXT_MAX_LEN :: 96
+
+Fixed_Text :: struct {
+    buf: [FIXED_TEXT_MAX_LEN]u8,
+    len: u8,
+}
+
+fixed_text_make :: proc(s: string) -> Fixed_Text {
+    res: Fixed_Text
+    n := min(len(s), FIXED_TEXT_MAX_LEN)
+    if n > 0 {
+        copy(res.buf[:n], s[:n])
+    }
+    res.len = u8(n)
+    return res
+}
+
+fixed_text_str :: proc(t: ^Fixed_Text) -> string {
+    return string(t.buf[:t.len])
+}
 
 // ============================================================================
 // Entity & World Data Structures
@@ -35,14 +53,14 @@ Knight_AI :: struct {
     home_pos:       rl.Vector2,
     radius:         f32,
     stamina:        f32,
-    current_action: string,
+    current_action: Fixed_Text,
     action_color:   rl.Color,
     scope:          coroutine.Fiber_Scope,
 }
 
 // --- Zone 2: Outpost Quest (rush & Event(T)) ---
 Quest_Milestone :: struct {
-    text:  string,
+    text:  Fixed_Text,
     color: rl.Color,
 }
 
@@ -52,7 +70,7 @@ Outpost_Quest :: struct {
     is_active:       bool,
     completed:       bool,
     winner_name:     string,
-    status_text:     string,
+    status_text:     Fixed_Text,
     status_color:    rl.Color,
     terminal_pos:    rl.Vector2,
     terminal_prog:   f32,
@@ -101,7 +119,7 @@ World :: struct {
     step_flash_timer:        f32,
     last_step_dt:            f32,
     hold_step_timer:         f32,
-    last_milestone:          string,
+    last_milestone:          Fixed_Text,
     milestone_timer:         f32,
     minion_active:           bool,
     minion_pos:              rl.Vector2,
@@ -109,6 +127,7 @@ World :: struct {
     latched_phase:           bool,
     latched_bench:           bool,
     latched_interact:        bool,
+    latched_stun:            bool,
 }
 
 g_world: ^World
@@ -157,14 +176,16 @@ sentinel_switch_phase :: proc(sched: ^coroutine.Scheduler, s: ^Void_Sentinel, ph
 
 knight_action_whirlwind :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     dist := linalg.length(g_world.player.pos - k.pos)
-    if dist > 85.0 || k.stamina < 60.0 {
+    if dist > 85.0 || k.stamina < 60.0 || sync.semaphore_available_permits(&g_world.combat_sem) <= 0 {
         coroutine.fail(f)
     }
-    coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
-    k.current_action = "Whirlwind Attack! (Priority A)"
-    k.action_color = rl.RED
-    k.stamina -= 50.0
-    coroutine.wait(f, 0.6)
+    sync.with_semaphore(f, &g_world.combat_sem, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
+        coroutine.fiber_set_name(f, "Knight AI: Whirlwind Attack (A)")
+        k.current_action = fixed_text_make("Whirlwind Attack! (Priority A)")
+        k.action_color = rl.RED
+        k.stamina -= 50.0
+        coroutine.wait(f, 0.6)
+    }, k)
 }
 
 knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
@@ -173,7 +194,7 @@ knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
         coroutine.fail(f)
     }
     coroutine.fiber_set_name(f, "Knight AI: Shield Bash (B)")
-    k.current_action = "Shield Bash Dash! (Priority B)"
+    k.current_action = fixed_text_make("Shield Bash Dash! (Priority B)")
     k.action_color = rl.ORANGE
     k.stamina -= 30.0
     target_pos := g_world.player.pos
@@ -183,7 +204,7 @@ knight_action_shield_bash :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
 
 knight_action_patrol_rest :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
     coroutine.fiber_set_name(f, "Knight AI: Tactical Patrol & Rest (C)")
-    k.current_action = "Tactical Patrol & Rest (Fallback C)"
+    k.current_action = fixed_text_make("Tactical Patrol & Rest (Fallback C)")
     k.action_color = rl.SKYBLUE
     k.stamina = min(100.0, k.stamina + 20.0)
     tween_vec2(f, &k.pos, k.pos, k.home_pos, 0.8, ease_in_out_quad)
@@ -242,11 +263,15 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     q.terminal_prog = 0.0
     q.drones_defeated = 0
     q.keycard_found = false
-    q.status_text = "Quest Running: 3 Parallel Objectives (rush)..."
+    q.status_text = fixed_text_make("Quest Running: 3 Parallel Objectives (rush)...")
     q.status_color = rl.YELLOW
     coroutine.fiber_set_name(f, "Quest Director (Active rush)")
 
-    coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{"Outpost Quest Started: Hack, Slay, or Retrieve!", rl.YELLOW})
+    coroutine.fiber_defer(f, proc(q: ^Outpost_Quest) {
+        q.is_active = false
+    }, q)
+
+    coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make("Outpost Quest Started: Hack, Slay, or Retrieve!"), rl.YELLOW})
 
     winner := coroutine.rush_with(f, q,
         quest_obj_hack_terminal,
@@ -257,22 +282,22 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     names := [?]string{"Terminal Hacked!", "Sentries Destroyed!", "Keycard Retrieved!"}
     if winner >= 0 && winner < 3 {
         q.winner_name = names[winner]
-        q.status_text = fmt.tprintf("PRIMARY GOAL: %s! Secondary tasks active in background...", q.winner_name)
+        q.status_text = fixed_text_make(fmt.tprintf("PRIMARY GOAL: %s! Secondary tasks active in background...", q.winner_name))
         q.status_color = rl.GREEN
         coroutine.fiber_set_name(f, "Quest Director (rush background window)")
-        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fmt.tprintf("PRIMARY GOAL MET: %s", q.winner_name), rl.GREEN})
+        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make(fmt.tprintf("PRIMARY GOAL MET: %s", q.winner_name)), rl.GREEN})
 
         coroutine.wait(f, 4.0)
 
-        q.status_text = fmt.tprintf("QUEST CONCLUDED: %s (Bonus window finished)", q.winner_name)
+        q.status_text = fixed_text_make(fmt.tprintf("QUEST CONCLUDED: %s (Bonus window finished)", q.winner_name))
         coroutine.fiber_set_name(f, "Quest Director: Completed")
     } else {
-        q.status_text = "QUEST FAILED"
+        q.status_text = fixed_text_make("QUEST FAILED")
         q.status_color = rl.RED
         coroutine.fiber_set_name(f, "Quest Director: Failed")
     }
 
-    q.is_active = false
+    coroutine.fiber_defer_run_top(f)
     q.completed = true
 }
 
@@ -294,6 +319,12 @@ sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
     coroutine.fiber_set_name(f, "Sentinel: Phase 2 (Shield & Minion)")
     s.color = rl.SKYBLUE
+
+    coroutine.fiber_defer(f, proc(s: ^Void_Sentinel) {
+        s.shield_alpha = 0.0
+        g_world.minion_active = false
+    }, s)
+
     for {
         s.shield_alpha = 0.95
         g_world.minion_active = true
@@ -301,12 +332,15 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
 
         minion_handle := coroutine.spawn(&g_world.sched, proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
             coroutine.fiber_set_name(f, "Crystal Minion: Active")
+            coroutine.fiber_defer(f, proc(_: rawptr) {
+                g_world.minion_active = false
+            }, nil)
             for i := 0; i < 4; i += 1 {
                 coroutine.ticker_wait(f, 0.5)
                 g_world.minion_pos.x += (i % 2 == 0 ? 30.0 : -30.0)
             }
-            g_world.minion_active = false
-        }, s, name = "Crystal Minion Task")
+            coroutine.fiber_defer_run_top(f)
+        }, s, scope = &s.phase_scope, name = "Crystal Minion Task")
 
         coroutine.fiber_join(f, minion_handle)
 
@@ -336,7 +370,7 @@ run_simulation_benchmark :: proc(w: ^World) {
 
     counter := 0
 
-    for i in 0 ..< 10 {
+    for _ in 0 ..< 10 {
         coroutine.spawn(&bench_sched, proc(f: ^coroutine.Fiber, c: ^int) {
             for _ in 0 ..< 600 {
                 coroutine.wait(f, 0.1)
@@ -386,7 +420,7 @@ world_init :: proc(w: ^World) {
         home_pos       = {240, 260},
         radius         = 24.0,
         stamina        = 100.0,
-        current_action = "Idle",
+        current_action = fixed_text_make("Idle"),
         action_color   = rl.GRAY,
     }
 
@@ -395,7 +429,7 @@ world_init :: proc(w: ^World) {
         radius       = 120.0,
         terminal_pos = {580, 240},
         keycard_pos  = {700, 240},
-        status_text  = "Press [2] or walk here to start Rush Quest",
+        status_text  = fixed_text_make("Press [2] or walk here to start Rush Quest"),
         status_color = rl.RAYWHITE,
     }
 
@@ -439,68 +473,8 @@ world_destroy :: proc(w: ^World) {
     coroutine.scheduler_destroy(&w.sched)
 }
 
-world_update :: proc(w: ^World, dt: f32) {
-    if rl.IsKeyPressed(.F3) {
-        w.is_paused = !w.is_paused
-    }
-
-    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
-        w.show_coroutine_debugger = !w.show_coroutine_debugger
-    }
-
-    if w.milestone_timer > 0.0 {
-        w.milestone_timer = max(0.0, w.milestone_timer - dt)
-    }
-
-    sim_dt: f32 = 0.0
-
-    if !w.is_paused {
-        sim_dt = dt
-        w.step_flash_timer = 0.0
-    } else {
-        if w.step_flash_timer > 0.0 {
-            w.step_flash_timer = max(0.0, w.step_flash_timer - dt)
-        }
-
-        if rl.IsKeyPressed(.F4) {
-            sim_dt = 0.016
-            w.step_count += 1
-            w.last_step_dt = sim_dt
-            w.step_flash_timer = 0.4
-        } else if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
-            sim_dt = 0.160
-            w.step_count += 10
-            w.last_step_dt = sim_dt
-            w.step_flash_timer = 0.5
-        } else if rl.IsKeyDown(.F4) {
-            w.hold_step_timer += dt
-            if w.hold_step_timer >= 0.066 {
-                w.hold_step_timer = 0.0
-                sim_dt = 0.016
-                w.step_count += 1
-                w.last_step_dt = sim_dt
-                w.step_flash_timer = 0.2
-            }
-        } else {
-            w.hold_step_timer = 0.0
-        }
-    }
-
-    if rl.IsKeyPressed(.TWO)   do w.latched_quest = true
-    if rl.IsKeyPressed(.THREE) do w.latched_phase = true
-    if rl.IsKeyPressed(.T)     do w.latched_bench = true
-    if rl.IsKeyPressed(.E)     do w.latched_interact = true
-
-    if sim_dt <= 0.0 {
-        coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
-        coroutine.scheduler_run(&w.sched)
-        return
-    }
-
+world_sim_step :: proc(w: ^World, sim_dt: f32, real_dt: f32) {
     w.global_time += sim_dt
-
-    coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
-    coroutine.scheduler_step(&w.sched, sim_dt)
 
     // --- Player Movement ---
     move_dir: rl.Vector2
@@ -514,14 +488,16 @@ world_update :: proc(w: ^World, dt: f32) {
         w.player.pos += move_dir * w.player.speed * sim_dt
     }
 
-    do_quest := w.latched_quest || rl.IsKeyPressed(.TWO)
-    do_phase := w.latched_phase || rl.IsKeyPressed(.THREE)
-    do_bench := w.latched_bench || rl.IsKeyPressed(.T)
-    interact := w.latched_interact || rl.IsKeyPressed(.E)
+    do_quest := w.latched_quest
+    do_phase := w.latched_phase
+    do_bench := w.latched_bench
+    interact := w.latched_interact
+    do_stun := w.latched_stun
     w.latched_quest = false
     w.latched_phase = false
     w.latched_bench = false
     w.latched_interact = false
+    w.latched_stun = false
 
     // --- Zone 2 Trigger (Rush Quest) ---
     dist_quest := linalg.length(w.player.pos - w.quest.pos)
@@ -548,17 +524,95 @@ world_update :: proc(w: ^World, dt: f32) {
     }
 
     // --- Scope Interrupt Trigger (Press [X]): Cancels Knight AI by Scope ---
-    if rl.IsKeyPressed(.X) {
+    if do_stun {
         cancelled := coroutine.scope_cancel(&w.sched, &w.knight.scope)
-        if sync.semaphore_available_permits(&w.combat_sem) < w.combat_sem.max_permits {
-            sync.semaphore_release(&w.sched, &w.combat_sem, w.combat_sem.max_permits - sync.semaphore_available_permits(&w.combat_sem))
-        }
-        w.knight.current_action = fmt.tprintf("STUNNED via Scope Cancellation (Cancelled %d)", cancelled)
+        w.knight.current_action = fixed_text_make(fmt.tprintf("STUNNED via Scope Cancellation (Cancelled %d)", cancelled))
         w.knight.action_color = rl.GOLD
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
             coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, name = "Knight AI (fallback)")
         }, &w.knight)
+    }
+
+    if real_dt > 0.0 {
+        coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, real_dt)
+    }
+    coroutine.scheduler_step(&w.sched, sim_dt)
+}
+
+world_update :: proc(w: ^World, dt: f32) {
+    if rl.IsKeyPressed(.F3) {
+        w.is_paused = !w.is_paused
+    }
+
+    if rl.IsKeyPressed(.F1) || rl.IsKeyPressed(.TAB) {
+        w.show_coroutine_debugger = !w.show_coroutine_debugger
+    }
+
+    if w.milestone_timer > 0.0 {
+        w.milestone_timer = max(0.0, w.milestone_timer - dt)
+    }
+
+    if rl.IsKeyPressed(.TWO)   do w.latched_quest = true
+    if rl.IsKeyPressed(.THREE) do w.latched_phase = true
+    if rl.IsKeyPressed(.T)     do w.latched_bench = true
+    if rl.IsKeyPressed(.E)     do w.latched_interact = true
+    if rl.IsKeyPressed(.X)     do w.latched_stun = true
+
+    STEP_DT :: f32(1.0 / 60.0)
+    steps_to_run := 0
+    step_dt: f32 = 0.0
+
+    if !w.is_paused {
+        steps_to_run = 1
+        step_dt = dt
+        w.step_flash_timer = 0.0
+    } else {
+        if w.step_flash_timer > 0.0 {
+            w.step_flash_timer = max(0.0, w.step_flash_timer - dt)
+        }
+
+        if rl.IsKeyPressed(.F5) || (rl.IsKeyDown(.LEFT_SHIFT) && rl.IsKeyPressed(.F4)) {
+            steps_to_run = 10
+            step_dt = STEP_DT
+            w.step_count += 10
+            w.last_step_dt = STEP_DT * 10.0
+            w.step_flash_timer = 0.5
+        } else if rl.IsKeyPressed(.F4) {
+            steps_to_run = 1
+            step_dt = STEP_DT
+            w.step_count += 1
+            w.last_step_dt = STEP_DT
+            w.step_flash_timer = 0.4
+        } else if rl.IsKeyDown(.F4) {
+            w.hold_step_timer += dt
+            if w.hold_step_timer >= 0.066 {
+                w.hold_step_timer = 0.0
+                steps_to_run = 1
+                step_dt = STEP_DT
+                w.step_count += 1
+                w.last_step_dt = STEP_DT
+                w.step_flash_timer = 0.2
+            }
+        } else {
+            w.hold_step_timer = 0.0
+        }
+    }
+
+    if steps_to_run == 0 {
+        coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, true)
+        coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
+        coroutine.scheduler_run(&w.sched)
+        return
+    }
+
+    coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, false)
+    for i in 0 ..< steps_to_run {
+        real_slice := i == 0 ? dt : f32(0.0)
+        world_sim_step(w, step_dt, real_slice)
+    }
+    if w.is_paused {
+        coroutine.clock_set_paused(&w.sched, coroutine.CLOCK_SIM, true)
     }
 }
 
@@ -581,7 +635,7 @@ world_render :: proc(w: ^World) {
     rl.DrawCircleLines(i32(w.knight.pos.x), i32(w.knight.pos.y), 70.0, {255, 0, 0, 80})
     rl.DrawCircleLines(i32(w.knight.pos.x), i32(w.knight.pos.y), 180.0, {255, 165, 0, 60})
 
-    rl.DrawText(fmt.ctprintf("Action: %s", w.knight.current_action), 45, 330, 12, w.knight.action_color)
+    rl.DrawText(fmt.ctprintf("Action: %s", fixed_text_str(&w.knight.current_action)), 45, 330, 12, w.knight.action_color)
     rl.DrawText(fmt.ctprintf("Stamina: %.0f/100 | Sem: %d Available", w.knight.stamina, sync.semaphore_available_permits(&w.combat_sem)), 45, 350, 12, rl.RAYWHITE)
 
     // --- Zone 2: Outpost Quest (rush & Event(T)) ---
@@ -602,11 +656,11 @@ world_render :: proc(w: ^World) {
     rl.DrawCircleV(w.quest.keycard_pos, 12.0, w.quest.keycard_found ? rl.DARKGREEN : rl.GOLD)
     rl.DrawText("Keycard", i32(w.quest.keycard_pos.x) - 20, i32(w.quest.keycard_pos.y) - 26, 11, rl.YELLOW)
 
-    rl.DrawText(fmt.ctprintf("Status: %s", w.quest.status_text), 435, 330, 12, w.quest.status_color)
+    rl.DrawText(fmt.ctprintf("Status: %s", fixed_text_str(&w.quest.status_text)), 435, 330, 12, w.quest.status_color)
 
     if w.milestone_timer > 0.0 {
         rl.DrawRectangle(435, 350, 410, 20, {20, 40, 60, 220})
-        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s", w.last_milestone), 440, 353, 11, rl.LIME)
+        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s", fixed_text_str(&w.last_milestone)), 440, 353, 11, rl.LIME)
     }
 
     // --- Zone 3: Void Sentinel (Fiber_Scope & fiber_join) ---
@@ -732,10 +786,11 @@ world_render :: proc(w: ^World) {
             }
 
             used, total := coroutine.fiber_calc_stack_usage(f)
-            pct := f32(used) / f32(total) * 100.0
+            pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
+            resumes := coroutine.fiber_resume_count(f)
 
             prefix := depth > 0 ? "├─ " : "▼ "
-            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB (%.1f%%)", prefix, f.handle, name, status_str, f32(used)/1024.0, pct)
+            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, pct, resumes)
             rl.DrawText(fmt.ctprintf("%s", row_text), 565 + indent, ctx.cur_y, 11, status_col)
             ctx.cur_y += 16
         }, &draw_ctx)
@@ -771,5 +826,6 @@ main :: proc() {
         dt := rl.GetFrameTime()
         world_update(&world, dt)
         world_render(&world)
+        free_all(context.temp_allocator)
     }
 }

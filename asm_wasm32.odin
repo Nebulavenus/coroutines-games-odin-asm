@@ -4,6 +4,7 @@ package coroutine
 when ODIN_ARCH == .wasm32 {
 
 foreign import asyncify "asyncify"
+foreign import wasm_sp "coro_sp"
 
 @(default_calling_convention = "c")
 foreign asyncify {
@@ -15,6 +16,14 @@ foreign asyncify {
     _raw_start_rewind :: proc(buf: rawptr) ---
     @(link_name = "stop_rewind")
     _raw_stop_rewind  :: proc() ---
+}
+
+@(default_calling_convention = "c")
+foreign wasm_sp {
+    @(link_name = "get_sp")
+    _raw_get_sp :: proc() -> u32 ---
+    @(link_name = "set_sp")
+    _raw_set_sp :: proc(sp: u32) ---
 }
 
 g_wasm_in_fiber:      bool   = false
@@ -37,6 +46,8 @@ wasm_yield_leaf :: #force_no_inline proc(buf: ^Asyncify_Buffer) {
 // Binaryen treats procs calling both start_rewind and stop_unwind as bottom-most runtime (uninstrumented).
 wasm_dispatch_fiber :: proc(f: ^Fiber) {
     g_wasm_current_fiber = f
+    host_sp := _raw_get_sp()
+    _raw_set_sp(u32(uintptr(f.wasm_shadow_sp)))
     if !f.wasm_started {
         f.wasm_started = true
         fiber_trampoline_entry()
@@ -46,8 +57,13 @@ wasm_dispatch_fiber :: proc(f: ^Fiber) {
         fiber_trampoline_entry()
     }
     _raw_stop_unwind()
+    f.wasm_shadow_sp = rawptr(uintptr(_raw_get_sp()))
+    _raw_set_sp(host_sp)
     if f.asyncify_buf.top > f.asyncify_buf.end {
         panic("WebAssembly Asyncify_Buffer overflow! Increase -define:CORO_ASYNCIFY_STORAGE_SIZE.")
+    }
+    if !fiber_check_canary(f) {
+        panic("WebAssembly fiber shadow stack overflow! Increase -define:CORO_WASM_SHADOW_STACK_SIZE.")
     }
 }
 
@@ -71,7 +87,7 @@ fiber_context_switch :: proc(from_sp: ^rawptr, to_sp: rawptr) {
 }
 
 get_sp :: proc "contextless" () -> rawptr {
-    return nil
+    return rawptr(uintptr(_raw_get_sp()))
 }
 
 }

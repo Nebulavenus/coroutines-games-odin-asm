@@ -163,6 +163,7 @@ Fiber :: struct {
 
     // --- WebAssembly Asyncify Execution State ---
     wasm_started:     bool,
+    wasm_shadow_sp:   rawptr,
     asyncify_buf:     Asyncify_Buffer,
 
     // --- Intrusive Tree Hierarchy (Structured Concurrency) ---

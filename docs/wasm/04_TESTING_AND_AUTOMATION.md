@@ -1,12 +1,12 @@
 # WebAssembly Testing & CI Automation
 
-This document catalogs the 18 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
+This document catalogs all 21 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
 
 ---
 
 ## 1. Automated Test Suite Catalog (`examples/wasm_test/main.odin`)
 
-The WebAssembly test runner validates every core engine primitive across 18 automated suites under `.\build.ps1 test-wasm`:
+The WebAssembly test runner validates every core engine primitive across 21 automated suites under `.\build.ps1 test-wasm`:
 
 | Suite # | Test Name | Target Subsystem | Key Verification |
 | :--- | :--- | :--- | :--- |
@@ -28,6 +28,9 @@ The WebAssembly test runner validates every core engine primitive across 18 auto
 | **Test 16** | **In-Frame Timeslice (`yield_now`)** | `yield_now` | Multiple fibers interleave cooperative timeslices in the same frame without advancing clock. |
 | **Test 17** | **Task Futures & Helpers** | `spawn_task`, `sync_with`, `with_signal` | Validates typed `Task(T)` future computation, shared context combinators, and signal interruption under Asyncify. |
 | **Test 18** | **Wasm-Hardened Sync & Outcomes** | `Chan_Outcome`, `chan_select_recv`, `with_mutex`, `Event(T)` | Validates `chan_recv_timeout`, event-driven select with partial close, mutex abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)`. |
+| **Test 19** | **Clock Pause, Self/Ancestor Cancel & Telemetry** | `clock_set_paused`, `fiber_abort_tree`, `fiber_calc_stack_usage` | Validates paused clock gating, self-cancel & ancestor `scope_cancel` under Asyncify, and live shadow-stack + Asyncify usage telemetry. |
+| **Test 20** | **Shadow Stack Slabs, Heterogeneous Select & Trace** | `branch_chan_recv`, wakeup relay, `scheduler_set_trace_hook` | Validates per-fiber shadow-stack slab allocation, mixed-type `race`, aborted receiver wakeup relay, and trace hooks under Wasm. |
+| **Test 21** | **Per-Fiber Shadow Stack Isolation & 0-Leak Abort** | `$__stack_pointer` swap, `get_sp`, canary | 8 concurrent fibers holding `&local_struct` & `[32]u64` across 12 interleaved yields, stack-local heterogeneous `race` out-pointers, and 500 mid-frame aborts verifying 0 bytes leaked on host `$__stack_pointer`. |
 
 ---
 
@@ -65,20 +68,20 @@ Runs the complete Boss Battle game engine for **1000 frames** (16.7 seconds @ 60
 ## 3. Running Automated Tests
 
 ```powershell
-# Run the complete 18-suite Wasm test runner:
+# Run the complete 21-suite Wasm test runner:
 .\build.ps1 test-wasm
 
-# Run the 1000-frame headless game simulation test:
+# Run the 1000-frame interactive headless game simulation test:
 .\build.ps1 test-web-game
 
-# Verify native unit tests (197 tests: 146 core + 51 sync):
+# Verify native unit tests (206 tests: 153 core + 53 sync):
 .\build.ps1 test
 ```
 
 ### Expected Output for `test-wasm`:
 ```text
 Running WebAssembly test suite via Node.js...
-Post-processing with Binaryen Asyncify...
+Post-processing with Binaryen Asyncify + per-fiber shadow stacks...
 =================================================================================
    WEBASSEMBLY (js_wasm32) COMPLETE COROUTINE PRIMITIVES TEST SUITE             
 =================================================================================
@@ -101,8 +104,11 @@ Post-processing with Binaryen Asyncify...
   [Test 16] In-Frame Timeslice: yield_now() Same-Tick Interleave... OK
   [Test 17] Task Futures & Combinator Helpers... OK
   [Test 18] Wasm-Hardened Outcomes, Select, Mutex Abort & Large Event... OK
+  [Test 19] Clock Pause, Self/Ancestor Cancel & Asyncify Stack Usage... OK
+  [Test 20] Wasm Shadow Stack Slabs, Heterogeneous Select/Relay & Trace... OK
+  [Test 21] Per-Fiber Shadow Stack (&local Across Yields & 0-Leak Abort)... OK
 
 =================================================================================
-ALL 18 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
+ALL 21 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
 =================================================================================
 ```
