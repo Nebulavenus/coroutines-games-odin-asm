@@ -8,7 +8,7 @@ import coroutine "../.."
 import sync "../../sync"
 
 // ============================================================================
-// Performance Benchmark Suite (6 Standard Metrics)
+// Performance Benchmark Suite (7 Standard Metrics)
 // ============================================================================
 
 main :: proc() {
@@ -23,10 +23,11 @@ main :: proc() {
     bench_channel_throughput()
     bench_structured_tree_churn()
     bench_headless_fast_forward()
+    bench_event_driven_jump()
 
     fmt.println()
     fmt.println("================================================================================")
-    fmt.println("ALL 6 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.")
+    fmt.println("ALL 7 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.")
     fmt.println("================================================================================")
 }
 
@@ -139,7 +140,7 @@ bench_timer_min_heap :: proc() {
         }, Timer_Bench_Ctx{dur = sleep_dur, count = &woken_count})
     }
 
-    for woken_count < TIMER_COUNT && len(sched.ready_queue) + len(sched.clocks[coroutine.CLOCK_SIM].timer_heap) > 0 {
+    for woken_count < TIMER_COUNT && coroutine.scheduler_has_active(&sched) {
         coroutine.scheduler_step(&sched, 0.05)
     }
     elapsed_secs := time.duration_seconds(time.since(t0))
@@ -257,4 +258,33 @@ bench_headless_fast_forward :: proc() {
     speedup := sim_time / elapsed_secs
 
     fmt.printf("[BENCH 6] Headless Sim Fast-Forward : %.0fx faster than real-time (60s in %.1fms) [PASS]\n", speedup, elapsed_secs * 1000.0)
+}
+
+bench_event_driven_jump :: proc() {
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    events := 0
+    for _ in 0 ..< 50 {
+        coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cnt: ^int) {
+            for _ in 0 ..< 240 {
+                coroutine.wait(f, 0.25)
+                cnt^ += 1
+            }
+        }, &events)
+    }
+
+    t0 := time.now()
+    coroutine.scheduler_run(&sched)
+    for coroutine.scheduler_has_active(&sched) {
+        next_dt, ok := coroutine.scheduler_next_wake_time(&sched)
+        if !ok do break
+        coroutine.scheduler_step(&sched, max(f32(next_dt), f32(0.0001)))
+    }
+    sim_time := coroutine.scheduler_time(&sched)
+    elapsed_secs := time.duration_seconds(time.since(t0))
+    speedup := sim_time / elapsed_secs
+
+    fmt.printf("[BENCH 7] Event-Driven Wake Jump    : %.0fx faster than real-time (%.0fs / %d events in %.2fms) [PASS]\n", speedup, sim_time, events, elapsed_secs * 1000.0)
 }

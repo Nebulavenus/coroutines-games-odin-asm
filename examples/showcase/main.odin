@@ -181,8 +181,9 @@ Research_Result :: struct {
 }
 
 Research_Job :: struct {
-    future:     coroutine.Async_Future(Research_Result),
-    complexity: int,
+    future:       coroutine.Async_Future(Research_Result),
+    telemetry_ch: ^sync.Thread_Channel(Fixed_Text),
+    complexity:   int,
 }
 
 Lab_Station :: struct {
@@ -197,18 +198,19 @@ Lab_Station :: struct {
     scope:          coroutine.Fiber_Scope,
 }
 
-// --- Station 7: The Telemetry Feed (Channel(T) & Multi-Channel Select) ---
+// --- Station 7: The Telemetry Feed (Channel(T), Thread_Channel(T) & Heterogeneous race) ---
 MAX_RECENT_LOGS :: 8
 
 Channel_Station :: struct {
-    pos:           rl.Vector2,
-    user_channel:  sync.Channel(Fixed_Text),
-    sys_channel:   sync.Channel(Fixed_Text),
-    recent_logs:   [MAX_RECENT_LOGS]Fixed_Text,
-    log_count:     int,
-    log_head:      int,
-    items_sent:    int,
-    scope:         coroutine.Fiber_Scope,
+    pos:            rl.Vector2,
+    user_channel:   sync.Channel(Fixed_Text),
+    sys_channel:    sync.Channel(Fixed_Text),
+    worker_channel: sync.Thread_Channel(Fixed_Text),
+    recent_logs:    [MAX_RECENT_LOGS]Fixed_Text,
+    log_count:      int,
+    log_head:       int,
+    items_sent:     int,
+    scope:          coroutine.Fiber_Scope,
 }
 
 // --- Station 8: Gate Construction Rendezvous (Task(int) + branch_task sync) ---
@@ -524,11 +526,19 @@ research_worker_thread :: proc(data: rawptr) {
     job := cast(^Research_Job)data
     start_t := time.now()
 
-    for _ in 0 ..< 20 {
+    for step in 1 ..= 20 {
         if coroutine.async_is_cancelled(&job.future) {
+            if job.telemetry_ch != nil {
+                sync.thread_chan_try_send(job.telemetry_ch, fixed_text_make("Worker cancelled early"))
+            }
             return
         }
         time.sleep(50 * time.Millisecond)
+        if job.telemetry_ch != nil && (step == 5 || step == 10 || step == 15 || step == 20) {
+            buf: [64]u8
+            msg := fmt.bprintf(buf[:], "OS Worker %d%%", step * 5)
+            sync.thread_chan_try_send(job.telemetry_ch, fixed_text_make(msg))
+        }
     }
 
     res := Research_Result{
@@ -563,6 +573,7 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     showcase_emit_event(f, &g_world.event_hub, "Async Job Dispatched", "OS worker thread raced via Async_Future", rl.YELLOW)
 
     coroutine.async_init(&s.job.future)
+    s.job.telemetry_ch = &g_world.station_channel.worker_channel
     s.job.complexity = 10
 
     s.worker_thread = thread.create_and_start_with_data(&s.job, research_worker_thread)
@@ -616,16 +627,25 @@ channel_consumer_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
     for {
         user_msg: Fixed_Text
         sys_msg: Fixed_Text
+        worker_msg: Fixed_Text
         ready_idx := coroutine.race(f,
             sync.branch_chan_recv(&s.user_channel, &user_msg),
             sync.branch_chan_recv(&s.sys_channel, &sys_msg),
+            sync.branch_thread_chan_recv(&s.worker_channel, &worker_msg),
         )
         if ready_idx < 0 do break
 
-        msg := ready_idx == 0 ? user_msg : sys_msg
+        msg := user_msg
+        tag_prefix := "[USER]"
+        if ready_idx == 1 {
+            msg = sys_msg
+            tag_prefix = "[SYS]"
+        } else if ready_idx == 2 {
+            msg = worker_msg
+            tag_prefix = "[THR]"
+        }
         if msg.len == 0 do break
 
-        tag_prefix := ready_idx == 0 ? "[USER]" : "[SYS]"
         formatted := fixed_text_make(fmt.tprintf("%s %s", tag_prefix, fixed_text_str(&msg)))
 
         idx := (s.log_head + s.log_count) % MAX_RECENT_LOGS
@@ -801,6 +821,7 @@ showcase_init :: proc(w: ^Showcase_World) {
     w.station_channel.pos = {1060, 160}
     sync.chan_init(&w.station_channel.user_channel, capacity = 10)
     sync.chan_init(&w.station_channel.sys_channel, capacity = 10)
+    sync.thread_chan_init(&w.station_channel.worker_channel, capacity = 16)
     coroutine.spawn(&w.sched, channel_consumer_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "Multi-Channel Select Consumer")
     coroutine.spawn(&w.sched, system_heartbeat_fiber, &w.station_channel, scope = &w.station_channel.scope, name = "System Heartbeat Producer")
 
@@ -859,6 +880,7 @@ showcase_destroy :: proc(w: ^Showcase_World) {
     sync.chan_destroy(&w.station_forge.loot_ch)
     sync.chan_destroy(&w.station_channel.user_channel)
     sync.chan_destroy(&w.station_channel.sys_channel)
+    sync.thread_chan_destroy(&w.station_channel.worker_channel)
     coroutine.scheduler_destroy(&w.sched)
 }
 
@@ -1187,7 +1209,7 @@ showcase_render :: proc(w: ^Showcase_World) {
     for i in 0 ..< w.station_channel.log_count {
         msg_slot := &w.station_channel.recent_logs[(w.station_channel.log_head + i) % MAX_RECENT_LOGS]
         msg := fixed_text_str(msg_slot)
-        color := strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY
+        color := strings.has_prefix(msg, "[THR]") ? rl.LIME : (strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY)
         line := fmt.tprintf("> %s", msg)
         if len(line) > 44 {
             line = fmt.tprintf("%s..", line[:42])
@@ -1291,7 +1313,6 @@ showcase_render :: proc(w: ^Showcase_World) {
             row_x := ctx.panel_x + 12 + indent
             name := f.debug_name != "" ? f.debug_name : "Fiber"
             cid := f.clock_id >= 0 && int(f.clock_id) < coroutine.MAX_CLOCKS ? f.clock_id : coroutine.CLOCK_SIM
-            clk := &f.sched.clocks[cid]
             clock_tag := cid == coroutine.CLOCK_SIM ? "" : (cid == coroutine.CLOCK_REAL ? " [REAL]" : fmt.tprintf(" [C%d]", cid))
 
             status_str := ""
@@ -1304,11 +1325,12 @@ showcase_render :: proc(w: ^Showcase_World) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - clk.time)
+                left := max(0.0, f.wake_time - coroutine.current_time(f))
                 status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
                 status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
             case .Sleeping_Steps:
-                left := f.wake_step > clk.steps ? f.wake_step - clk.steps : 0
+                cur_s := coroutine.current_steps(f)
+                left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
                 status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = rl.SKYBLUE
             case .Suspended_Join:

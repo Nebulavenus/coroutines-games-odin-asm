@@ -1172,11 +1172,11 @@ game_render :: proc(g: ^Game) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - f.sched.clocks[cid].time)
+                left := max(0.0, f.wake_time - coroutine.current_time(f))
                 status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
                 status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : (cid == CLOCK_PLAYER ? rl.LIME : rl.SKYBLUE)
             case .Sleeping_Steps:
-                cur_s := f.sched.clocks[cid].steps
+                cur_s := coroutine.current_steps(f)
                 left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
                 status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = cid == CLOCK_PLAYER ? rl.LIME : rl.SKYBLUE

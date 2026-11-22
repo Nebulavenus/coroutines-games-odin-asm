@@ -160,39 +160,127 @@ main :: proc() {
 	assert(trace_spawns == 1, "Trace hook must fire in amalgamated dist")
 
 	fut: coroutine.Async_Future(int)
+	fut_cancel: coroutine.Async_Future(int)
 	coroutine.async_init(&fut)
+	coroutine.async_init(&fut_cancel)
 	fut_val := 0
+	child_task_val := 0
+	child_aborted := 0
+	scoped_from_fiber_ran := false
+	m: sync.Fiber_Mutex
+	sync.mutex_init(&m)
+	defer sync.mutex_destroy(&m)
+	sem: sync.Fiber_Semaphore
+	sync.semaphore_init(&sem, 1, 1)
+	defer sync.semaphore_destroy(&sem)
+	fiber_scope: coroutine.Fiber_Scope
+	defer coroutine.scope_destroy(&sched, &fiber_scope)
+
 	Fut_Ctx :: struct {
-		fut: ^coroutine.Async_Future(int),
-		out: ^int,
+		fut:        ^coroutine.Async_Future(int),
+		fut_cancel: ^coroutine.Async_Future(int),
+		out:        ^int,
+		task_out:   ^int,
+		aborted:    ^int,
+		scope:      ^coroutine.Fiber_Scope,
+		scoped_ran: ^bool,
+		m:          ^sync.Fiber_Mutex,
+		sem:        ^sync.Fiber_Semaphore,
+		m_expired:  bool,
+		s_expired:  bool,
 	}
-	f_ctx := Fut_Ctx{fut = &fut, out = &fut_val}
+	f_ctx := Fut_Ctx{
+		fut        = &fut,
+		fut_cancel = &fut_cancel,
+		out        = &fut_val,
+		task_out   = &child_task_val,
+		aborted    = &child_aborted,
+		scope      = &fiber_scope,
+		scoped_ran = &scoped_from_fiber_ran,
+		m          = &m,
+		sem        = &sem,
+		m_expired  = true,
+		s_expired  = true,
+	}
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Fut_Ctx) {
+		coroutine.fiber_defer(f, proc() {})
 		v, ok := coroutine.await_async(f, c.fut)
 		if ok do c.out^ = v
+
+		dummy := 0
+		w := coroutine.race(f,
+			coroutine.branch_async(c.fut_cancel, &dummy),
+			coroutine.branch_wait(0.02),
+		)
+		assert(w == 1 && coroutine.async_is_cancelled(c.fut_cancel), "Async_Future cancel must propagate in dist")
+
+		local_tk: coroutine.Task(int)
+		coroutine.spawn_task(f, &local_tk, proc(child: ^coroutine.Fiber) -> int {
+			coroutine.yield(child)
+			return 222
+		})
+		tv, tok := coroutine.task_await(f, &local_tk)
+		if tok do c.task_out^ = tv
+
+		coroutine.spawn(f, proc(child: ^coroutine.Fiber, flag: ^bool) {
+			flag^ = true
+		}, c.scoped_ran, c.scope)
+
+		assert(sync.mutex_try_lock(f, c.m), "Hold mutex in dist")
+		assert(sync.semaphore_try_acquire(c.sem), "Hold sem in dist")
+		c.m_expired = sync.mutex_lock_timeout(f, c.m, 0.02)
+		c.s_expired = sync.semaphore_acquire_timeout(f, c.sem, 0.02)
+		sync.mutex_unlock(c.m)
+		sync.semaphore_release(c.sem)
 	}, &f_ctx)
+
+	h_abort := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Fut_Ctx) {
+		local_tk: coroutine.Task(int)
+		coroutine.spawn_task(f, &local_tk, proc(child: ^coroutine.Fiber, c: ^Fut_Ctx) -> int {
+			coroutine.fiber_defer(child, proc(c: ^Fut_Ctx) {
+				c.aborted^ += 1
+			}, c)
+			coroutine.wait(child, 5.0)
+			return 0
+		}, c)
+		_, _ = coroutine.task_await(f, &local_tk)
+	}, &f_ctx)
+
 	coroutine.scheduler_step(&sched, 0.016)
+	coroutine.fiber_cancel(&sched, h_abort)
+	assert(child_aborted == 1, "Child-scoped Task(int) must abort when parent cancels in dist")
+
 	coroutine.async_complete(&fut, 777)
-	coroutine.scheduler_step(&sched, 0.016)
+	for _ in 0 ..< 10 {
+		coroutine.scheduler_step(&sched, 0.016)
+	}
 	assert(fut_val == 777, "Async_Future(T) must deliver typed value in dist")
+	assert(child_task_val == 222, "Child-scoped stack-local Task(int) must complete in dist")
+	assert(scoped_from_fiber_ran, "spawn(f, ..., scope) must run in dist")
+	assert(!f_ctx.m_expired && !f_ctx.s_expired, "mutex/sem timeouts must expire cleanly in dist")
 
 	tch: sync.Thread_Channel(int)
 	sync.thread_chan_init(&tch, 4)
 	defer sync.thread_chan_destroy(&tch)
 	tch_val := 0
 	Tch_Ctx :: struct {
-		ch:  ^sync.Thread_Channel(int),
-		out: ^int,
+		ch:     ^sync.Thread_Channel(int),
+		out:    ^int,
+		winner: int,
 	}
-	tc_ctx := Tch_Ctx{ch = &tch, out = &tch_val}
+	tc_ctx := Tch_Ctx{ch = &tch, out = &tch_val, winner = -1}
 	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Tch_Ctx) {
-		v, ok := sync.thread_chan_recv(f, c.ch)
-		if ok do c.out^ = v
+		local_v := 0
+		c.winner = coroutine.race(f,
+			sync.branch_thread_chan_recv(c.ch, &local_v),
+			coroutine.branch_wait(1.0),
+		)
+		c.out^ = local_v
 	}, &tc_ctx)
 	coroutine.scheduler_step(&sched, 0.016)
 	assert(sync.thread_chan_try_send(&tch, 888), "thread_chan_try_send must succeed")
 	coroutine.scheduler_step(&sched, 0.016)
-	assert(tch_val == 888, "Thread_Channel(T) must wake fiber and deliver value in dist")
+	assert(tc_ctx.winner == 0 && tch_val == 888, "branch_thread_chan_recv must wake fiber and deliver value in dist")
 
 	fmt.printf("[dist_test] SUCCESS: Amalgamated dist/coroutine.odin + dist/sync/sync.odin verified! (received %d, scoped: %t, task: %d, sync: %t, hetero: %s, async: %d, tchan: %d)\n", received_val, scoped_ran, task_res, sync_a && sync_b, h_ctx.got_str, fut_val, tch_val)
 }

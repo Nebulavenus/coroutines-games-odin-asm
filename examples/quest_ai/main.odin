@@ -272,7 +272,7 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         q.is_active = false
     }, q)
 
-    coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make("Outpost Quest Started: Hack, Slay, or Retrieve!"), rl.YELLOW})
+    coroutine.event_emit(f, &g_world.quest_event, Quest_Milestone{fixed_text_make("Outpost Quest Started: Hack, Slay, or Retrieve!"), rl.YELLOW})
 
     winner := coroutine.rush_with(f, q,
         quest_obj_hack_terminal,
@@ -286,7 +286,7 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         q.status_text = fixed_text_make(fmt.tprintf("PRIMARY: %s (bonus window...)", q.winner_name))
         q.status_color = rl.GREEN
         coroutine.fiber_set_name(f, "Quest Director (bonus window)")
-        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make(fmt.tprintf("Primary met: %s", q.winner_name)), rl.GREEN})
+        coroutine.event_emit(f, &g_world.quest_event, Quest_Milestone{fixed_text_make(fmt.tprintf("Primary met: %s", q.winner_name)), rl.GREEN})
 
         coroutine.wait(f, 4.0)
 
@@ -332,17 +332,17 @@ sentinel_phase2_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
         g_world.minion_active = true
         g_world.minion_pos = s.pos + {0, 60}
 
-        minion_handle := coroutine.spawn(&g_world.sched, proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
-            coroutine.fiber_set_name(f, "Crystal Minion: Active")
-            coroutine.fiber_defer(f, proc(_: rawptr) {
+        minion_handle := coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber) {
+            coroutine.fiber_set_name(child, "Crystal Minion: Active")
+            coroutine.fiber_defer(child, proc() {
                 g_world.minion_active = false
-            }, nil)
+            })
             for i := 0; i < 4; i += 1 {
-                coroutine.ticker_wait(f, 0.5)
+                coroutine.ticker_wait(child, 0.5)
                 g_world.minion_pos.x += (i % 2 == 0 ? 30.0 : -30.0)
             }
-            coroutine.fiber_defer_run_top(f)
-        }, s, scope = &s.phase_scope, name = "Crystal Minion Task")
+            coroutine.fiber_defer_run_top(child)
+        }, name = "Crystal Minion Task")
 
         coroutine.fiber_join(f, minion_handle)
 
@@ -766,11 +766,11 @@ world_render :: proc(w: ^World) {
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
-                left := max(0.0, f.wake_time - f.sched.clocks[cid].time)
+                left := max(0.0, f.wake_time - coroutine.current_time(f))
                 status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
                 status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
             case .Sleeping_Steps:
-                cur_s := f.sched.clocks[cid].steps
+                cur_s := coroutine.current_steps(f)
                 left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
                 status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = rl.SKYBLUE
