@@ -40,10 +40,10 @@ test_stack_local_variables_across_yields :: proc(t: ^testing.T) {
         local_c := 300
 
         res[0] = local_a + 1
-        yield_frame(f)
+        yield(f)
 
         res[1] = local_b + local_a
-        yield_frame(f)
+        yield(f)
 
         res[2] = local_a + local_b + local_c
     }, &results)
@@ -104,7 +104,7 @@ test_wait_frames :: proc(t: ^testing.T) {
     counter := 0
     spawn(&sched, proc(f: ^Fiber, c: ^int) {
         c^ += 1
-        wait_frames(f, 3)
+        wait_steps(f, 3)
         c^ += 10
     }, &counter)
 
@@ -139,11 +139,11 @@ test_structured_sync :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Sync_State) {
         s.sync_ok = sync(f,
             branch(proc(f: ^Fiber, s: ^Sync_State) {
-                wait_frames(f, 2)
+                wait_steps(f, 2)
                 s.a_done = true
             }, s, "Branch A"),
             branch(proc(f: ^Fiber, s: ^Sync_State) {
-                wait_frames(f, 4)
+                wait_steps(f, 4)
                 s.b_done = true
             }, s, "Branch B"),
         )
@@ -187,11 +187,11 @@ test_structured_race :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Race_State) {
         w := race(f,
             branch(proc(f: ^Fiber, s: ^Race_State) {
-                wait_frames(f, 5)
+                wait_steps(f, 5)
                 s.slow_completed = true
             }, s, "Slow Branch"),
             branch(proc(f: ^Fiber, s: ^Race_State) {
-                wait_frames(f, 2)
+                wait_steps(f, 2)
                 s.fast_completed = true
             }, s, "Fast Branch"),
         )
@@ -227,7 +227,7 @@ test_scope_cancellation :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, p: ^int) {
         for {
             p^ += 1
-            yield_frame(f)
+            yield(f)
         }
     }, &progress, &scope)
 
@@ -255,7 +255,7 @@ test_cleanup_proc_and_defer :: proc(t: ^testing.T) {
             ptr := (^bool)(data)
             ptr^ = true
         }, c)
-        wait_frames(f, 100)
+        wait_steps(f, 100)
     }, &cleaned_up)
 
     scheduler_step(&sched, 0.016)
@@ -299,18 +299,18 @@ test_nested_race_with_sync_branch :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Nested_State) {
         w := race(f,
             branch(proc(f: ^Fiber, s: ^Nested_State) {
-                wait_frames(f, 2)
+                wait_steps(f, 2)
                 s.timer_done = true
             }, s, "Timer Branch"),
 
             branch(proc(f: ^Fiber, s: ^Nested_State) {
                 sync(f,
                     branch(proc(f: ^Fiber, s: ^Nested_State) {
-                        wait_frames(f, 5)
+                        wait_steps(f, 5)
                         s.sync_a_done = true
                     }, s, "Sub-task A"),
                     branch(proc(f: ^Fiber, s: ^Nested_State) {
-                        wait_frames(f, 5)
+                        wait_steps(f, 5)
                         s.sync_b_done = true
                     }, s, "Sub-task B"),
                 )
@@ -348,9 +348,9 @@ test_many_concurrent_fibers :: proc(t: ^testing.T) {
     for i in 0 ..< TOTAL_FIBERS {
         spawn(&sched, proc(f: ^Fiber, c: ^int) {
             c^ += 1
-            yield_frame(f)
+            yield(f)
             c^ += 2
-            yield_frame(f)
+            yield(f)
             c^ += 3
         }, &counters[i])
     }
@@ -392,18 +392,18 @@ test_deep_nested_hierarchy_sync_race_sync :: proc(t: ^testing.T) {
             branch(proc(f: ^Fiber, s: ^Deep_State) {
                 race(f,
                     branch(proc(f: ^Fiber, s: ^Deep_State) {
-                        wait_frames(f, 2)
+                        wait_steps(f, 2)
                         s.tier3_timer_done = true
                     }, s, "Tier 3 Timer"),
 
                     branch(proc(f: ^Fiber, s: ^Deep_State) {
                         sync(f,
                             branch(proc(f: ^Fiber, s: ^Deep_State) {
-                                wait_frames(f, 10)
+                                wait_steps(f, 10)
                                 s.tier4_a_done = true
                             }, s, "Tier 4 Task A"),
                             branch(proc(f: ^Fiber, s: ^Deep_State) {
-                                wait_frames(f, 10)
+                                wait_steps(f, 10)
                                 s.tier4_b_done = true
                             }, s, "Tier 4 Task B"),
                         )
@@ -412,7 +412,7 @@ test_deep_nested_hierarchy_sync_race_sync :: proc(t: ^testing.T) {
             }, s, "Tier 2 Race"),
 
             branch(proc(f: ^Fiber, s: ^Deep_State) {
-                wait_frames(f, 3)
+                wait_steps(f, 3)
                 s.tier2_sync_done = true
             }, s, "Tier 2 Sync B"),
         )
@@ -454,11 +454,11 @@ test_sync_failure_propagation :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Sync_Fail_State) {
         s.sync_succeeded = sync(f,
             branch(proc(f: ^Fiber, s: ^Sync_Fail_State) {
-                wait_frames(f, 2)
+                wait_steps(f, 2)
                 s.branch_a_done = true
             }, s, "Branch A"),
             branch(proc(f: ^Fiber, s: ^Sync_Fail_State) {
-                yield_frame(f)
+                yield(f)
                 f.status = .Failed
                 s.branch_b_failed = true
             }, s, "Branch B"),
@@ -490,15 +490,15 @@ test_race_all_simultaneous_finish :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Race_Tie_State) {
         s.winner = race(f,
             branch(proc(f: ^Fiber, s: ^Race_Tie_State) {
-                wait_frames(f, 1)
+                wait_steps(f, 1)
                 s.executed_count += 1
             }, s, "Branch 0"),
             branch(proc(f: ^Fiber, s: ^Race_Tie_State) {
-                wait_frames(f, 1)
+                wait_steps(f, 1)
                 s.executed_count += 1
             }, s, "Branch 1"),
             branch(proc(f: ^Fiber, s: ^Race_Tie_State) {
-                wait_frames(f, 1)
+                wait_steps(f, 1)
                 s.executed_count += 1
             }, s, "Branch 2"),
         )
@@ -530,7 +530,7 @@ test_race_loser_with_children_aborts_all_descendants :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, s: ^Descendant_State) {
         race(f,
             branch(proc(f: ^Fiber, s: ^Descendant_State) {
-                yield_frame(f)
+                yield(f)
                 s.fast_done = true
             }, s, "Fast Winner"),
 
@@ -541,11 +541,11 @@ test_race_loser_with_children_aborts_all_descendants :: proc(t: ^testing.T) {
                             ptr := (^Descendant_State)(data)
                             ptr.grandchild_cleaned_up = true
                         }, s)
-                        wait_frames(f, 10)
+                        wait_steps(f, 10)
                         s.grandchild_1_done = true
                     }, s, "Grandchild 1"),
                     branch(proc(f: ^Fiber, s: ^Descendant_State) {
-                        wait_frames(f, 10)
+                        wait_steps(f, 10)
                         s.grandchild_2_done = true
                     }, s, "Grandchild 2"),
                 )
@@ -666,7 +666,7 @@ test_pool_multi_slab_expansion_and_reclaim :: proc(t: ^testing.T) {
 
     for _ in 0 ..< TOTAL_FIBERS {
         spawn(&sched, proc(f: ^Fiber, c: ^int) {
-            yield_frame(f)
+            yield(f)
             c^ += 1
         }, &completed)
     }
@@ -694,7 +694,7 @@ test_fiber_lifecycle_generation_reuse :: proc(t: ^testing.T) {
         for i in 0 ..< BATCH_SIZE {
             spawn(&sched, proc(f: ^Fiber, c: ^int) {
                 local_var := 42
-                yield_frame(f)
+                yield(f)
                 c^ += local_var
             }, &count)
         }
@@ -723,7 +723,7 @@ test_local_variable_isolation_many_fibers :: proc(t: ^testing.T) {
             }
 
             for _ in 0 ..< 5 {
-                yield_frame(f)
+                yield(f)
             }
 
             is_valid := true
@@ -759,7 +759,7 @@ test_10k_yield_loop :: proc(t: ^testing.T) {
     spawn(&sched, proc(f: ^Fiber, c: ^int) {
         for i in 0 ..< ITERATIONS {
             c^ = i + 1
-            yield_frame(f)
+            yield(f)
         }
     }, &loop_count)
 
@@ -782,9 +782,9 @@ test_zero_and_negative_waits :: proc(t: ^testing.T) {
         c^ += 1
         wait(f, -5.0)
         c^ += 1
-        wait_frames(f, 0)
+        wait_steps(f, 0)
         c^ += 1
-        wait_frames(f, -10)
+        wait_steps(f, -10)
         c^ += 1
     }, &completed)
 
@@ -807,8 +807,8 @@ test_fiber_temp_allocator_isolation :: proc(t: ^testing.T) {
         temp_slice := make([]int, 10, context.temp_allocator)
         for i in 0 ..< 10 do temp_slice[i] = i * 10
 
-        yield_frame(f)
-        yield_frame(f)
+        yield(f)
+        yield(f)
 
         sum := 0
         for val in temp_slice do sum += val
@@ -819,7 +819,7 @@ test_fiber_temp_allocator_isolation :: proc(t: ^testing.T) {
         temp_slice := make([]int, 5, context.temp_allocator)
         for i in 0 ..< 5 do temp_slice[i] = 100
 
-        yield_frame(f)
+        yield(f)
 
         sum := 0
         for val in temp_slice do sum += val
@@ -841,13 +841,13 @@ test_with_timeout_completion :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     State :: struct {
-        finished:  bool,
-        timed_out: bool,
+        finished: bool,
+        outcome:  Timeout_Outcome,
     }
     state := State{}
 
     spawn(&sched, proc(f: ^Fiber, s: ^State) {
-        s.timed_out = with_timeout(f, 0.5, branch(proc(f: ^Fiber, s: ^State) {
+        s.outcome = with_timeout(f, 0.5, branch(proc(f: ^Fiber, s: ^State) {
             wait(f, 0.1)
             s.finished = true
         }, s, "Quick Task"))
@@ -858,7 +858,7 @@ test_with_timeout_completion :: proc(t: ^testing.T) {
     }
 
     testing.expect_value(t, state.finished, true)
-    testing.expect_value(t, state.timed_out, false)
+    testing.expect_value(t, state.outcome, Timeout_Outcome.Completed)
 }
 
 @(test)
@@ -868,13 +868,13 @@ test_with_timeout_expired :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     State :: struct {
-        finished:  bool,
-        timed_out: bool,
+        finished: bool,
+        outcome:  Timeout_Outcome,
     }
     state := State{}
 
     spawn(&sched, proc(f: ^Fiber, s: ^State) {
-        s.timed_out = with_timeout(f, 0.1, branch(proc(f: ^Fiber, s: ^State) {
+        s.outcome = with_timeout(f, 0.1, branch(proc(f: ^Fiber, s: ^State) {
             wait(f, 2.0)
             s.finished = true
         }, s, "Slow Task"))
@@ -885,7 +885,7 @@ test_with_timeout_expired :: proc(t: ^testing.T) {
     }
 
     testing.expect_value(t, state.finished, false)
-    testing.expect_value(t, state.timed_out, true)
+    testing.expect_value(t, state.outcome, Timeout_Outcome.Timed_Out)
 }
 
 @(test)
@@ -1004,7 +1004,7 @@ test_virtual_memory_guard_pages :: proc(t: ^testing.T) {
     ran := false
     spawn(&sched, proc(f: ^Fiber, r: ^bool) {
         r^ = true
-        yield_frame(f)
+        yield(f)
     }, &ran)
 
     scheduler_step(&sched, 0.016)
@@ -1026,7 +1026,7 @@ test_spawn_by_value_primitives :: proc(t: ^testing.T) {
     out_2: f32 = 0.0
 
     spawn_fn :: proc(f: ^Fiber, p: Test_Val_Primitive) {
-        yield_frame(f)
+        yield(f)
         p.out^ = p.intensity * 2.0
     }
 
@@ -1060,7 +1060,7 @@ test_spawn_by_value_struct :: proc(t: ^testing.T) {
     res2: [2]f32
 
     spawn_struct_fn :: proc(f: ^Fiber, p: Test_Payload_Struct) {
-        yield_frame(f)
+        yield(f)
         if p.active {
             p.out^ = p.pos + {p.speed, p.speed}
         }
@@ -1097,7 +1097,7 @@ test_spawn_by_value_concurrency_no_crosstalk :: proc(t: ^testing.T) {
 
     worker :: proc(f: ^Fiber, arg: Worker_Arg) {
         for _ in 0 ..< 3 {
-            yield_frame(f)
+            yield(f)
         }
         arg.out[arg.idx] = (arg.idx + 1) * 10
     }
@@ -1129,7 +1129,7 @@ test_branch_by_value_sync :: proc(t: ^testing.T) {
     }
 
     branch_task :: proc(f: ^Fiber, arg: Branch_Val_Arg) {
-        yield_frame(f)
+        yield(f)
         arg.out^ = arg.multiplier * 10
     }
 
@@ -1164,13 +1164,13 @@ test_branch_by_value_race :: proc(t: ^testing.T) {
     }
 
     fast_task :: proc(f: ^Fiber, arg: Race_Val_Arg) {
-        yield_frame(f)
+        yield(f)
         arg.out^ = arg.val
     }
 
     slow_task :: proc(f: ^Fiber, arg: Race_Val_Arg) {
         for _ in 0 ..< 10 {
-            yield_frame(f)
+            yield(f)
         }
         arg.out^ = arg.val
     }
@@ -1207,8 +1207,8 @@ test_spawn_by_value_ephemeral_stack_safety :: proc(t: ^testing.T) {
             }
 
             spawn(sched, proc(f: ^Fiber, arg: Arg) {
-                yield_frame(f)
-                yield_frame(f)
+                yield(f)
+                yield(f)
                 arg.out_slot^ = arg.intensity
             }, Arg{ephemeral_intensity, &out[i]})
         }
@@ -1245,39 +1245,36 @@ test_with_timeout_proc_overloads :: proc(t: ^testing.T) {
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
 
-    results: [3]bool
+    results: [3]Timeout_Outcome
 
-    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
-        timed_out := with_timeout(f, 0.05, proc(f: ^Fiber) {
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]Timeout_Outcome) {
+        res[0] = with_timeout(f, 0.05, proc(f: ^Fiber) {
             wait(f, 0.5)
         })
-        res[0] = timed_out
     }, &results)
 
     speed: f32 = 100.0
-    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]Timeout_Outcome) {
         spd := f32(100.0)
-        timed_out := with_timeout(f, 0.5, proc(f: ^Fiber, s: ^f32) {
+        res[1] = with_timeout(f, 0.5, proc(f: ^Fiber, s: ^f32) {
             wait(f, 0.05)
             s^ = 200.0
         }, &spd)
-        res[1] = timed_out
     }, &results)
 
-    spawn(&sched, proc(f: ^Fiber, res: ^[3]bool) {
-        timed_out := with_timeout(f, 0.5, proc(f: ^Fiber, val: int) {
+    spawn(&sched, proc(f: ^Fiber, res: ^[3]Timeout_Outcome) {
+        res[2] = with_timeout(f, 0.5, proc(f: ^Fiber, val: int) {
             wait(f, 0.05)
         }, 42)
-        res[2] = timed_out
     }, &results)
 
     for _ in 0 ..< 10 {
         scheduler_step(&sched, 0.05)
     }
 
-    testing.expect_value(t, results[0], true)
-    testing.expect_value(t, results[1], false)
-    testing.expect_value(t, results[2], false)
+    testing.expect_value(t, results[0], Timeout_Outcome.Timed_Out)
+    testing.expect_value(t, results[1], Timeout_Outcome.Completed)
+    testing.expect_value(t, results[2], Timeout_Outcome.Completed)
 }
 
 @(test)
@@ -1326,7 +1323,7 @@ test_fiber_time_accessors :: proc(t: ^testing.T) {
     captured_frame: u64 = 0
 
     spawn(&sched, proc(f: ^Fiber) {
-        yield_frame(f)
+        yield(f)
     })
 
     State :: struct {
@@ -1336,10 +1333,10 @@ test_fiber_time_accessors :: proc(t: ^testing.T) {
     }
 
     spawn(&sched, proc(f: ^Fiber, s: State) {
-        yield_frame(f)
+        yield(f)
         s.dt^ = delta_time(f)
         s.time^ = current_time(f)
-        s.frame^ = current_frame(f)
+        s.frame^ = current_steps(f)
     }, State{&captured_dt, &captured_time, &captured_frame})
 
     scheduler_step(&sched, 0.033)
@@ -1655,7 +1652,7 @@ test_fiber_join_cancelled_target :: proc(t: ^testing.T) {
 
     target_handle := spawn(&sched, proc(f: ^Fiber) {
         for {
-            yield_frame(f)
+            yield(f)
         }
     })
 
@@ -2323,21 +2320,21 @@ test_fiber_set_cleanup_deep_hierarchy_abort :: proc(t: ^testing.T) {
     tracker := Cleanup_Tracker{}
 
     parent_h := spawn_ptr(&sched, proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
-        fiber_set_cleanup(f, proc(user_data: rawptr) {
+        fiber_defer(f, proc(user_data: rawptr) {
             t := (^Cleanup_Tracker)(user_data)
             t.parent_cleaned = true
         }, tr)
 
         sync(f,
             branch(proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
-                fiber_set_cleanup(f, proc(user_data: rawptr) {
+                fiber_defer(f, proc(user_data: rawptr) {
                     t := (^Cleanup_Tracker)(user_data)
                     t.child_cleaned = true
                 }, tr)
 
                 sync(f,
                     branch(proc(f: ^Fiber, tr: ^Cleanup_Tracker) {
-                        fiber_set_cleanup(f, proc(user_data: rawptr) {
+                        fiber_defer(f, proc(user_data: rawptr) {
                             t := (^Cleanup_Tracker)(user_data)
                             t.grandchild_cleaned = true
                         }, tr)
@@ -3076,12 +3073,12 @@ test_with_timeout_by_value_branching :: proc(t: ^testing.T) {
         to1 := with_timeout(f, 0.1, proc(f: ^Fiber) {
             wait(f, 0.02)
         }, "Fast Task")
-        testing.expect(c.t, !to1)
+        testing.expect_value(c.t, to1, Timeout_Outcome.Completed)
 
         to2 := with_timeout(f, 0.02, proc(f: ^Fiber) {
             wait(f, 0.2)
         }, "Slow Task")
-        testing.expect(c.t, to2)
+        testing.expect_value(c.t, to2, Timeout_Outcome.Timed_Out)
 
         c.completed = true
     }, &ctx)
@@ -3205,7 +3202,7 @@ test_fiber_cleanup_preserves_user_data :: proc(t: ^testing.T) {
     }, &wctx, name = "Clean Worker")
 
     if fiber := fiber_find_by_handle(&sched, worker_h); fiber != nil {
-        fiber_set_cleanup(fiber, proc(user_data: rawptr) {
+        fiber_defer(fiber, proc(user_data: rawptr) {
             ctx := (^Cleanup_Context)(user_data)
             ctx.called^ = true
             ctx.out^ = ctx.val
@@ -3711,13 +3708,13 @@ test_with_timeout_real_during_pause :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     Result :: struct {
-        timed_out: bool,
-        finished:  bool,
+        outcome:  Timeout_Outcome,
+        finished: bool,
     }
     res: Result
 
     spawn(&sched, proc(f: ^Fiber, r: ^Result) {
-        r.timed_out = with_timeout(f, 0.5, branch(proc(f: ^Fiber) {
+        r.outcome = with_timeout(f, 0.5, branch(proc(f: ^Fiber) {
             wait(f, 2.0)
         }), timeout_clock = CLOCK_REAL)
         r.finished = true
@@ -3731,7 +3728,7 @@ test_with_timeout_real_during_pause :: proc(t: ^testing.T) {
     clock_advance(&sched, CLOCK_REAL, 0.6)
     scheduler_run(&sched)
     testing.expect(t, res.finished, "with_timeout on CLOCK_REAL must fire even while CLOCK_SIM is paused")
-    testing.expect(t, res.timed_out, "with_timeout must report true (timed out)")
+    testing.expect_value(t, res.outcome, Timeout_Outcome.Timed_Out)
 }
 
 @(test)
@@ -4018,7 +4015,7 @@ test_fuzz_scheduler_invariants :: proc(t: ^testing.T) {
     event_init(&shared.ev)
 
     fuzz_worker :: proc(f: ^Fiber, s: ^Fuzz_Shared) {
-        fiber_set_cleanup(f, proc(raw: rawptr) {
+        fiber_defer(f, proc(raw: rawptr) {
             sh := cast(^Fuzz_Shared)raw
             sh.aborted += 1
         }, s)
@@ -4066,7 +4063,7 @@ test_fuzz_scheduler_invariants :: proc(t: ^testing.T) {
             }))
         }
 
-        fiber_cleanup_pop(f)
+        fiber_defer_cancel(f)
         s.completed += 1
     }
 
@@ -4150,7 +4147,7 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
     st := State{rng = 0x9988_7766_5544_3322}
 
     nested_entry :: proc(f: ^Fiber, s: ^State) {
-        fiber_set_cleanup(f, proc(raw: rawptr) {
+        fiber_defer(f, proc(raw: rawptr) {
             st_ptr := cast(^State)raw
             st_ptr.cleaned += 1
         }, s)
@@ -4159,13 +4156,13 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
         if pstats.active_fibers < 24 {
             _ = race(f,
                 branch(proc(f: ^Fiber, st_inner: ^State) {
-                    fiber_set_cleanup(f, proc(raw: rawptr) {
+                    fiber_defer(f, proc(raw: rawptr) {
                         (cast(^State)raw).cleaned += 1
                     }, st_inner)
                     wait(f, 0.05)
                 }, s),
                 branch(proc(f: ^Fiber, st_inner: ^State) {
-                    fiber_set_cleanup(f, proc(raw: rawptr) {
+                    fiber_defer(f, proc(raw: rawptr) {
                         (cast(^State)raw).cleaned += 1
                     }, st_inner)
                     wait(f, 0.02)
@@ -4345,6 +4342,10 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_combinator_with_helpers", test_combinator_with_helpers },
         { "test_branch_primitives_and_with_signal", test_branch_primitives_and_with_signal },
         { "test_task_future", test_task_future },
+        { "test_with_timeout_and_signal_task_failure", test_with_timeout_and_signal_task_failure },
+        { "test_fiber_defer_cancel_and_run_top", test_fiber_defer_cancel_and_run_top },
+        { "test_zero_polling_scope_wait_and_fiber_join", test_zero_polling_scope_wait_and_fiber_join },
+        { "test_scheduler_step_returns_has_active_and_o1_step_abort", test_scheduler_step_returns_has_active_and_o1_step_abort },
     }
     total := len(tests)
     for test, i in tests {
@@ -5744,11 +5745,11 @@ test_branch_primitives_and_with_signal :: proc(t: ^testing.T) {
 
     Signal_Test_Pkg :: struct {
         sig: ^Signal,
-        res: ^bool,
+        res: ^Signal_Outcome,
     }
 
-    interrupted1 := false
-    pkg1 := Signal_Test_Pkg{sig = &sig, res = &interrupted1}
+    outcome1: Signal_Outcome
+    pkg1 := Signal_Test_Pkg{sig = &sig, res = &outcome1}
     spawn(&sched, proc(f: ^Fiber, p: ^Signal_Test_Pkg) {
         p.res^ = with_signal(f, p.sig, proc(f: ^Fiber) {
             wait_steps(f, 10)
@@ -5764,10 +5765,10 @@ test_branch_primitives_and_with_signal :: proc(t: ^testing.T) {
         scheduler_step(&sched, 0.016)
     }
 
-    testing.expect_value(t, interrupted1, true)
+    testing.expect_value(t, outcome1, Signal_Outcome.Interrupted)
 
-    interrupted2 := true
-    pkg2 := Signal_Test_Pkg{sig = &sig, res = &interrupted2}
+    outcome2: Signal_Outcome
+    pkg2 := Signal_Test_Pkg{sig = &sig, res = &outcome2}
     spawn(&sched, proc(f: ^Fiber, p: ^Signal_Test_Pkg) {
         p.res^ = with_signal(f, p.sig, proc(f: ^Fiber) {
             wait_steps(f, 1)
@@ -5776,7 +5777,7 @@ test_branch_primitives_and_with_signal :: proc(t: ^testing.T) {
 
     scheduler_step(&sched, 0.016)
     scheduler_step(&sched, 0.016)
-    testing.expect_value(t, interrupted2, false)
+    testing.expect_value(t, outcome2, Signal_Outcome.Completed)
 }
 
 @(test)
@@ -5859,4 +5860,219 @@ test_task_future :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect(t, task2_ok)
     testing.expect_value(t, task2_res, "verse_task_result")
+}
+
+@(test)
+test_with_timeout_and_signal_task_failure :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    to_outcome := Timeout_Outcome.Completed
+    spawn(&sched, proc(f: ^Fiber, out: ^Timeout_Outcome) {
+        out^ = with_timeout(f, 5.0, proc(child: ^Fiber) {
+            fail(child)
+        })
+    }, &to_outcome)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, to_outcome, Timeout_Outcome.Failed)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+
+    sig: Signal
+    signal_init(&sig)
+    defer signal_destroy(&sig)
+
+    Sig_Box :: struct {
+        sig: ^Signal,
+        out: ^Signal_Outcome,
+    }
+    sig_outcome := Signal_Outcome.Completed
+    sbox := Sig_Box{sig = &sig, out = &sig_outcome}
+    spawn(&sched, proc(f: ^Fiber, b: ^Sig_Box) {
+        b.out^ = with_signal(f, b.sig, proc(child: ^Fiber) {
+            fail(child)
+        })
+    }, &sbox)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, sig_outcome, Signal_Outcome.Failed)
+    testing.expect_value(t, signal_waiter_count(&sig), 0)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+
+    sticky: Sticky_Signal
+    sticky_signal_init(&sticky)
+    defer sticky_signal_destroy(&sticky)
+
+    Sticky_Box :: struct {
+        sig: ^Sticky_Signal,
+        out: ^Signal_Outcome,
+    }
+    sticky_outcome := Signal_Outcome.Completed
+    stbox := Sticky_Box{sig = &sticky, out = &sticky_outcome}
+    spawn(&sched, proc(f: ^Fiber, b: ^Sticky_Box) {
+        b.out^ = with_sticky_signal(f, b.sig, proc(child: ^Fiber) {
+            fail(child)
+        })
+    }, &stbox)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, sticky_outcome, Signal_Outcome.Failed)
+
+    sticky_signal_emit(&sched, &sticky)
+    sticky_outcome = .Completed
+    spawn(&sched, proc(f: ^Fiber, b: ^Sticky_Box) {
+        b.out^ = with_sticky_signal(f, b.sig, proc(child: ^Fiber) {
+            wait(child, 1.0)
+        })
+    }, &stbox)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, sticky_outcome, Signal_Outcome.Interrupted)
+}
+
+@(test)
+test_fiber_defer_cancel_and_run_top :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Counters :: struct {
+        a: int,
+        b: int,
+        c: int,
+    }
+    cnt: Counters
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Counters) {
+        fiber_defer(f, proc(c: ^Counters) { c.a += 1 }, c)
+        fiber_defer(f, proc(c: ^Counters) { c.b += 1 }, c)
+        fiber_defer(f, proc(c: ^Counters) { c.c += 1 }, c)
+
+        fiber_defer_cancel(f)
+        fiber_defer_run_top(f)
+        yield(f)
+    }, &cnt)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, cnt.c, 0)
+    testing.expect_value(t, cnt.b, 1)
+    testing.expect_value(t, cnt.a, 0)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect_value(t, cnt.c, 0)
+    testing.expect_value(t, cnt.b, 1)
+    testing.expect_value(t, cnt.a, 1)
+}
+
+@(test)
+test_zero_polling_scope_wait_and_fiber_join :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    scope: Fiber_Scope
+    scope_done := false
+    Scope_Box :: struct {
+        scope: ^Fiber_Scope,
+        done:  ^bool,
+    }
+    sbox := Scope_Box{scope = &scope, done = &scope_done}
+
+    spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 0.05)
+    }, scope = &scope, clock = CLOCK_REAL)
+
+    spawn(&sched, proc(f: ^Fiber, b: ^Scope_Box) {
+        scope_wait(f, b.scope)
+        b.done^ = true
+    }, &sbox, clock = CLOCK_SIM)
+
+    clock_advance(&sched, CLOCK_REAL, 0.01)
+    scheduler_run(&sched)
+    testing.expect(t, !scope_done)
+    testing.expect_value(t, wait_queue_count(&scope.waiters), 1)
+
+    clock_advance(&sched, CLOCK_REAL, 0.05)
+    scheduler_run(&sched)
+    testing.expect(t, scope_done)
+    testing.expect_value(t, wait_queue_count(&scope.waiters), 0)
+
+    target := spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 0.05)
+    }, clock = CLOCK_REAL)
+
+    Join_Box :: struct {
+        target: Fiber_Handle,
+        ok:     ^bool,
+    }
+    j1_ok := false
+    j2_ok := false
+    j3_ok := false
+    jb1 := Join_Box{target = target, ok = &j1_ok}
+    jb2 := Join_Box{target = target, ok = &j2_ok}
+    jb3 := Join_Box{target = Fiber_Handle(0x1234_5678), ok = &j3_ok}
+
+    spawn(&sched, proc(f: ^Fiber, b: ^Join_Box) {
+        b.ok^ = fiber_join(f, b.target)
+    }, &jb1, clock = CLOCK_SIM)
+    j2_handle := spawn(&sched, proc(f: ^Fiber, b: ^Join_Box) {
+        b.ok^ = fiber_join(f, b.target)
+    }, &jb2, clock = CLOCK_SIM)
+    spawn(&sched, proc(f: ^Fiber, b: ^Join_Box) {
+        b.ok^ = fiber_join(f, b.target)
+    }, &jb3, clock = CLOCK_SIM)
+
+    clock_advance(&sched, CLOCK_REAL, 0.01)
+    scheduler_run(&sched)
+    testing.expect(t, !j1_ok)
+    testing.expect(t, !j3_ok)
+
+    fiber_cancel(&sched, j2_handle)
+
+    clock_advance(&sched, CLOCK_REAL, 0.05)
+    scheduler_run(&sched)
+    testing.expect(t, j1_ok)
+    testing.expect(t, !j2_ok)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_scheduler_step_returns_has_active_and_o1_step_abort :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    woken: [5]bool
+    handles: [5]Fiber_Handle
+    Step_Box :: struct {
+        flag:  ^bool,
+        steps: int,
+    }
+    boxes: [5]Step_Box
+    for i in 0 ..< 5 {
+        boxes[i] = Step_Box{flag = &woken[i], steps = 3 + i}
+        handles[i] = spawn(&sched, proc(f: ^Fiber, b: ^Step_Box) {
+            wait_steps(f, b.steps)
+            b.flag^ = true
+        }, &boxes[i])
+    }
+
+    testing.expect_value(t, scheduler_step(&sched, 0.016), true)
+    fiber_cancel(&sched, handles[0])
+    fiber_cancel(&sched, handles[2])
+    fiber_cancel(&sched, handles[4])
+
+    steps := 0
+    for scheduler_step(&sched, 0.016) {
+        steps += 1
+        if steps > 20 do break
+    }
+
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+    testing.expect(t, !woken[0])
+    testing.expect(t, woken[1])
+    testing.expect(t, !woken[2])
+    testing.expect(t, woken[3])
+    testing.expect(t, !woken[4])
 }

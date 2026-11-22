@@ -66,6 +66,7 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
                 wait_queue_remove(fiber.current_wait_queue, fiber)
                 fiber.current_wait_queue = nil
             }
+            wait_queue_clear(&fiber.join_waiters)
             if fiber.scope != nil {
                 fiber_scope_detach(fiber)
             }
@@ -264,12 +265,14 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
         for i := 0; i < len(c.step_waiters); i += 1 {
             f := c.step_waiters[i]
             if f.wake_step <= c.steps {
+                f.step_index = -1
                 if f.status == .Sleeping_Steps {
                     f.status = .Ready
                     append(&sched.ready_queue, f.handle)
                 }
             } else {
                 c.step_waiters[write_idx] = f
+                f.step_index = write_idx
                 write_idx += 1
             }
         }
@@ -311,14 +314,15 @@ scheduler_run :: proc(sched: ^Scheduler) {
     clear(&sched.ready_queue)
 }
 
-scheduler_step :: proc(sched: ^Scheduler, dt: f32, clock_id: Clock_ID = CLOCK_SIM) {
-    clock_advance(sched, clock_id, dt, 1)
-    scheduler_run(sched)
+scheduler_has_active :: #force_inline proc "contextless" (sched: ^Scheduler) -> bool {
+    if sched == nil do return false
+    return len(sched.fiber_pool.all_fibers) > len(sched.fiber_pool.free_fibers)
 }
 
-scheduler_single_step :: proc(sched: ^Scheduler, dt: f32, clock_id: Clock_ID = CLOCK_SIM) {
+scheduler_step :: proc(sched: ^Scheduler, dt: f32, clock_id: Clock_ID = CLOCK_SIM) -> (has_active: bool) {
     clock_advance(sched, clock_id, dt, 1)
     scheduler_run(sched)
+    return scheduler_has_active(sched)
 }
 
 // ============================================================================
@@ -407,6 +411,62 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
                         append(&fiber.sched.ready_queue, parent.handle)
                     }
                 }
+            } else if coord.kind == .Guard {
+                if !coord.completed {
+                    if fiber.branch_index == 0 {
+                        coord.completed = true
+                        coord.winner = fiber
+                        coord.winner_index = 0
+                        coord.has_failed = (fiber.status != .Completed)
+
+                        parent := coord.parent
+                        if parent != nil {
+                            child := parent.first_child
+                            for child != nil {
+                                next := child.next_sibling
+                                if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
+                                    fiber_abort_tree(fiber.sched, child)
+                                }
+                                child = next
+                            }
+
+                            if parent.status == .Suspended_Join {
+                                parent.status = .Ready
+                                append(&fiber.sched.ready_queue, parent.handle)
+                            }
+                        }
+                    } else if fiber.status == .Completed {
+                        coord.completed = true
+                        coord.winner = fiber
+                        coord.winner_index = fiber.branch_index
+
+                        parent := coord.parent
+                        if parent != nil {
+                            child := parent.first_child
+                            for child != nil {
+                                next := child.next_sibling
+                                if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
+                                    fiber_abort_tree(fiber.sched, child)
+                                }
+                                child = next
+                            }
+
+                            if parent.status == .Suspended_Join {
+                                parent.status = .Ready
+                                append(&fiber.sched.ready_queue, parent.handle)
+                            }
+                        }
+                    } else if coord.active_branches <= 0 {
+                        coord.completed = true
+                        coord.winner = nil
+                        coord.winner_index = -1
+                        parent := coord.parent
+                        if parent != nil && parent.status == .Suspended_Join {
+                            parent.status = .Ready
+                            append(&fiber.sched.ready_queue, parent.handle)
+                        }
+                    }
+                }
             }
         }
         fiber.join_coord = nil
@@ -441,11 +501,26 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     }
 
     if fiber.scope != nil {
+        scope := fiber.scope
         fiber_scope_detach(fiber)
+        if scope.head == nil {
+            scope_wake_waiters(scope)
+        }
     }
 
     if fiber.handle != 0 {
-        sched.fiber_pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY].status = fiber.status
+        sched.fiber_pool.handle_history[fiber_handle_history_slot(fiber.handle)] = Handle_Entry{
+            handle = fiber.handle,
+            status = fiber.status,
+        }
+    }
+
+    for {
+        waiter, popped := wait_queue_pop_front(&fiber.join_waiters)
+        if !popped do break
+        if waiter != nil {
+            fiber_wake(waiter.sched, waiter)
+        }
     }
 
     fiber_pool_recycle(&sched.fiber_pool, fiber)
@@ -472,11 +547,16 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
             clock_heap_remove(c, root.heap_index)
         }
     case .Sleeping_Steps:
-        for i in 0 ..< len(c.step_waiters) {
-            if c.step_waiters[i] == root {
-                unordered_remove(&c.step_waiters, i)
-                break
+        idx := root.step_index
+        if idx >= 0 && idx < len(c.step_waiters) && c.step_waiters[idx] == root {
+            last := len(c.step_waiters) - 1
+            if idx != last {
+                moved := c.step_waiters[last]
+                c.step_waiters[idx] = moved
+                moved.step_index = idx
             }
+            pop(&c.step_waiters)
+            root.step_index = -1
         }
     case .Suspended_Join, .Running, .Completed, .Failed, .Aborted, .Unused:
     }
@@ -550,6 +630,17 @@ fiber_scope_detach :: #force_inline proc "contextless" (fiber: ^Fiber) {
     fiber.scope = nil
 }
 
+scope_wake_waiters :: proc(scope: ^Fiber_Scope) {
+    if scope == nil do return
+    for {
+        waiter, popped := wait_queue_pop_front(&scope.waiters)
+        if !popped do break
+        if waiter != nil {
+            fiber_wake(waiter.sched, waiter)
+        }
+    }
+}
+
 scope_cancel_sched :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled_count: int) {
     if scope == nil || sched == nil do return 0
     for scope.head != nil {
@@ -561,6 +652,7 @@ scope_cancel_sched :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled
             fiber_scope_detach(fiber)
         }
     }
+    scope_wake_waiters(scope)
     return cancelled_count
 }
 
@@ -622,9 +714,6 @@ scheduler_steps :: #force_inline proc "contextless" (sched: ^Scheduler, clock_id
     if cid < 0 || cid >= MAX_CLOCKS do cid = 0
     return sched.clocks[cid].steps
 }
-
-scheduler_sim_time    :: scheduler_time
-scheduler_frame_count :: scheduler_steps
 
 fiber_suspend :: proc(f: ^Fiber) {
     if f == nil || f.sched == nil do return

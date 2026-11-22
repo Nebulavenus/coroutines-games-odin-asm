@@ -167,13 +167,13 @@ When a fiber is acquired from the pool, `fiber_synthesize_initial_stack` sets up
 
 The engine is verified across all targets via automated test runners:
 ```powershell
-# Native Windows Host (All 187 unit tests: 138 core + 49 sync)
+# Native Windows Host (All 192 unit tests: 142 core + 50 sync)
 .\build.ps1 test
 
 # Cross-Target Static Compilation Validation (All 7 targets)
 .\build.ps1 check-all
 
-# WSL2 QEMU Core Unit Test Suite (All 138 core tests on ARM64 & RISC-V 64)
+# WSL2 QEMU Core Unit Test Suite (All 142 core tests on ARM64 & RISC-V 64)
 .\build.ps1 test-arm64
 .\build.ps1 test-riscv64
 

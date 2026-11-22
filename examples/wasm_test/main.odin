@@ -86,9 +86,9 @@ test_multiple_concurrent_fibers :: proc() {
 
     worker :: proc(f: ^coroutine.Fiber, arg: ^Fiber_Arg) {
         append(arg.history, arg.id * 10 + 1)
-        coroutine.wait_frames(f, 1)
+        coroutine.wait_steps(f, 1)
         append(arg.history, arg.id * 10 + 2)
-        coroutine.wait_frames(f, 1)
+        coroutine.wait_steps(f, 1)
         append(arg.history, arg.id * 10 + 3)
     }
 
@@ -459,7 +459,7 @@ test_rapid_signal_emp_fuzzing :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
         for s.rounds_completed < 3 {
-            stunned := coroutine.with_signal(f, &s.stun_sig, proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
+            outcome := coroutine.with_signal(f, &s.stun_sig, proc(f: ^coroutine.Fiber, s: ^Fuzz_AI) {
                 coroutine.sync_with(f, s,
                     proc(child: ^coroutine.Fiber, s: ^Fuzz_AI) {
                         for {
@@ -476,7 +476,7 @@ test_rapid_signal_emp_fuzzing :: proc() {
                 )
             }, s)
 
-            if stunned {
+            if outcome == .Interrupted {
                 s.stuns_handled += 1
                 coroutine.wait(f, 0.10)
             }
@@ -711,11 +711,11 @@ test_task_futures_and_combinator_helpers :: proc() {
             },
         )
 
-        coroutine.with_signal(f, &s.sig, proc(child: ^coroutine.Fiber, s: ^Worker_State) {
+        outcome := coroutine.with_signal(f, &s.sig, proc(child: ^coroutine.Fiber, s: ^Worker_State) {
             coroutine.wait(child, 1.0)
             s.interrupted = false
         }, s)
-        s.interrupted = true
+        s.interrupted = (outcome == .Interrupted)
     }, &w_state)
 
     for frame := 1; frame <= 10; frame += 1 {

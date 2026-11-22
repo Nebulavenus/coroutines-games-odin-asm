@@ -66,7 +66,7 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t: ^coroutine.Task(int)) {
 
 ---
 
-## 3. LIFO Multi-Hook Defer Stack (`fiber_defer` & `fiber_cleanup_pop`)
+## 3. LIFO Multi-Hook Defer Stack (`fiber_defer`, `fiber_defer_cancel` & `fiber_defer_run_top`)
 
 When stackful fibers are aborted externally (via `scope_cancel`, `race` preemption, or `with_timeout`), native Odin `defer` statements inside the procedure do not run because the fiber stack is not resumed on the CPU.
 
@@ -81,7 +81,8 @@ Fiber_Cleanup :: struct {
 
 ### Key API:
 - `coroutine.fiber_defer(f, proc(user_data: ^T), user_data)`: Pushes a cleanup hook onto the fiber's LIFO stack.
-- `coroutine.fiber_cleanup_pop(f)`: Unregisters the most recent cleanup hook when a scope exits normally.
+- `coroutine.fiber_defer_cancel(f)`: Unregisters the most recent cleanup hook without executing it.
+- `coroutine.fiber_defer_run_top(f)`: Pops and executes the most recent cleanup hook immediately.
 - **Execution Invariant**: Cleanups execute in strict reverse (LIFO) order upon normal completion, failure, or external abort, guaranteeing that resources (mutex unlocks, state flags, speed multipliers) are never orphaned.
 
 ---
@@ -111,9 +112,9 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, target: coroutine.Fiber_Handle
 }, handle)
 ```
 
-- If the target fiber is already finished or invalid, `fiber_join` returns immediately in $O(1)$ time without suspending.
+- If the target fiber is already finished or invalid, `fiber_join` returns immediately in $O(1)$ time without suspending (`true` only if found in history with status `.Completed`; `false` for aborted/failed/unknown handles).
 - Self-joins (`target_handle == f.handle`) are rejected immediately returning `false`.
-- While the target fiber is alive, `fiber_join` yields cooperatively (`yield(f)`), then checks the target's terminal status via `fiber_status` (returning `true` on `.Completed`).
+- While the target fiber is alive, `fiber_join` suspends on the target fiber's intrusive `join_waiters` queue (zero polling, works across paused clocks) and wakes immediately when the target recycles.
 
 ---
 

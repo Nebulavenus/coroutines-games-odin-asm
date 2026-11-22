@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Breaking API Modernization, Zero-Polling Wait Queues & Wasm Hardening] - 2026-11-22
+
+### Changed (Breaking — Canonical API Cleanup)
+- **Explicit Outcome Enums (`types.odin`, `scheduler.odin`, `api.odin`)**:
+  - Added `Timeout_Outcome :: enum u8 { Completed, Timed_Out, Failed }` and `Signal_Outcome :: enum u8 { Completed, Interrupted, Failed }`.
+  - Changed `with_timeout` to return `Timeout_Outcome` and `with_signal` / `with_sticky_signal` to return `Signal_Outcome`.
+  - Added `Join_Kind.Guard` so task failure (`fail(f)`) inside `with_timeout` / `with_signal` / `with_sticky_signal` immediately aborts the guard watcher and returns `.Failed` instead of waiting for timeout or deadlocking.
+- **Explicit Defer Stack Operations (`api.odin`)**:
+  - Renamed `fiber_cleanup_pop` -> `fiber_defer_cancel` (unregisters top hook without executing) and added `fiber_defer_run_top` (pops and executes top hook immediately).
+- **Removed Legacy Aliases (`api.odin`, `scheduler.odin`)**:
+  - Removed duplicate aliases `wait_frames`, `yield_frame`, `current_frame`, `fiber_set_cleanup`, `fiber_set_cleanup_raw`, `fiber_set_cleanup_ptr`, `scheduler_sim_time`, `scheduler_frame_count`, and duplicate `scheduler_single_step`.
+- **`scheduler_step` & Active Query (`scheduler.odin`)**:
+  - Added `scheduler_has_active(sched)` and changed `scheduler_step` to return `has_active: bool` (enabling `for coroutine.scheduler_step(&sched, dt) {}`).
+- **Zero-Polling Intrusive Waiting (`types.odin`, `pool.odin`, `scheduler.odin`, `api.odin`, `sync/sync.odin`)**:
+  - Converted `scope_wait` (via `Fiber_Scope.waiters`), `fiber_join` (via `Fiber.join_waiters`), and `chan_select_recv` (via event-driven watcher branches) from per-tick `yield` polling to zero-polling suspension that also wakes across paused clocks.
+  - Updated `chan_select_recv` so closing a subset of channels keeps waiting on still-open channels and only returns `(-1, {}, false)` once all channels are closed and drained.
+  - Added `Fiber.step_index` for $O(1)$ `step_waiters` swap-remove on abort.
+- **Handle History & Wasm Shadow-Stack Fixes (`types.odin`, `pool.odin`, `api.odin`, `sync/sync.odin`)**:
+  - Replaced `u32(handle) % HANDLE_HISTORY_CAPACITY` (which ignored the upper 16 generation bits) with bijective `fiber_handle_history_slot` mixing index and generation; fixed `fiber_join` to return `false` for unknown/missing handles.
+  - Eliminated parent stack pointers in `sync/sync.odin` (`with_mutex`, `with_semaphore`, `chan_recv_timeout`, `chan_send_timeout`, `chan_select_recv`), using direct pointers and scoped `f.temp_arena` allocations for full `js_wasm32` shadow-stack safety.
+- **Tests, Distributions & Docs**:
+  - Expanded native unit tests from `187` to `192` (`142` core + `50` sync), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
+
 ## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
 
 ### Changed

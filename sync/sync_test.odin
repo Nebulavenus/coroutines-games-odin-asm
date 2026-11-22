@@ -72,7 +72,7 @@ test_with_mutex_and_abort_cleanup :: proc(t: ^testing.T) {
 
     h := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Ctx) {
         with_mutex(f, c.m, proc(f: ^coro.Fiber, c: ^Ctx) {
-            coro.fiber_set_cleanup(f, proc(cleaned: ^bool) {
+            coro.fiber_defer(f, proc(cleaned: ^bool) {
                 cleaned^ = true
             }, c.cleaned)
             coro.wait(f, 1.0)
@@ -577,8 +577,13 @@ test_chan_select_closed_channel :: proc(t: ^testing.T) {
     chan_close(&ch2)
 
     coro.scheduler_step(&sched, 0.01)
+    testing.expect_value(t, received_idx, -1)
+
+    chan_close(&ch1)
+
     coro.scheduler_step(&sched, 0.01)
-    testing.expect_value(t, received_idx, 1)
+    coro.scheduler_step(&sched, 0.01)
+    testing.expect_value(t, received_idx, -1)
     testing.expect(t, !received_ok)
 }
 
@@ -620,7 +625,7 @@ test_cancel_fiber_holding_semaphore_with_cleanup :: proc(t: ^testing.T) {
 
     h := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ctx: ^Sem_Cleanup_Ctx) {
         semaphore_acquire(f, ctx.sem)
-        coro.fiber_set_cleanup(f, proc(user_data: rawptr) {
+        coro.fiber_defer(f, proc(user_data: rawptr) {
             c := (^Sem_Cleanup_Ctx)(user_data)
             semaphore_release(c.sched, c.sem)
         }, ctx)
@@ -760,13 +765,13 @@ test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
     for i in 0 ..< 12 {
         handles[i] = coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Worker_Ctx) {
             semaphore_acquire(f, c.sem)
-            coro.fiber_set_cleanup(f, proc(user_data: rawptr) {
+            coro.fiber_defer(f, proc(user_data: rawptr) {
                 ctx := (^Sem_Worker_Ctx)(user_data)
                 semaphore_release(ctx.sched, ctx.sem)
             }, c)
             coro.wait(f, 0.05)
             semaphore_release(c.sched, c.sem)
-            coro.fiber_cleanup_pop(f)
+            coro.fiber_defer_cancel(f)
             c.completed^ += 1
         }, &ctx)
     }
@@ -811,13 +816,13 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
     for i in 0 ..< 10 {
         handles[i] = coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Mutex_Worker_Ctx) {
             mutex_lock(f, c.m)
-            coro.fiber_set_cleanup(f, proc(user_data: rawptr) {
+            coro.fiber_defer(f, proc(user_data: rawptr) {
                 ctx := (^Mutex_Worker_Ctx)(user_data)
                 mutex_unlock(ctx.sched, ctx.m)
             }, c)
             coro.wait(f, 0.03)
             mutex_unlock(c.sched, c.m)
-            coro.fiber_cleanup_pop(f)
+            coro.fiber_defer_cancel(f)
             c.completed^ += 1
         }, &ctx)
     }
@@ -2038,4 +2043,82 @@ test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
 
     testing.expect_value(t, timed_out_flag, true)
     testing.expect_value(t, send_ok_flag, false)
+}
+
+@(test)
+test_chan_select_recv_event_driven_and_partial_close :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    ch1: Channel(int)
+    ch2: Channel(int)
+    chan_init(&ch1, 2)
+    chan_init(&ch2, 2)
+    defer {
+        chan_destroy(&ch1)
+        chan_destroy(&ch2)
+    }
+
+    Select_Box :: struct {
+        chans:     [2]^Channel(int),
+        got_idx:   int,
+        got_val:   int,
+        got_ok:    bool,
+        done_all:  bool,
+        final_idx: int,
+        final_ok:  bool,
+    }
+    box := Select_Box{
+        chans    = {&ch1, &ch2},
+        got_idx  = -1,
+        final_ok = true,
+    }
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, b: ^Select_Box) {
+        idx, val, ok := chan_select_recv(f, b.chans[:])
+        b.got_idx = idx
+        b.got_val = val
+        b.got_ok = ok
+
+        f_idx, _, f_ok := chan_select_recv(f, b.chans[:])
+        b.final_idx = f_idx
+        b.final_ok = f_ok
+        b.done_all = true
+    }, &box, clock = coro.CLOCK_SIM)
+
+    coro.clock_advance(&sched, coro.CLOCK_REAL, 0.01)
+    coro.scheduler_run(&sched)
+    testing.expect_value(t, chan_recv_waiter_count(&ch1), 1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch2), 1)
+
+    chan_close(&ch1)
+    coro.scheduler_run(&sched)
+    testing.expect_value(t, box.got_idx, -1)
+    testing.expect_value(t, chan_recv_waiter_count(&ch2), 1)
+
+    chan_try_send(&ch2, 777)
+    coro.scheduler_run(&sched)
+    testing.expect_value(t, box.got_idx, 1)
+    testing.expect_value(t, box.got_val, 777)
+    testing.expect(t, box.got_ok)
+    testing.expect(t, !box.done_all)
+
+    chan_close(&ch2)
+    coro.scheduler_run(&sched)
+    testing.expect(t, box.done_all)
+    testing.expect_value(t, box.final_idx, -1)
+    testing.expect(t, !box.final_ok)
+
+    ch3: Channel(int)
+    chan_init(&ch3, 2)
+    defer chan_destroy(&ch3)
+    h := coro.spawn(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
+        arr := [1]^Channel(int){ch}
+        _, _, _ = chan_select_recv(f, arr[:])
+    }, &ch3)
+    coro.scheduler_run(&sched)
+    testing.expect_value(t, chan_recv_waiter_count(&ch3), 1)
+    coro.fiber_cancel(&sched, h)
+    testing.expect_value(t, chan_recv_waiter_count(&ch3), 0)
 }

@@ -1006,8 +1006,9 @@ branch_wait          :: proc(seconds: f32, name: string = "", clock: Clock_ID = 
 Runs a task until completion or aborts immediately if a signal fires or a timeout expires.
 
 ```odin
-with_signal   :: proc{with_signal_nil, with_signal_ptr, with_signal_val, with_signal_branch} // returns interrupted: bool
-with_timeout  :: proc{with_timeout_nil, with_timeout_ptr, with_timeout_val, with_timeout_branch} // returns timed_out: bool
+with_signal        :: proc{with_signal_nil, with_signal_ptr, with_signal_val, with_signal_branch}               // returns Signal_Outcome (.Completed, .Interrupted, .Failed)
+with_sticky_signal :: proc{with_sticky_signal_nil, with_sticky_signal_ptr, with_sticky_signal_val, with_sticky_signal_branch} // returns Signal_Outcome
+with_timeout       :: proc{with_timeout_nil, with_timeout_ptr, with_timeout_val, with_timeout_branch}           // returns Timeout_Outcome (.Completed, .Timed_Out, .Failed)
 ```
 
 ### K. Verse-Style Typed Task Futures (`Task(T)` & `spawn_task`)
@@ -1116,10 +1117,10 @@ elite_charge_behavior :: proc(f: ^Fiber, ctx: ^Enemy_Ctx) {
 
     wait(f, 1.0) // Dash duration (if aborted by stun/death here, fiber_defer executes!)
 
-    // 3. Normal completion: restore speed and pop cleanup hook
+    // 3. Normal completion: restore speed and cancel cleanup hook
     enemy.speed = orig_speed
     ctx.game.active_charges -= 1
-    coroutine.fiber_cleanup_pop(f)
+    coroutine.fiber_defer_cancel(f)
 }
 ```
 

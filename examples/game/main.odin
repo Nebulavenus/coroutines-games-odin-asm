@@ -201,7 +201,7 @@ camera_shake_coroutine :: proc(f: ^coroutine.Fiber, intensity: f32) {
     elapsed: f32 = 0.0
 
     for elapsed < dur {
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
         elapsed += coroutine.delta_time(f)
         decay := clamp(1.0 - (elapsed / dur), 0.0, 1.0)
         curr := intensity * decay
@@ -231,7 +231,7 @@ floating_text_coroutine :: proc(f: ^coroutine.Fiber, ft: Floating_Text) {
     elapsed: f32 = 0.0
 
     for elapsed < dur {
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
         elapsed += coroutine.delta_time(f)
         t := clamp(elapsed / dur, 0.0, 1.0)
         eased_t := ease_out_back(t)
@@ -272,7 +272,7 @@ player_dash_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 
     p.speed = orig_speed
     p.is_dashing = false
-    coroutine.fiber_cleanup_pop(f)
+    coroutine.fiber_defer_cancel(f)
 
     coroutine.wait(f, 0.8)
     p.can_dash = true
@@ -349,11 +349,11 @@ boss_enraged_laser_sweep :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.hp > 700.0 && b.alive && b.phase == 1 {
-        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+        outcome := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
             coroutine.sync_with(f, b, boss_spiral_shoot_subloop, boss_targeted_burst_subloop)
         }, b, "Phase 1 Attacks")
 
-        if stunned && b.hp > 700.0 && b.alive && b.phase == 1 {
+        if outcome == .Interrupted && b.hp > 700.0 && b.alive && b.phase == 1 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.5)
@@ -364,11 +364,11 @@ boss_attack_loop_phase1 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase2 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.hp > 350.0 && b.alive && b.phase == 2 {
-        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+        outcome := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
             coroutine.sync_with(f, b, boss_enraged_laser_sweep, boss_targeted_burst_subloop)
         }, b, "Phase 2 Attacks")
 
-        if stunned && b.hp > 350.0 && b.alive && b.phase == 2 {
+        if outcome == .Interrupted && b.hp > 350.0 && b.alive && b.phase == 2 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.5)
@@ -379,11 +379,11 @@ boss_attack_loop_phase2 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 boss_attack_loop_phase3 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for b.alive && b.phase == 3 {
-        stunned := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
+        outcome := coroutine.with_signal(f, &b.stun_signal, proc(f: ^coroutine.Fiber, b: ^Boss) {
             coroutine.sync_with(f, b, boss_spiral_shoot_subloop, boss_enraged_laser_sweep, boss_targeted_burst_subloop)
         }, b, "Phase 3 Attacks")
 
-        if stunned && b.alive && b.phase == 3 {
+        if outcome == .Interrupted && b.alive && b.phase == 3 {
             spawn_floating_text("BOSS STUNNED!", b.pos, rl.YELLOW)
             b.color = rl.DARKGRAY
             coroutine.wait(f, 1.0)
@@ -637,11 +637,7 @@ game_update :: proc(g: ^Game, dt: f32) {
     }
 
     coroutine.clock_advance(&g.sched, coroutine.CLOCK_REAL, dt)
-    if g.is_paused {
-        coroutine.scheduler_single_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
-    } else {
-        coroutine.scheduler_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
-    }
+    coroutine.scheduler_step(&g.sched, world_sim_dt, coroutine.CLOCK_SIM)
 
     if g.game_over || g.victory {
         if rl.IsKeyPressed(.R) || rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.SPACE) {
@@ -1041,6 +1037,7 @@ game_render :: proc(g: ^Game) {
                 case .Sync: kind = "Sync"
                 case .Race: kind = "Race"
                 case .Rush: kind = "Rush"
+                case .Guard: kind = "Guard"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

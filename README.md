@@ -142,8 +142,7 @@ Wraps any task in a deadline. If it doesn't complete in time, it is aborted clea
 
 ```odin
 // Player has 5.0 seconds to defuse the bomb before detonation
-timed_out := coroutine.with_timeout(f, 5.0, coroutine.branch(defuse_bomb_loop, &bomb))
-if timed_out {
+if coroutine.with_timeout(f, 5.0, coroutine.branch(defuse_bomb_loop, &bomb)) == .Timed_Out {
     detonate_bomb(&bomb)
 }
 ```
@@ -342,12 +341,12 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 240 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **187 / 187 Tests PASS (Native Host Windows)** |
-| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (Native WSL2 Host CPU)** |
-| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (WSL2 QEMU)** |
-| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **187 / 187 Tests PASS (WSL2 QEMU)** |
-| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (AAPCS64 ABI Verified)** |
-| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (SysV AMD64 ABI Verified)** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 240 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **192 / 192 Tests PASS (Native Host Windows)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **192 / 192 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **142 / 142 Core Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **142 / 142 Core Tests PASS (WSL2 QEMU)** |
+| **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **Cross-Check PASS (AAPCS64 ABI Verified)** |
+| **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **Cross-Check PASS (SysV AMD64 ABI Verified)** |
 | **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **17 / 17 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
@@ -366,7 +365,7 @@ The cross-platform PowerShell build script [`build.ps1`](build.ps1) automates al
 # Run the AI & Quest Sandbox
 .\build.ps1 run-quest
 
-# Run All 187 Unit Tests (138 Core + 49 Sync) with 0 Leaks
+# Run All 192 Unit Tests (142 Core + 50 Sync) with 0 Leaks
 .\build.ps1 test
 
 # Cross-Check All 7 Multi-ISA & WebAssembly Targets

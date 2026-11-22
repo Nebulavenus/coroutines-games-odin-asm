@@ -227,11 +227,6 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber := pop(&pool.free_fibers)
     fiber.handle = fiber_handle_pack(fiber.pool_index, fiber.generation)
 
-    pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
-        handle = fiber.handle,
-        status = .Ready,
-    }
-
     fiber.status = .Ready
     fiber.parent = nil
     fiber.first_child = nil
@@ -247,6 +242,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.wake_time = 0
     fiber.wake_step = 0
     fiber.heap_index = -1
+    fiber.step_index = -1
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
     fiber.entry_proc = nil
@@ -265,6 +261,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.next_waiter = nil
     fiber.prev_waiter = nil
     fiber.current_wait_queue = nil
+    fiber.join_waiters = {}
 
     mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
     fiber.stored_context = context
@@ -285,7 +282,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     }
 
     if fiber.handle != 0 {
-        pool.handle_history[u32(fiber.handle) % FIBER_HANDLE_HISTORY_CAPACITY] = Handle_Entry{
+        pool.handle_history[fiber_handle_history_slot(fiber.handle)] = Handle_Entry{
             handle = fiber.handle,
             status = fiber.status,
         }
@@ -315,6 +312,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.wake_time = 0
     fiber.wake_step = 0
     fiber.heap_index = -1
+    fiber.step_index = -1
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
     fiber.entry_proc = nil
@@ -330,6 +328,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.next_waiter = nil
     fiber.prev_waiter = nil
     fiber.current_wait_queue = nil
+    fiber.join_waiters = {}
 
     append(&pool.free_fibers, fiber)
 }

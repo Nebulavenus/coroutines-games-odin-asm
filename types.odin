@@ -41,6 +41,12 @@ fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
     return u16((u32(h) >> 16) & 0xFFFF)
 }
 
+fiber_handle_history_slot :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
+    idx := u32(fiber_handle_index(h))
+    gen := u32(fiber_handle_gen(h))
+    return (idx + gen * 257) % FIBER_HANDLE_HISTORY_CAPACITY
+}
+
 // Indexed User-Driven Clock Domains
 Clock_ID :: distinct int
 
@@ -58,9 +64,22 @@ Clock_Domain :: struct {
 }
 
 Join_Kind :: enum u8 {
-    Sync, // All children must finish; parent resumes when remaining == 0
-    Race, // First child to succeed wins; immediately aborts all siblings; failures ignored unless all fail
-    Rush, // First child to succeed wins; losers continue in background (Verse rush)
+    Sync,  // All children must finish; parent resumes when remaining == 0
+    Race,  // First child to succeed wins; immediately aborts all siblings; failures ignored unless all fail
+    Rush,  // First child to succeed wins; losers continue in background (Verse rush)
+    Guard, // Branch 0 is primary task; Branch 1 is guard (timeout/signal). Whichever finishes aborts the other.
+}
+
+Timeout_Outcome :: enum u8 {
+    Completed,
+    Timed_Out,
+    Failed,
+}
+
+Signal_Outcome :: enum u8 {
+    Completed,
+    Interrupted,
+    Failed,
 }
 
 // ============================================================================
@@ -87,9 +106,10 @@ Fiber_Cleanup :: struct {
 }
 
 Fiber_Scope :: struct {
-    head:  ^Fiber,
-    tail:  ^Fiber,
-    count: int,
+    head:    ^Fiber,
+    tail:    ^Fiber,
+    count:   int,
+    waiters: Wait_Queue,
 }
 
 FIBER_PAYLOAD_SIZE :: PAYLOAD_SIZE
@@ -162,6 +182,7 @@ Fiber :: struct {
     next_waiter:        ^Fiber,
     prev_waiter:        ^Fiber,
     current_wait_queue: ^Wait_Queue,
+    join_waiters:       Wait_Queue,
 
     // --- Concurrency & Join Coordination ---
     join_coord:       ^Join_Coordinator, // If this fiber is a branch in a sync/race
@@ -174,6 +195,7 @@ Fiber :: struct {
     wake_time:        f64,               // Target absolute timestamp for Sleeping_Time
     wake_step:        u64,               // Target step count for Sleeping_Steps
     heap_index:       int,               // Index in Clock_Domain.timer_heap (for O(log N) deletion on abort)
+    step_index:       int,               // Index in Clock_Domain.step_waiters (for O(1) deletion on abort)
 
     // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe on WebAssembly) ---
     ticker_interval:  f32,

@@ -98,8 +98,8 @@ The engine provides an orthogonal set of yield primitives to pause execution:
 | Primitive | Description | Typical Use Case |
 | :--- | :--- | :--- |
 | **`coroutine.wait(f, seconds: f32)`** | Sleeps for $N$ seconds in the fiber's **Clock Domain** (defaults to `CLOCK_SIM`). | Combat cooldowns, spell casting, entity timelines. |
-| **`coroutine.yield(f)`** *(alias: `yield_frame`)* | Suspends execution until the next step of the fiber's clock domain. | Continuous per-frame motion loops, game logic updates. |
-| **`coroutine.wait_steps(f, count: int)`** *(alias: `wait_frames`)* | Suspends execution for exactly $N$ consecutive clock steps. | Hit-stop frames, invulnerability flickers, fixed physics ticks. |
+| **`coroutine.yield(f)`** | Suspends execution until the next step of the fiber's clock domain. | Continuous per-frame motion loops, game logic updates. |
+| **`coroutine.wait_steps(f, count: int)`** | Suspends execution for exactly $N$ consecutive clock steps. | Hit-stop frames, invulnerability flickers, fixed physics ticks. |
 | **`coroutine.ticker_wait(f, interval: f32)`** | Zero-drift periodic timer embedded directly in the fiber state. | Status effect ticks, periodic network pings, DOT pulses. |
 
 > [!TIP]

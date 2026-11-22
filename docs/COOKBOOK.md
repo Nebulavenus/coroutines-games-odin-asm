@@ -763,12 +763,12 @@ import "core:fmt"
 import "coroutine"
 
 hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
-    interrupted := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, t: ^Terminal) {
+    outcome := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, t: ^Terminal) {
         tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
         t.is_hacked = true
     }, term)
 
-    if interrupted {
+    if outcome == .Interrupted {
         fmt.println("Hacking aborted: Emergency lockdown alarm sounded!")
         term.hack_progress = 0.0
     }
@@ -874,7 +874,7 @@ chest_interaction_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler
 Fibers frequently alter global or entity state (e.g., invulnerability flags, animation locks, combat stances). If a fiber is cancelled externally (such as losing a `race`, scope cancellation, or parent death), native Odin `defer` statements **do not run** because the stack is never resumed.
 
 ### Solution
-Register cleanup callbacks via `coroutine.fiber_defer`. Registered hooks run automatically in LIFO order on **normal return, failure, or external abort** (if you restore state manually before returning, call `coroutine.fiber_cleanup_pop(f)` to unregister the top hook without executing it):
+Register cleanup callbacks via `coroutine.fiber_defer`. Registered hooks run automatically in LIFO order on **normal return, failure, or external abort** (if you restore state manually before returning, call `coroutine.fiber_defer_cancel(f)` to unregister the top hook without executing it, or `coroutine.fiber_defer_run_top(f)` to pop and run it early):
 
 ```odin
 package gameplay

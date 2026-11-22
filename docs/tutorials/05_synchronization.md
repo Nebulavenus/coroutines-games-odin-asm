@@ -181,9 +181,9 @@ player_combat_stance_fiber :: proc(f: ^coroutine.Fiber, player: ^Player) {
     // Combat actions (may be aborted externally at any time!):
     coroutine.wait(f, 5.0)
 
-    // On normal exit, revert state and pop the cleanup hook (pop unregisters without invoking):
+    // On normal exit, revert state and cancel the cleanup hook (or use fiber_defer_run_top(f)):
     player.in_berserk_stance = false
-    coroutine.fiber_cleanup_pop(f)
+    coroutine.fiber_defer_cancel(f)
 }
 ```
 

@@ -49,7 +49,7 @@ bench_raw_asm_switch :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Dual_Context) {
         d.f1 = f
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
 
         for d.switches < TOTAL_SWITCHES {
             d.switches += 1
@@ -60,7 +60,7 @@ bench_raw_asm_switch :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, d: ^Dual_Context) {
         d.f2 = f
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
 
         for d.switches < TOTAL_SWITCHES {
             d.switches += 1
@@ -96,7 +96,7 @@ bench_10k_concurrency :: proc() {
     for _ in 0 ..< FIBER_COUNT {
         coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
             for _ in 0 ..< FRAMES {
-                coroutine.yield_frame(f)
+                coroutine.yield(f)
             }
         })
     }

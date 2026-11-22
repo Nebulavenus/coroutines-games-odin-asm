@@ -275,7 +275,7 @@ rune_charge_fiber :: proc(f: ^coroutine.Fiber, r: ^Rune) {
     r.active = true
     r.progress = 0.0
     for r.progress < 1.0 {
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
         r.progress += coroutine.delta_time(f) / 1.5
     }
     r.progress = 1.0
@@ -290,7 +290,7 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
 
     coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, s: ^Ritual_Station) {
         for {
-            coroutine.yield_frame(child)
+            coroutine.yield(child)
             s.swirl_angle += coroutine.delta_time(child) * 4.0
         }
     }, s, "Ritual Swirl FX (branch_scoped)")
@@ -327,9 +327,9 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
 
     coroutine.event_emit(f.sched, &g_world.event_hub, Showcase_Event{"Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW})
 
-    timed_out := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
+    outcome := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         for s.progress < 1.0 {
-            coroutine.yield_frame(f)
+            coroutine.yield(f)
             dist := linalg.length(g_world.player.pos - s.pos)
             if dist < s.radius {
                 s.progress += coroutine.delta_time(f) / 1.8
@@ -339,7 +339,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         }
     }, s, "Capture Accumulation")
 
-    if !timed_out {
+    if outcome == .Completed {
         s.capture_success = true
         s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
@@ -1137,6 +1137,7 @@ showcase_render :: proc(w: ^Showcase_World) {
                 case .Sync: kind = "Sync"
                 case .Race: kind = "Race"
                 case .Rush: kind = "Rush"
+                case .Guard: kind = "Guard"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE

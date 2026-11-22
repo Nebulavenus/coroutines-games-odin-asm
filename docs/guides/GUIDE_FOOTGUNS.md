@@ -459,7 +459,7 @@ In stackful fiber switching, suspended fibers waiting in the scheduler (in `.Sle
 Because the fiber is simply removed from scheduling queues and recycled directly back into the fiber pool free list, **the CPU never resumes execution of the fiber's stack frame**. Therefore, the native compiler-generated `defer` instructions at the end of the procedure are completely bypassed! `p.speed` remains permanently multiplied and `p.is_dashing` remains stuck at `true`.
 
 ### The Solution
-Use the engine's built-in 8-slot LIFO defer stack: `coroutine.fiber_defer` and `coroutine.fiber_cleanup_pop`:
+Use the engine's built-in 8-slot LIFO defer stack: `coroutine.fiber_defer`, `coroutine.fiber_defer_cancel`, and `coroutine.fiber_defer_run_top`:
 
 ```odin
 // SAFE: 100% Guaranteed to run on normal return, failure, OR external abort!
@@ -476,16 +476,16 @@ dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 
     coroutine.wait(f, 0.5) // If aborted here, fiber_defer hook is guaranteed to execute!
 
-    // Restore state normally and pop cleanup hook:
+    // Restore state normally and cancel the registered cleanup hook:
     p.speed = orig_speed
     p.is_dashing = false
-    coroutine.fiber_cleanup_pop(f)
+    coroutine.fiber_defer_cancel(f)
 }
 ```
 
 1. **LIFO Execution Order**: Registered `fiber_defer` callbacks execute in reverse (LIFO) order upon normal completion, failure, or cancellation, exactly like language-level defers.
 2. **Zero Heap Allocation**: Cleanups live directly in an inline 8-slot array on the `Fiber` struct (`cleanups: [8]Fiber_Cleanup`).
-3. **Safe Pop**: Call `coroutine.fiber_cleanup_pop(f)` when an operation completes normally to unregister the hook.
+3. **Explicit Cancel / Run-Top**: Call `coroutine.fiber_defer_cancel(f)` to unregister the top hook without invoking it, or `coroutine.fiber_defer_run_top(f)` to pop and execute it immediately.
 
 ### The Rule
 > **Never rely on native Odin `defer` for state restoration across yield points that can be cancelled externally. Use `coroutine.fiber_defer` or scoped combinators (`with_mutex`, `with_signal`, `with_timeout`).**

@@ -148,8 +148,6 @@ current_steps :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
     return f.sched.clocks[cid].steps
 }
 
-current_frame :: current_steps
-
 // ============================================================================
 // Yielding & Timing Primitives
 // ============================================================================
@@ -162,6 +160,7 @@ wait_steps :: proc(f: ^Fiber, steps: int = 1) {
     target_steps := max(steps, 1)
     f.wake_step = c.steps + u64(target_steps)
     f.status = .Sleeping_Steps
+    f.step_index = len(c.step_waiters)
     append(&c.step_waiters, f)
 
     f.stored_context = context
@@ -169,13 +168,9 @@ wait_steps :: proc(f: ^Fiber, steps: int = 1) {
     context = f.stored_context
 }
 
-wait_frames :: wait_steps
-
 yield :: proc(f: ^Fiber) {
     wait_steps(f, 1)
 }
-
-yield_frame :: yield
 
 yield_now :: proc(f: ^Fiber) {
     if f == nil || f.sched == nil do return
@@ -256,7 +251,8 @@ fail :: proc(f: ^Fiber) {
 scope_wait :: proc(f: ^Fiber, scope: ^Fiber_Scope) {
     if f == nil || f.sched == nil || scope == nil do return
     for scope.head != nil {
-        yield(f)
+        wait_queue_push_back(&scope.waiters, f)
+        fiber_suspend(f)
     }
 }
 
@@ -291,7 +287,7 @@ fiber_status_sched :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> (status: 
             return f.status, true
         }
     }
-    entry := sched.fiber_pool.handle_history[u32(handle) % FIBER_HANDLE_HISTORY_CAPACITY]
+    entry := sched.fiber_pool.handle_history[fiber_handle_history_slot(handle)]
     if entry.handle == handle {
         return entry.status, true
     }
@@ -311,12 +307,17 @@ fiber_status :: proc{
 fiber_join :: proc(f: ^Fiber, target_handle: Fiber_Handle) -> (ok: bool) {
     if f == nil || f.sched == nil || target_handle == 0 || target_handle == f.handle do return false
 
-    for fiber_is_alive(f.sched, target_handle) {
-        yield(f)
+    for {
+        target := fiber_find_by_handle(f.sched, target_handle)
+        if target == nil || target.status == .Completed || target.status == .Failed || target.status == .Aborted || target.status == .Unused {
+            break
+        }
+        wait_queue_push_back(&target.join_waiters, f)
+        fiber_suspend(f)
     }
 
     status, found := fiber_status(f.sched, target_handle)
-    return found ? (status == .Completed) : true
+    return found && status == .Completed
 }
 
 fiber_set_name :: #force_inline proc(f: ^Fiber, name: string) {
@@ -351,16 +352,23 @@ fiber_defer :: proc{
     fiber_defer_ptr,
 }
 
-fiber_cleanup_pop :: proc(f: ^Fiber) {
+fiber_defer_cancel :: proc(f: ^Fiber) {
     if f != nil && f.cleanup_count > 0 {
         f.cleanup_count -= 1
         f.cleanups[f.cleanup_count] = {}
     }
 }
 
-fiber_set_cleanup_raw :: fiber_defer_raw
-fiber_set_cleanup_ptr :: fiber_defer_ptr
-fiber_set_cleanup     :: fiber_defer
+fiber_defer_run_top :: proc(f: ^Fiber) {
+    if f != nil && f.cleanup_count > 0 {
+        f.cleanup_count -= 1
+        hook := f.cleanups[f.cleanup_count]
+        f.cleanups[f.cleanup_count] = {}
+        if hook.proc_ptr != nil {
+            hook.proc_ptr(hook.user_data != nil ? hook.user_data : f.user_data)
+        }
+    }
+}
 
 scheduler_set_watchdog :: proc(sched: ^Scheduler, enabled: bool, max_slice_ms: f64 = 100.0) {
     if sched == nil do return
@@ -745,17 +753,22 @@ with_timeout_branch :: proc(
     seconds: f32,
     task: Branch_Desc,
     timeout_clock: Clock_ID = CLOCK_INHERIT,
-) -> (timed_out: bool) {
-    if f == nil || f.sched == nil do return false
+) -> (outcome: Timeout_Outcome) {
+    if f == nil || f.sched == nil do return .Failed
 
-    winner := race(f,
+    branches := [2]Branch_Desc{
         task,
-        branch(proc(f: ^Fiber, sec: f32) {
-            wait(f, sec)
-        }, seconds, "with_timeout_timer", timeout_clock),
-    )
+        branch_wait(seconds, "with_timeout_timer", timeout_clock),
+    }
+    fiber_setup_branches(f, .Guard, branches[:])
 
-    return winner == 1
+    if f.active_coord.winner_index == 1 {
+        return .Timed_Out
+    }
+    if f.active_coord.winner_index == 0 && !f.active_coord.has_failed {
+        return .Completed
+    }
+    return .Failed
 }
 
 with_timeout_ptr :: proc(
@@ -765,7 +778,7 @@ with_timeout_ptr :: proc(
     data: ^T,
     name: string = "",
     timeout_clock: Clock_ID = CLOCK_INHERIT,
-) -> (timed_out: bool) {
+) -> (outcome: Timeout_Outcome) {
     return with_timeout_branch(f, seconds, branch_ptr(entry, data, name), timeout_clock)
 }
 
@@ -776,7 +789,7 @@ with_timeout_val :: proc(
     data: T,
     name: string = "",
     timeout_clock: Clock_ID = CLOCK_INHERIT,
-) -> (timed_out: bool) where !intrinsics.type_is_pointer(T) {
+) -> (outcome: Timeout_Outcome) where !intrinsics.type_is_pointer(T) {
     return with_timeout_branch(f, seconds, branch_val(entry, data, name), timeout_clock)
 }
 
@@ -786,7 +799,7 @@ with_timeout_nil :: proc(
     entry: proc(f: ^Fiber),
     name: string = "",
     timeout_clock: Clock_ID = CLOCK_INHERIT,
-) -> (timed_out: bool) {
+) -> (outcome: Timeout_Outcome) {
     return with_timeout_branch(f, seconds, branch_nil(entry, name), timeout_clock)
 }
 
@@ -796,10 +809,22 @@ with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, wi
 // with_signal & with_sticky_signal Combinators (Interruptible Tasks)
 // ============================================================================
 
-with_signal_branch :: proc(f: ^Fiber, sig: ^Signal, task: Branch_Desc) -> (interrupted: bool) {
-    if f == nil || f.sched == nil || sig == nil do return false
-    winner := race(f, task, branch_signal(sig, "with_signal_watcher"))
-    return winner == 1
+with_signal_branch :: proc(f: ^Fiber, sig: ^Signal, task: Branch_Desc) -> (outcome: Signal_Outcome) {
+    if f == nil || f.sched == nil || sig == nil do return .Failed
+
+    branches := [2]Branch_Desc{
+        task,
+        branch_signal(sig, "with_signal_watcher"),
+    }
+    fiber_setup_branches(f, .Guard, branches[:])
+
+    if f.active_coord.winner_index == 1 {
+        return .Interrupted
+    }
+    if f.active_coord.winner_index == 0 && !f.active_coord.has_failed {
+        return .Completed
+    }
+    return .Failed
 }
 
 with_signal_ptr :: proc(
@@ -809,7 +834,7 @@ with_signal_ptr :: proc(
     data: ^T,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) {
+) -> (outcome: Signal_Outcome) {
     return with_signal_branch(f, sig, branch_ptr(entry, data, name, clock))
 }
 
@@ -820,7 +845,7 @@ with_signal_val :: proc(
     data: T,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) where !intrinsics.type_is_pointer(T) {
+) -> (outcome: Signal_Outcome) where !intrinsics.type_is_pointer(T) {
     return with_signal_branch(f, sig, branch_val(entry, data, name, clock))
 }
 
@@ -830,7 +855,7 @@ with_signal_nil :: proc(
     entry: proc(f: ^Fiber),
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) {
+) -> (outcome: Signal_Outcome) {
     return with_signal_branch(f, sig, branch_nil(entry, name, clock))
 }
 
@@ -841,10 +866,22 @@ with_signal :: proc{
     with_signal_nil,
 }
 
-with_sticky_signal_branch :: proc(f: ^Fiber, sig: ^Sticky_Signal, task: Branch_Desc) -> (interrupted: bool) {
-    if f == nil || f.sched == nil || sig == nil do return false
-    winner := race(f, task, branch_sticky_signal(sig, "with_sticky_signal_watcher"))
-    return winner == 1
+with_sticky_signal_branch :: proc(f: ^Fiber, sig: ^Sticky_Signal, task: Branch_Desc) -> (outcome: Signal_Outcome) {
+    if f == nil || f.sched == nil || sig == nil do return .Failed
+
+    branches := [2]Branch_Desc{
+        task,
+        branch_sticky_signal(sig, "with_sticky_signal_watcher"),
+    }
+    fiber_setup_branches(f, .Guard, branches[:])
+
+    if f.active_coord.winner_index == 1 {
+        return .Interrupted
+    }
+    if f.active_coord.winner_index == 0 && !f.active_coord.has_failed {
+        return .Completed
+    }
+    return .Failed
 }
 
 with_sticky_signal_ptr :: proc(
@@ -854,7 +891,7 @@ with_sticky_signal_ptr :: proc(
     data: ^T,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) {
+) -> (outcome: Signal_Outcome) {
     return with_sticky_signal_branch(f, sig, branch_ptr(entry, data, name, clock))
 }
 
@@ -865,7 +902,7 @@ with_sticky_signal_val :: proc(
     data: T,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) where !intrinsics.type_is_pointer(T) {
+) -> (outcome: Signal_Outcome) where !intrinsics.type_is_pointer(T) {
     return with_sticky_signal_branch(f, sig, branch_val(entry, data, name, clock))
 }
 
@@ -875,7 +912,7 @@ with_sticky_signal_nil :: proc(
     entry: proc(f: ^Fiber),
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
-) -> (interrupted: bool) {
+) -> (outcome: Signal_Outcome) {
     return with_sticky_signal_branch(f, sig, branch_nil(entry, name, clock))
 }
 

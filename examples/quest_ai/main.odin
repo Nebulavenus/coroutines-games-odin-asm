@@ -211,7 +211,7 @@ knight_ai_fiber :: proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
 
 quest_obj_hack_terminal :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     for q.terminal_prog < 1.0 {
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
         dist := linalg.length(g_world.player.pos - q.terminal_pos)
         if dist < 45.0 {
             q.terminal_prog += coroutine.delta_time(f) * 0.5
@@ -228,7 +228,7 @@ quest_obj_destroy_sentries :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
 
 quest_obj_retrieve_keycard :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
     for !q.keycard_found {
-        coroutine.yield_frame(f)
+        coroutine.yield(f)
         dist := linalg.length(g_world.player.pos - q.keycard_pos)
         if dist < 35.0 {
             q.keycard_found = true
@@ -500,11 +500,7 @@ world_update :: proc(w: ^World, dt: f32) {
     w.global_time += sim_dt
 
     coroutine.clock_advance(&w.sched, coroutine.CLOCK_REAL, dt)
-    if !w.is_paused {
-        coroutine.scheduler_step(&w.sched, sim_dt)
-    } else {
-        coroutine.scheduler_single_step(&w.sched, sim_dt)
-    }
+    coroutine.scheduler_step(&w.sched, sim_dt)
 
     // --- Player Movement ---
     move_dir: rl.Vector2
@@ -726,6 +722,7 @@ world_render :: proc(w: ^World) {
                 case .Sync: kind = "Sync"
                 case .Race: kind = "Race"
                 case .Rush: kind = "Rush"
+                case .Guard: kind = "Guard"
                 }
                 status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
                 status_col = rl.PURPLE
