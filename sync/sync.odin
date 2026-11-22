@@ -63,6 +63,21 @@ mutex_try_lock :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex) -> bool {
     return false
 }
 
+@(private="file")
+Mutex_Wait_Relay :: struct {
+    m:      ^Fiber_Mutex,
+    handle: coro.Fiber_Handle,
+}
+
+@(private="file")
+relay_mutex_wait_hook :: proc(raw: rawptr) {
+    r := (^Mutex_Wait_Relay)(raw)
+    if r == nil || r.m == nil do return
+    if r.m.locked && r.m.owner == r.handle {
+        mutex_unlock(r.m)
+    }
+}
+
 mutex_lock :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
     if f == nil || m == nil || f.sched == nil do return
 
@@ -72,18 +87,21 @@ mutex_lock :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         return
     }
 
+    relay := Mutex_Wait_Relay{m = m, handle = f.handle}
+    coro.fiber_defer(f, relay_mutex_wait_hook, rawptr(&relay))
     coro.wait_queue_push_back(&m.waiters, f)
     coro.fiber_suspend(f)
+    coro.fiber_defer_cancel(f)
     m.owner = f.handle
 }
 
-mutex_unlock_sched :: proc(sched: ^coro.Scheduler, m: ^Fiber_Mutex) {
-    if sched == nil || m == nil do return
+mutex_unlock :: proc(m: ^Fiber_Mutex) {
+    if m == nil do return
 
     for {
         next_fiber, ok := coro.wait_queue_pop_front(&m.waiters)
         if !ok do break
-        if next_fiber != nil && coro.fiber_wake(sched, next_fiber) {
+        if next_fiber != nil && coro.fiber_wake(next_fiber.sched, next_fiber) {
             m.owner = next_fiber.handle
             return
         }
@@ -93,14 +111,37 @@ mutex_unlock_sched :: proc(sched: ^coro.Scheduler, m: ^Fiber_Mutex) {
     m.locked = false
 }
 
-mutex_unlock_fiber :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
-    if f == nil || f.sched == nil do return
-    mutex_unlock_sched(f.sched, m)
-}
+mutex_lock_timeout :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex, timeout_seconds: f32) -> (acquired: bool) {
+    if f == nil || m == nil || f.sched == nil do return false
+    if mutex_try_lock(f, m) do return true
+    if timeout_seconds <= 0 do return false
 
-mutex_unlock :: proc{
-    mutex_unlock_sched,
-    mutex_unlock_fiber,
+    Lock_Timeout_State :: struct {
+        m:        ^Fiber_Mutex,
+        owner:    coro.Fiber_Handle,
+        acquired: bool,
+    }
+    st := Lock_Timeout_State{m = m, owner = f.handle, acquired = false}
+    coro.fiber_defer(f, proc(s: ^Lock_Timeout_State) {
+        if s != nil && s.acquired {
+            mutex_unlock(s.m)
+        }
+    }, &st)
+
+    outcome := coro.with_timeout(f, timeout_seconds, proc(child: ^coro.Fiber, s: ^Lock_Timeout_State) {
+        mutex_lock(child, s.m)
+        s.m.owner = s.owner
+        s.acquired = true
+    }, &st, name = "mutex_lock_timeout")
+
+    coro.fiber_defer_cancel(f)
+    if outcome == .Completed && st.acquired {
+        return true
+    }
+    if st.acquired {
+        mutex_unlock(m)
+    }
+    return false
 }
 
 mutex_owner :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> coro.Fiber_Handle {
@@ -115,29 +156,13 @@ mutex_waiter_count :: #force_inline proc "contextless" (m: ^Fiber_Mutex) -> int 
     return m != nil ? coro.wait_queue_count(&m.waiters) : 0
 }
 
-@(private="file")
-cleanup_mutex_hook :: proc(user_data: rawptr) {
-    m := (^Fiber_Mutex)(user_data)
-    if m == nil do return
-    for {
-        next_fiber, ok := coro.wait_queue_pop_front(&m.waiters)
-        if !ok do break
-        if next_fiber != nil && coro.fiber_wake(next_fiber.sched, next_fiber) {
-            m.owner = next_fiber.handle
-            return
-        }
-    }
-    m.owner = 0
-    m.locked = false
-}
-
 with_mutex_ptr :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex, body: proc(f: ^coro.Fiber, data: ^$T), data: ^T) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(m))
+    coro.fiber_defer(f, mutex_unlock, m)
     defer {
         coro.fiber_defer_cancel(f)
-        mutex_unlock(f.sched, m)
+        mutex_unlock(m)
     }
     body(f, data)
 }
@@ -150,10 +175,10 @@ with_mutex_val :: proc(
 ) where !intrinsics.type_is_pointer(T) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(m))
+    coro.fiber_defer(f, mutex_unlock, m)
     defer {
         coro.fiber_defer_cancel(f)
-        mutex_unlock(f.sched, m)
+        mutex_unlock(m)
     }
     body(f, data)
 }
@@ -161,10 +186,10 @@ with_mutex_val :: proc(
 with_mutex_nil :: proc(f: ^coro.Fiber, m: ^Fiber_Mutex, body: proc(f: ^coro.Fiber)) {
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
-    coro.fiber_defer(f, cleanup_mutex_hook, rawptr(m))
+    coro.fiber_defer(f, mutex_unlock, m)
     defer {
         coro.fiber_defer_cancel(f)
-        mutex_unlock(f.sched, m)
+        mutex_unlock(m)
     }
     body(f)
 }
@@ -196,20 +221,32 @@ semaphore_try_acquire :: proc(sem: ^Fiber_Semaphore) -> bool {
     return false
 }
 
+@(private="file")
+relay_sem_wait_hook :: proc(sem: ^Fiber_Semaphore) {
+    if sem == nil || sem.permits <= 0 do return
+    for {
+        next_fiber, ok := coro.wait_queue_pop_front(&sem.waiters)
+        if !ok do break
+        if next_fiber != nil && coro.fiber_wake(next_fiber.sched, next_fiber) {
+            return
+        }
+    }
+}
+
 semaphore_acquire :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore) {
     if f == nil || sem == nil || f.sched == nil do return
 
-    if sem.permits > 0 {
-        sem.permits -= 1
-        return
+    for sem.permits <= 0 {
+        coro.fiber_defer(f, relay_sem_wait_hook, sem)
+        coro.wait_queue_push_back(&sem.waiters, f)
+        coro.fiber_suspend(f)
+        coro.fiber_defer_cancel(f)
     }
-
-    coro.wait_queue_push_back(&sem.waiters, f)
-    coro.fiber_suspend(f)
+    sem.permits -= 1
 }
 
-semaphore_release_sched :: proc(sched: ^coro.Scheduler, sem: ^Fiber_Semaphore, count: int = 1) {
-    if sched == nil || sem == nil || count <= 0 do return
+semaphore_release :: proc(sem: ^Fiber_Semaphore, count: int = 1) {
+    if sem == nil || count <= 0 do return
 
     if sem.max_permits > 0 {
         sem.permits = min(sem.permits + count, sem.max_permits)
@@ -217,23 +254,45 @@ semaphore_release_sched :: proc(sched: ^coro.Scheduler, sem: ^Fiber_Semaphore, c
         sem.permits += count
     }
 
-    for sem.permits > 0 {
+    woken := 0
+    for woken < sem.permits {
         next_fiber, ok := coro.wait_queue_pop_front(&sem.waiters)
         if !ok do break
-        if next_fiber != nil && coro.fiber_wake(sched, next_fiber) {
-            sem.permits -= 1
+        if next_fiber != nil && coro.fiber_wake(next_fiber.sched, next_fiber) {
+            woken += 1
         }
     }
 }
 
-semaphore_release_fiber :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, count: int = 1) {
-    if f == nil || f.sched == nil do return
-    semaphore_release_sched(f.sched, sem, count)
-}
+semaphore_acquire_timeout :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, timeout_seconds: f32) -> (acquired: bool) {
+    if f == nil || sem == nil || f.sched == nil do return false
+    if semaphore_try_acquire(sem) do return true
+    if timeout_seconds <= 0 do return false
 
-semaphore_release :: proc{
-    semaphore_release_sched,
-    semaphore_release_fiber,
+    Sem_Timeout_State :: struct {
+        sem:      ^Fiber_Semaphore,
+        acquired: bool,
+    }
+    st := Sem_Timeout_State{sem = sem, acquired = false}
+    coro.fiber_defer(f, proc(s: ^Sem_Timeout_State) {
+        if s != nil && s.acquired {
+            semaphore_release(s.sem, 1)
+        }
+    }, &st)
+
+    outcome := coro.with_timeout(f, timeout_seconds, proc(child: ^coro.Fiber, s: ^Sem_Timeout_State) {
+        semaphore_acquire(child, s.sem)
+        s.acquired = true
+    }, &st, name = "semaphore_acquire_timeout")
+
+    coro.fiber_defer_cancel(f)
+    if outcome == .Completed && st.acquired {
+        return true
+    }
+    if st.acquired {
+        semaphore_release(sem, 1)
+    }
+    return false
 }
 
 semaphore_available_permits :: #force_inline proc(sem: ^Fiber_Semaphore) -> int {
@@ -245,30 +304,17 @@ semaphore_waiter_count :: #force_inline proc "contextless" (sem: ^Fiber_Semaphor
 }
 
 @(private="file")
-cleanup_sem_hook :: proc(user_data: rawptr) {
-    sem := (^Fiber_Semaphore)(user_data)
-    if sem == nil do return
-    if sem.max_permits > 0 {
-        sem.permits = min(sem.permits + 1, sem.max_permits)
-    } else {
-        sem.permits += 1
-    }
-    for sem.permits > 0 {
-        next_fiber, ok := coro.wait_queue_pop_front(&sem.waiters)
-        if !ok do break
-        if next_fiber != nil && coro.fiber_wake(next_fiber.sched, next_fiber) {
-            sem.permits -= 1
-        }
-    }
+cleanup_sem_hook :: proc(sem: ^Fiber_Semaphore) {
+    semaphore_release(sem, 1)
 }
 
 with_semaphore_ptr :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^coro.Fiber, data: ^$T), data: ^T) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    coro.fiber_defer(f, cleanup_sem_hook, rawptr(sem))
+    coro.fiber_defer(f, cleanup_sem_hook, sem)
     defer {
         coro.fiber_defer_cancel(f)
-        semaphore_release(f.sched, sem)
+        semaphore_release(sem)
     }
     body(f, data)
 }
@@ -281,10 +327,10 @@ with_semaphore_val :: proc(
 ) where !intrinsics.type_is_pointer(T) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    coro.fiber_defer(f, cleanup_sem_hook, rawptr(sem))
+    coro.fiber_defer(f, cleanup_sem_hook, sem)
     defer {
         coro.fiber_defer_cancel(f)
-        semaphore_release(f.sched, sem)
+        semaphore_release(sem)
     }
     body(f, data)
 }
@@ -292,10 +338,10 @@ with_semaphore_val :: proc(
 with_semaphore_nil :: proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore, body: proc(f: ^coro.Fiber)) {
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
-    coro.fiber_defer(f, cleanup_sem_hook, rawptr(sem))
+    coro.fiber_defer(f, cleanup_sem_hook, sem)
     defer {
         coro.fiber_defer_cancel(f)
-        semaphore_release(f.sched, sem)
+        semaphore_release(sem)
     }
     body(f)
 }
@@ -806,4 +852,160 @@ branch_chan_send :: proc(ch: ^Channel($T), val_ptr: ^T, fail_on_close: bool = tr
             coro.fail(f)
         }
     }, Payload{ch = ch, val_ptr = val_ptr, fail_on_close = fail_on_close}, name)
+}
+
+Thread_Channel :: struct($T: typeid) {
+    lock:         b32,
+    buffer:       []T,
+    head:         int,
+    tail:         int,
+    count:        int,
+    capacity:     int,
+    is_closed:    bool,
+    ready_header: coro.Async_Header,
+    allocator:    intrinsics.type_field_type(coro.Scheduler, "allocator"),
+}
+
+@(private="file")
+thread_chan_lock :: #force_inline proc "contextless" (ch: ^Thread_Channel($T)) {
+    for intrinsics.atomic_exchange_explicit(&ch.lock, true, .Acquire) {
+        intrinsics.cpu_relax()
+    }
+}
+
+@(private="file")
+thread_chan_unlock :: #force_inline proc "contextless" (ch: ^Thread_Channel($T)) {
+    intrinsics.atomic_store_explicit(&ch.lock, false, .Release)
+}
+
+thread_chan_init :: proc(ch: ^Thread_Channel($T), capacity: int = 16, allocator := context.allocator) {
+    if ch == nil do return
+    buf_cap := max(capacity, 1)
+    alloc := allocator.procedure != nil ? allocator : context.allocator
+    ch^ = Thread_Channel(T){
+        buffer    = make([]T, buf_cap, alloc),
+        capacity  = buf_cap,
+        allocator = alloc,
+    }
+    intrinsics.atomic_store_explicit(&ch.ready_header.state, .Pending, .Release)
+}
+
+thread_chan_destroy :: proc(ch: ^Thread_Channel($T)) {
+    if ch == nil do return
+    thread_chan_close(ch)
+    if ch.buffer != nil {
+        alloc := ch.allocator.procedure != nil ? ch.allocator : context.allocator
+        delete(ch.buffer, alloc)
+        ch.buffer = nil
+    }
+    ch.head = 0
+    ch.tail = 0
+    ch.count = 0
+    ch.capacity = 0
+}
+
+thread_chan_close :: proc(ch: ^Thread_Channel($T)) {
+    if ch == nil do return
+    thread_chan_lock(ch)
+    ch.is_closed = true
+    intrinsics.atomic_store_explicit(&ch.ready_header.state, .Completed, .Release)
+    thread_chan_unlock(ch)
+}
+
+thread_chan_is_closed :: proc "contextless" (ch: ^Thread_Channel($T)) -> bool {
+    if ch == nil do return true
+    thread_chan_lock(ch)
+    closed := ch.is_closed
+    thread_chan_unlock(ch)
+    return closed
+}
+
+thread_chan_count :: proc "contextless" (ch: ^Thread_Channel($T)) -> int {
+    if ch == nil do return 0
+    thread_chan_lock(ch)
+    c := ch.count
+    thread_chan_unlock(ch)
+    return c
+}
+
+thread_chan_cap :: #force_inline proc "contextless" (ch: ^Thread_Channel($T)) -> int {
+    return ch != nil ? ch.capacity : 0
+}
+
+thread_chan_try_send :: proc "contextless" (ch: ^Thread_Channel($T), value: T) -> (ok: bool) {
+    if ch == nil || ch.buffer == nil do return false
+    thread_chan_lock(ch)
+    if ch.is_closed || ch.count >= ch.capacity {
+        thread_chan_unlock(ch)
+        return false
+    }
+    ch.buffer[ch.tail] = value
+    ch.tail = (ch.tail + 1) % ch.capacity
+    ch.count += 1
+    intrinsics.atomic_store_explicit(&ch.ready_header.state, .Completed, .Release)
+    thread_chan_unlock(ch)
+    return true
+}
+
+thread_chan_try_recv :: proc "contextless" (ch: ^Thread_Channel($T)) -> (value: T, ok: bool) {
+    if ch == nil || ch.buffer == nil do return {}, false
+    thread_chan_lock(ch)
+    if ch.count == 0 {
+        thread_chan_unlock(ch)
+        return {}, false
+    }
+    value = ch.buffer[ch.head]
+    ch.head = (ch.head + 1) % ch.capacity
+    ch.count -= 1
+    if ch.count == 0 && !ch.is_closed {
+        intrinsics.atomic_store_explicit(&ch.ready_header.state, .Pending, .Release)
+    }
+    thread_chan_unlock(ch)
+    return value, true
+}
+
+thread_chan_recv :: proc(f: ^coro.Fiber, ch: ^Thread_Channel($T)) -> (value: T, ok: bool) {
+    if f == nil || ch == nil || f.sched == nil || ch.buffer == nil do return {}, false
+
+    for {
+        thread_chan_lock(ch)
+        if ch.count > 0 {
+            value = ch.buffer[ch.head]
+            ch.head = (ch.head + 1) % ch.capacity
+            ch.count -= 1
+            if ch.count == 0 && !ch.is_closed {
+                intrinsics.atomic_store_explicit(&ch.ready_header.state, .Pending, .Release)
+            }
+            thread_chan_unlock(ch)
+            return value, true
+        }
+        if ch.is_closed {
+            thread_chan_unlock(ch)
+            return {}, false
+        }
+        intrinsics.atomic_store_explicit(&ch.ready_header.state, .Pending, .Release)
+        thread_chan_unlock(ch)
+
+        coro.fiber_await_async_header(f, &ch.ready_header, false)
+    }
+}
+
+branch_thread_chan_recv :: proc(ch: ^Thread_Channel($T), out: ^T, fail_on_close: bool = true, name := "thread_chan_recv") -> coro.Branch_Desc {
+    Payload :: struct {
+        ch:            ^Thread_Channel(T),
+        out:           ^T,
+        fail_on_close: bool,
+    }
+    return coro.branch_val(proc(f: ^coro.Fiber, p: Payload) {
+        val, ok := thread_chan_recv(f, p.ch)
+        if !ok {
+            if p.fail_on_close {
+                coro.fail(f)
+            }
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{ch = ch, out = out, fail_on_close = fail_on_close}, name)
 }

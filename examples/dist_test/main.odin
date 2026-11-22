@@ -159,5 +159,40 @@ main :: proc() {
 	coroutine.scheduler_set_trace_hook(&sched, nil, nil)
 	assert(trace_spawns == 1, "Trace hook must fire in amalgamated dist")
 
-	fmt.printf("[dist_test] SUCCESS: Amalgamated dist/coroutine.odin + dist/sync/sync.odin verified! (received %d, scoped: %t, task: %d, sync: %t, hetero: %s)\n", received_val, scoped_ran, task_res, sync_a && sync_b, h_ctx.got_str)
+	fut: coroutine.Async_Future(int)
+	coroutine.async_init(&fut)
+	fut_val := 0
+	Fut_Ctx :: struct {
+		fut: ^coroutine.Async_Future(int),
+		out: ^int,
+	}
+	f_ctx := Fut_Ctx{fut = &fut, out = &fut_val}
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Fut_Ctx) {
+		v, ok := coroutine.await_async(f, c.fut)
+		if ok do c.out^ = v
+	}, &f_ctx)
+	coroutine.scheduler_step(&sched, 0.016)
+	coroutine.async_complete(&fut, 777)
+	coroutine.scheduler_step(&sched, 0.016)
+	assert(fut_val == 777, "Async_Future(T) must deliver typed value in dist")
+
+	tch: sync.Thread_Channel(int)
+	sync.thread_chan_init(&tch, 4)
+	defer sync.thread_chan_destroy(&tch)
+	tch_val := 0
+	Tch_Ctx :: struct {
+		ch:  ^sync.Thread_Channel(int),
+		out: ^int,
+	}
+	tc_ctx := Tch_Ctx{ch = &tch, out = &tch_val}
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Tch_Ctx) {
+		v, ok := sync.thread_chan_recv(f, c.ch)
+		if ok do c.out^ = v
+	}, &tc_ctx)
+	coroutine.scheduler_step(&sched, 0.016)
+	assert(sync.thread_chan_try_send(&tch, 888), "thread_chan_try_send must succeed")
+	coroutine.scheduler_step(&sched, 0.016)
+	assert(tch_val == 888, "Thread_Channel(T) must wake fiber and deliver value in dist")
+
+	fmt.printf("[dist_test] SUCCESS: Amalgamated dist/coroutine.odin + dist/sync/sync.odin verified! (received %d, scoped: %t, task: %d, sync: %t, hetero: %s, async: %d, tchan: %d)\n", received_val, scoped_ran, task_res, sync_a && sync_b, h_ctx.got_str, fut_val, tch_val)
 }

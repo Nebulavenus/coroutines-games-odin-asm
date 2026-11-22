@@ -29,6 +29,7 @@ Fiber_Status :: enum u8 {
 // 64-bit Packed Generational Handle (32-bit Pool Index | 32-bit Generation Counter)
 Fiber_Handle :: distinct u64
 
+@(private="package")
 fiber_handle_pack :: #force_inline proc "contextless" (index: u32, gen: u32) -> Fiber_Handle {
     return Fiber_Handle(u64(index) | (u64(gen) << 32))
 }
@@ -41,6 +42,7 @@ fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
     return u32((u64(h) >> 32) & 0xFFFF_FFFF)
 }
 
+@(private="package")
 fiber_handle_history_slot :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
     idx := fiber_handle_index(h)
     gen := fiber_handle_gen(h)
@@ -196,9 +198,10 @@ Fiber :: struct {
     wake_step:        u64,               // Target step count for Sleeping_Steps
     heap_index:       int,               // Index in Clock_Domain.timer_heap (for O(log N) deletion on abort)
     step_index:       int,               // Index in Clock_Domain.step_waiters (for O(1) deletion on abort)
-    async_token:      ^Async_Token,      // Pending background Async_Token being awaited
-    async_index:      int,               // Index in Scheduler.async_waiters (for O(1) deletion on abort)
-    event_dest:       rawptr,            // Destination pointer for active event_wait delivery
+    async_header:          ^Async_Header,     // Pending Async_Future(T) / Thread_Channel(T) header being awaited
+    async_index:           int,               // Index in Scheduler.async_waiters (for O(1) deletion on abort)
+    async_cancel_on_abort: bool,              // Propagate cancelled flag on fiber abort (true for Async_Future, false for Thread_Channel)
+    event_dest:            rawptr,            // Destination pointer for active event_wait delivery
 
     // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe on WebAssembly) ---
     ticker_interval:  f32,
@@ -273,9 +276,17 @@ Async_State :: enum u8 {
     Failed,
 }
 
-Async_Token :: struct {
-    state: Async_State, // Read and stored atomically
+Async_Header :: struct {
+    state:     Async_State,
+    cancelled: bool,
 }
+
+Async_Future :: struct($T: typeid) {
+    header: Async_Header,
+    value:  T,
+}
+
+Async_Token :: Async_Future(struct{})
 
 // ============================================================================
 // Fiber Pool

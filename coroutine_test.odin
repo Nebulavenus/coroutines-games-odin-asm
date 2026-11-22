@@ -970,7 +970,7 @@ test_async_token_bridge :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     token: Async_Token
-    async_token_init(&token)
+    async_init(&token)
 
     State :: struct {
         token:     ^Async_Token,
@@ -987,7 +987,7 @@ test_async_token_bridge :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, state.completed, false)
 
-    async_token_complete(&token, true)
+    async_complete(&token, true)
 
     scheduler_step(&sched, 0.016)
     testing.expect_value(t, state.completed, true)
@@ -3927,7 +3927,7 @@ test_reinit_and_reuse_primitives :: proc(t: ^testing.T) {
     ev: Event(int)
     event_init(&ev)
     tok: Async_Token
-    async_token_init(&tok)
+    async_init(&tok)
 
     State :: struct {
         sig:  ^Signal,
@@ -3952,14 +3952,14 @@ test_reinit_and_reuse_primitives :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.01)
     event_emit(&sched, &ev, 42)
     scheduler_step(&sched, 0.01)
-    async_token_complete(&tok, true)
+    async_complete(&tok, true)
     scheduler_step(&sched, 0.01)
     testing.expect_value(t, st.done, 1)
     testing.expect_value(t, st.val, 42)
 
     signal_init(&sig)
     event_init(&ev)
-    async_token_init(&tok)
+    async_init(&tok)
 
     spawn(&sched, proc(f: ^Fiber, s: ^State) {
         signal_wait(f, s.sig)
@@ -3975,7 +3975,7 @@ test_reinit_and_reuse_primitives :: proc(t: ^testing.T) {
     scheduler_step(&sched, 0.01)
     event_emit(&sched, &ev, 99)
     scheduler_step(&sched, 0.01)
-    async_token_complete(&tok, true)
+    async_complete(&tok, true)
     scheduler_step(&sched, 0.01)
     testing.expect_value(t, st.done, 2)
     testing.expect_value(t, st.val, 99)
@@ -4353,6 +4353,9 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_branch_task_and_branch_async", test_branch_task_and_branch_async },
         { "test_scheduler_next_wake_time_and_run_budget", test_scheduler_next_wake_time_and_run_budget },
         { "test_win64_teb_stack_bounds_and_chkstk_probe", test_win64_teb_stack_bounds_and_chkstk_probe },
+        { "test_async_future_typed_result_and_abort_cancellation", test_async_future_typed_result_and_abort_cancellation },
+        { "test_structured_spawn_task_child_lifetime_and_stack_local", test_structured_spawn_task_child_lifetime_and_stack_local },
+        { "test_spawn_from_fiber_with_scope_and_nilary_defer", test_spawn_from_fiber_with_scope_and_nilary_defer },
     }
     total := len(tests)
     for test, i in tests {
@@ -6075,7 +6078,7 @@ test_await_async_zero_context_switch_and_paused_clock :: proc(t: ^testing.T) {
     defer scheduler_destroy(&sched)
 
     tok1: Async_Token
-    async_token_init(&tok1)
+    async_init(&tok1)
     res1 := false
     done1 := false
 
@@ -6091,7 +6094,7 @@ test_await_async_zero_context_switch_and_paused_clock :: proc(t: ^testing.T) {
     }, &box1, clock = CLOCK_SIM)
 
     tok2: Async_Token
-    async_token_init(&tok2)
+    async_init(&tok2)
     h2 := spawn(&sched, proc(f: ^Fiber, tok: ^Async_Token) {
         _ = await_async(f, tok)
     }, &tok2, clock = CLOCK_SIM)
@@ -6102,11 +6105,12 @@ test_await_async_zero_context_switch_and_paused_clock :: proc(t: ^testing.T) {
 
     fiber_cancel(&sched, h2)
     testing.expect_value(t, len(sched.async_waiters), 1)
+    testing.expect_value(t, async_is_cancelled(&tok2), true)
 
     scheduler_run(&sched)
     testing.expect(t, !done1)
 
-    async_token_complete(&tok1, true)
+    async_complete(&tok1, true)
     scheduler_run(&sched)
     testing.expect(t, done1)
     testing.expect(t, res1)
@@ -6904,8 +6908,8 @@ test_branch_task_and_branch_async :: proc(t: ^testing.T) {
     tk_fail: Task(int)
     tok_ok: Async_Token
     tok_fail: Async_Token
-    async_token_init(&tok_ok)
-    async_token_init(&tok_fail)
+    async_init(&tok_ok)
+    async_init(&tok_fail)
 
     spawn_task(&sched, &tk_ok, proc(f: ^Fiber) -> int {
         wait(f, 0.02)
@@ -6974,11 +6978,11 @@ test_branch_task_and_branch_async :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, ctx.w2, 1)
 
-    async_token_complete(&tok_ok, true)
+    async_complete(&tok_ok, true)
     scheduler_step(&sched, 0.01)
     testing.expect_value(t, ctx.w3, 0)
 
-    async_token_complete(&tok_fail, false)
+    async_complete(&tok_fail, false)
     for _ in 0 ..< 4 {
         scheduler_step(&sched, 0.02)
     }
@@ -7156,4 +7160,191 @@ test_win64_teb_stack_bounds_and_chkstk_probe :: proc(t: ^testing.T) {
         scheduler_step(&sched, 0.016)
         testing.expect_value(t, checksum_ok, true)
     }
+}
+
+g_nilary_defer_hits: int = 0
+
+@(test)
+test_async_future_typed_result_and_abort_cancellation :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    fut_ok: Async_Future(int)
+    fut_fail: Async_Future(int)
+    fut_timeout: Async_Future(int)
+    async_init(&fut_ok)
+    async_init(&fut_fail)
+    async_init(&fut_timeout)
+
+    testing.expect_value(t, async_state(&fut_ok), Async_State.Pending)
+    testing.expect_value(t, async_is_cancelled(&fut_timeout), false)
+
+    Ctx :: struct {
+        fut_ok:      ^Async_Future(int),
+        fut_fail:    ^Async_Future(int),
+        fut_timeout: ^Async_Future(int),
+        v_ok:        int,
+        ok_ok:       bool,
+        ok_fail:     bool,
+        race_w:      int,
+        race_v:      int,
+    }
+    ctx := Ctx{
+        fut_ok      = &fut_ok,
+        fut_fail    = &fut_fail,
+        fut_timeout = &fut_timeout,
+        ok_fail     = true,
+        race_w      = -1,
+    }
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.v_ok, c.ok_ok = await_async(f, c.fut_ok)
+        _, c.ok_fail = await_async(f, c.fut_fail)
+
+        local_out := 0
+        c.race_w = race(f,
+            branch_async(c.fut_timeout, &local_out),
+            branch_wait(0.03),
+        )
+        c.race_v = local_out
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    async_complete(&fut_ok, 1337)
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.ok_ok, true)
+    testing.expect_value(t, ctx.v_ok, 1337)
+    testing.expect_value(t, async_state(&fut_ok), Async_State.Completed)
+
+    async_fail(&fut_fail)
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.ok_fail, false)
+    testing.expect_value(t, async_state(&fut_fail), Async_State.Failed)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.015)
+    }
+    testing.expect_value(t, ctx.race_w, 1)
+    testing.expect_value(t, async_is_cancelled(&fut_timeout), true)
+
+    fut_destroy: Async_Future(int)
+    async_init(&fut_destroy)
+    sched2: Scheduler
+    scheduler_init(&sched2)
+    spawn(&sched2, proc(f: ^Fiber, fut: ^Async_Future(int)) {
+        _, _ = await_async(f, fut)
+    }, &fut_destroy)
+    scheduler_run(&sched2)
+    testing.expect_value(t, async_is_cancelled(&fut_destroy), false)
+    scheduler_destroy(&sched2)
+    testing.expect_value(t, async_is_cancelled(&fut_destroy), true)
+}
+
+@(test)
+test_structured_spawn_task_child_lifetime_and_stack_local :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Ctx :: struct {
+        normal_val:       int,
+        child_aborted:    int,
+        early_child_dead: int,
+    }
+    ctx: Ctx
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        local_tk: Task(int)
+        spawn_task(f, &local_tk, proc(child: ^Fiber) -> int {
+            wait(child, 0.02)
+            return 99
+        })
+        v, ok := task_await(f, &local_tk)
+        if ok do c.normal_val = v
+    }, &ctx)
+
+    h_cancel := spawn(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        local_tk: Task(int)
+        spawn_task(f, &local_tk, proc(child: ^Fiber, c: ^Ctx) -> int {
+            fiber_defer(child, proc(c: ^Ctx) {
+                c.child_aborted += 1
+            }, c)
+            wait(child, 5.0)
+            return 1
+        }, c)
+        _, _ = task_await(f, &local_tk)
+    }, &ctx)
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        local_tk: Task(int)
+        spawn_task(f, &local_tk, proc(child: ^Fiber, c: ^Ctx) -> int {
+            fiber_defer(child, proc(c: ^Ctx) {
+                c.early_child_dead += 1
+            }, c)
+            wait(child, 5.0)
+            return 2
+        }, c)
+        yield(f)
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    fiber_cancel(&sched, h_cancel)
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.01)
+    }
+
+    testing.expect_value(t, ctx.normal_val, 99)
+    testing.expect_value(t, ctx.child_aborted, 1)
+    testing.expect_value(t, ctx.early_child_dead, 1)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_spawn_from_fiber_with_scope_and_nilary_defer :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    scope: Fiber_Scope
+    defer scope_destroy(&sched, &scope)
+
+    g_nilary_defer_hits = 0
+
+    Ctx :: struct {
+        expected_sched: ^Scheduler,
+        scope:          ^Fiber_Scope,
+        sched_match:    bool,
+        child_clock:    Clock_ID,
+        child_val_ran:  bool,
+    }
+    ctx := Ctx{expected_sched = &sched, scope = &scope, child_clock = CLOCK_SIM}
+
+    spawn(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.sched_match = (fiber_scheduler(f) == c.expected_sched)
+        fiber_defer(f, proc() {
+            g_nilary_defer_hits += 1
+        })
+        spawn(f, proc(child: ^Fiber, c: ^Ctx) {
+            c.child_clock = fiber_clock(child)
+            wait(child, 0.02)
+        }, c, c.scope, name = "Scoped Ptr")
+        spawn(f, proc(child: ^Fiber, flag_ptr: ^bool) {
+            flag_ptr^ = true
+        }, &c.child_val_ran, c.scope, name = "Scoped ValPtr")
+        spawn(f, proc(child: ^Fiber) {
+            g_nilary_defer_hits += 10
+        }, c.scope, name = "Scoped Nil")
+    }, &ctx, clock = CLOCK_REAL)
+
+    clock_advance(&sched, CLOCK_REAL, 0.01)
+    scheduler_run(&sched)
+    clock_advance(&sched, CLOCK_REAL, 0.02)
+    scheduler_run(&sched)
+
+    testing.expect_value(t, ctx.sched_match, true)
+    testing.expect_value(t, ctx.child_clock, CLOCK_REAL)
+    testing.expect_value(t, ctx.child_val_ran, true)
+    testing.expect_value(t, g_nilary_defer_hits, 11)
+    testing.expect_value(t, scope_is_empty(&scope), true)
 }

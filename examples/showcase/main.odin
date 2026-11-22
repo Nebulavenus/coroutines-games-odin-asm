@@ -64,12 +64,25 @@ Showcase_Event :: struct {
     color: rl.Color,
 }
 
-showcase_emit_event :: proc(sched: ^coroutine.Scheduler, hub: ^coroutine.Event(Showcase_Event), title, desc: string, color: rl.Color) {
+showcase_emit_event_sched :: proc(sched: ^coroutine.Scheduler, hub: ^coroutine.Event(Showcase_Event), title, desc: string, color: rl.Color) {
     coroutine.event_emit(sched, hub, Showcase_Event{
         title = fixed_text_make(title),
         desc  = fixed_text_make(desc),
         color = color,
     })
+}
+
+showcase_emit_event_fiber :: proc(f: ^coroutine.Fiber, hub: ^coroutine.Event(Showcase_Event), title, desc: string, color: rl.Color) {
+    coroutine.event_emit(f, hub, Showcase_Event{
+        title = fixed_text_make(title),
+        desc  = fixed_text_make(desc),
+        color = color,
+    })
+}
+
+showcase_emit_event :: proc{
+    showcase_emit_event_sched,
+    showcase_emit_event_fiber,
 }
 
 // --- Station 1: The Ritual Circle (sync) ---
@@ -162,18 +175,20 @@ Forge_Station :: struct {
 }
 
 // --- Station 6: The Async Research Lab (branch_async Timeout & Scoped Task(int)) ---
-Research_Job :: struct {
-    token:          coroutine.Async_Token,
-    complexity:     int,
+Research_Result :: struct {
     result_nodes:   int,
     elapsed_worker: f32,
+}
+
+Research_Job :: struct {
+    future:     coroutine.Async_Future(Research_Result),
+    complexity: int,
 }
 
 Lab_Station :: struct {
     pos:            rl.Vector2,
     job:            Research_Job,
     worker_thread:  ^thread.Thread,
-    drone_task:     coroutine.Task(int),
     is_working:     bool,
     status_text:    Fixed_Text,
     status_color:   rl.Color,
@@ -208,7 +223,6 @@ Gate_Task :: struct {
 Gate_Station :: struct {
     pos:          rl.Vector2,
     tasks:        [3]Gate_Task, // 0: Pillars, 1: Power Core, 2: Matrix
-    power_tasks:  [3]coroutine.Task(int),
     total_power:  int,
     is_building:  bool,
     portal_open:  bool,
@@ -345,7 +359,7 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
         s.result_alpha = 0.0
     }, s)
 
-    showcase_emit_event(f.sched, &g_world.event_hub, "Ritual Started", "3 Runes charging in parallel (sync + branch_scoped)", rl.SKYBLUE)
+    showcase_emit_event(f, &g_world.event_hub, "Ritual Started", "3 Runes charging in parallel (sync + branch_scoped)", rl.SKYBLUE)
 
     coroutine.branch_scoped(f, proc(child: ^coroutine.Fiber, s: ^Ritual_Station) {
         for {
@@ -361,7 +375,7 @@ ritual_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Ritual_Station) {
     )
 
     s.completed = true
-    showcase_emit_event(f.sched, &g_world.event_hub, "Ritual Complete", "All 3 runes synchronized successfully!", rl.GREEN)
+    showcase_emit_event(f, &g_world.event_hub, "Ritual Complete", "All 3 runes synchronized successfully!", rl.GREEN)
 
     tween_f32(f, &s.result_alpha, 0.0, 1.0, 0.5, ease_out_quad)
     coroutine.wait(f, 2.0)
@@ -386,7 +400,7 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         s.status_color = rl.RAYWHITE
     }, s)
 
-    showcase_emit_event(f.sched, &g_world.event_hub, "Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW)
+    showcase_emit_event(f, &g_world.event_hub, "Capture Contest", "Hold position before 3.5s timeout (race)", rl.YELLOW)
 
     outcome := coroutine.with_timeout(f, 3.5, proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         for s.progress < 1.0 {
@@ -405,13 +419,13 @@ capture_contest_fiber :: proc(f: ^coroutine.Fiber, s: ^Capture_Station) {
         s.status_text = "SUCCESS: Point Captured!"
         s.status_color = rl.GREEN
         coroutine.fiber_set_name(f, "Capture Contest: Captured!")
-        showcase_emit_event(f.sched, &g_world.event_hub, "Point Captured", "Player secured the zone in time!", rl.GREEN)
+        showcase_emit_event(f, &g_world.event_hub, "Point Captured", "Player secured the zone in time!", rl.GREEN)
     } else {
         s.capture_success = false
         s.status_text = "FAILED: Timeout Expired!"
         s.status_color = rl.RED
         coroutine.fiber_set_name(f, "Capture Contest: Timed Out")
-        showcase_emit_event(f.sched, &g_world.event_hub, "Capture Failed", "Timeout expired before completion!", rl.RED)
+        showcase_emit_event(f, &g_world.event_hub, "Capture Failed", "Timeout expired before completion!", rl.RED)
     }
 
     coroutine.wait(f, 2.0)
@@ -510,16 +524,23 @@ research_worker_thread :: proc(data: rawptr) {
     job := cast(^Research_Job)data
     start_t := time.now()
 
-    time.sleep(1000 * time.Millisecond)
+    for _ in 0 ..< 20 {
+        if coroutine.async_is_cancelled(&job.future) {
+            return
+        }
+        time.sleep(50 * time.Millisecond)
+    }
 
-    job.result_nodes = 42 * job.complexity
-    job.elapsed_worker = f32(time.duration_seconds(time.since(start_t)))
-
-    coroutine.async_token_complete(&job.token, true)
+    res := Research_Result{
+        result_nodes   = 42 * job.complexity,
+        elapsed_worker = f32(time.duration_seconds(time.since(start_t))),
+    }
+    coroutine.async_complete(&job.future, res)
 }
 
 lab_join_worker :: proc(s: ^Lab_Station) {
     if s.worker_thread != nil {
+        coroutine.async_cancel(&s.job.future)
         thread.join(s.worker_thread)
         thread.destroy(s.worker_thread)
         s.worker_thread = nil
@@ -539,40 +560,47 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
         s.status_color = rl.RAYWHITE
     }, s)
 
-    showcase_emit_event(f.sched, &g_world.event_hub, "Async Job Dispatched", "OS worker thread raced via branch_async", rl.YELLOW)
+    showcase_emit_event(f, &g_world.event_hub, "Async Job Dispatched", "OS worker thread raced via Async_Future", rl.YELLOW)
 
-    coroutine.async_token_init(&s.job.token)
+    coroutine.async_init(&s.job.future)
     s.job.complexity = 10
 
     s.worker_thread = thread.create_and_start_with_data(&s.job, research_worker_thread)
 
+    result: Research_Result
     winner := coroutine.race(f,
-        coroutine.branch_async(&s.job.token, name = "Await OS Worker"),
+        coroutine.branch_async(&s.job.future, &result, name = "Await OS Worker"),
         coroutine.branch_wait(5.0, name = "Compute Timeout"),
     )
     lab_join_worker(s)
 
     if winner == 0 {
-        s.status_text = fixed_text_make(fmt.tprintf("Done in %.2fs! Running Drone Task...", s.job.elapsed_worker))
+        s.status_text = fixed_text_make(fmt.tprintf("Done in %.2fs! Running Drone Task...", result.elapsed_worker))
         s.status_color = rl.SKYBLUE
 
         s.drone_active = true
         s.drone_pos = s.pos + {0, -40}
 
-        coroutine.spawn_task(f, &s.drone_task, proc(child: ^coroutine.Fiber, s: ^Lab_Station) -> int {
+        Drone_Ctx :: struct {
+            station: ^Lab_Station,
+            nodes:   int,
+        }
+        drone_ctx := Drone_Ctx{station = s, nodes = result.result_nodes}
+        drone_task: coroutine.Task(int)
+        coroutine.spawn_task(f, &drone_task, proc(child: ^coroutine.Fiber, dc: ^Drone_Ctx) -> int {
             for i := 0; i < 4; i += 1 {
                 coroutine.wait(child, 0.4)
-                s.drone_pos.x += (i % 2 == 0 ? 25.0 : -25.0)
+                dc.station.drone_pos.x += (i % 2 == 0 ? 25.0 : -25.0)
             }
-            s.drone_active = false
-            return s.job.result_nodes
-        }, s, scope = &s.scope, name = "Analysis Drone (Task)")
+            dc.station.drone_active = false
+            return dc.nodes
+        }, &drone_ctx, name = "Analysis Drone (Task)")
 
-        found_nodes, _ := coroutine.task_await(f, &s.drone_task)
+        found_nodes, _ := coroutine.task_await(f, &drone_task)
 
         s.status_text = fixed_text_make(fmt.tprintf("Complete! Found %d nodes", found_nodes))
         s.status_color = rl.GREEN
-        showcase_emit_event(f.sched, &g_world.event_hub, "Analysis Complete", "Async job & Drone Task finished!", rl.GREEN)
+        showcase_emit_event(f, &g_world.event_hub, "Analysis Complete", "Async_Future & Drone Task finished!", rl.GREEN)
     } else {
         s.status_text = fixed_text_make("Async Compute Timed Out")
         s.status_color = rl.RED
@@ -652,23 +680,24 @@ gate_master_fiber :: proc(f: ^coroutine.Fiber, s: ^Gate_Station) {
         s.status_text = fixed_text_make("Press [7] or [E] to construct gate")
     }, s)
 
-    showcase_emit_event(f.sched, &g_world.event_hub, "Gate Construction", "3 Task(int) builders joined via branch_task", rl.SKYBLUE)
+    showcase_emit_event(f, &g_world.event_hub, "Gate Construction", "3 Task(int) builders joined via branch_task", rl.SKYBLUE)
 
-    coroutine.spawn_task(f, &s.power_tasks[0], builder_subtask_fiber, &s.tasks[0], scope = &s.scope, name = "Builder #1 (Task)")
-    coroutine.spawn_task(f, &s.power_tasks[1], builder_subtask_fiber, &s.tasks[1], scope = &s.scope, name = "Builder #2 (Task)")
-    coroutine.spawn_task(f, &s.power_tasks[2], builder_subtask_fiber, &s.tasks[2], scope = &s.scope, name = "Builder #3 (Task)")
+    power_tasks: [3]coroutine.Task(int)
+    coroutine.spawn_task(f, &power_tasks[0], builder_subtask_fiber, &s.tasks[0], name = "Builder #1 (Task)")
+    coroutine.spawn_task(f, &power_tasks[1], builder_subtask_fiber, &s.tasks[1], name = "Builder #2 (Task)")
+    coroutine.spawn_task(f, &power_tasks[2], builder_subtask_fiber, &s.tasks[2], name = "Builder #3 (Task)")
 
     p0, p1, p2: int
     coroutine.sync(f,
-        coroutine.branch_task(&s.power_tasks[0], &p0, name = "Await Pillars"),
-        coroutine.branch_task(&s.power_tasks[1], &p1, name = "Await Core"),
-        coroutine.branch_task(&s.power_tasks[2], &p2, name = "Await Matrix"),
+        coroutine.branch_task(&power_tasks[0], &p0, name = "Await Pillars"),
+        coroutine.branch_task(&power_tasks[1], &p1, name = "Await Core"),
+        coroutine.branch_task(&power_tasks[2], &p2, name = "Await Matrix"),
     )
 
     s.total_power = p0 + p1 + p2
     s.portal_open = true
     s.status_text = fixed_text_make(fmt.tprintf("PORTAL OPEN! Output: %d MW", s.total_power))
-    showcase_emit_event(f.sched, &g_world.event_hub, "Portal Open", fmt.tprintf("3 Task(int) builders delivered %d MW!", s.total_power), rl.GREEN)
+    showcase_emit_event(f, &g_world.event_hub, "Portal Open", fmt.tprintf("3 Task(int) builders delivered %d MW!", s.total_power), rl.GREEN)
 
     tween_f32(f, &s.portal_alpha, 0.0, 1.0, 0.5, ease_out_quad)
     coroutine.wait(f, 3.0)
@@ -1293,7 +1322,7 @@ showcase_render :: proc(w: ^Showcase_World) {
                     }
                     status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
                     status_col = rl.PURPLE
-                } else if f.async_token != nil {
+                } else if coroutine.fiber_is_awaiting_async(f) {
                     status_str = "Async"
                     status_col = rl.ORANGE
                 } else {

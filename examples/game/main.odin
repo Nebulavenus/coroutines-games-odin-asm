@@ -1191,7 +1191,7 @@ game_render :: proc(g: ^Game) {
                     }
                     status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
                     status_col = rl.PURPLE
-                } else if f.async_token != nil {
+                } else if coroutine.fiber_is_awaiting_async(f) {
                     status_str = "Async"
                     status_col = rl.ORANGE
                 } else {

@@ -3,6 +3,8 @@ package coroutine_sync
 
 import "core:fmt"
 import "core:testing"
+import "core:thread"
+import "core:time"
 import coro ".."
 
 @(test)
@@ -32,7 +34,7 @@ test_fiber_mutex_contention :: proc(t: ^testing.T) {
         append(d.order, d.id)
         coro.wait(f, 0.03)
         append(d.order, d.id + 10)
-        mutex_unlock(f, d.m)
+        mutex_unlock(d.m)
     }, &d1)
 
     coro.spawn(&sched, proc(f: ^coro.Fiber, d: ^Worker_Data) {
@@ -40,7 +42,7 @@ test_fiber_mutex_contention :: proc(t: ^testing.T) {
         append(d.order, d.id)
         coro.wait(f, 0.01)
         append(d.order, d.id + 10)
-        mutex_unlock(f, d.m)
+        mutex_unlock(d.m)
     }, &d2)
 
     for _ in 0 ..< 10 {
@@ -415,7 +417,7 @@ test_fiber_semaphore_concurrency_limit :: proc(t: ^testing.T) {
             coro.wait(f, 0.02)
 
             data.active^ -= 1
-            semaphore_release(f.sched, data.sem)
+            semaphore_release(data.sem)
             data.total_comp^ += 1
         }, worker_data)
     }
@@ -439,11 +441,7 @@ test_fiber_semaphore_try_acquire :: proc(t: ^testing.T) {
     testing.expect_value(t, semaphore_available_permits(&sem), 0)
     testing.expect(t, !semaphore_try_acquire(&sem))
 
-    sched: coro.Scheduler
-    coro.scheduler_init(&sched)
-    defer coro.scheduler_destroy(&sched)
-
-    semaphore_release(&sched, &sem)
+    semaphore_release(&sem)
     testing.expect_value(t, semaphore_available_permits(&sem), 1)
     testing.expect(t, semaphore_try_acquire(&sem))
 }
@@ -607,7 +605,7 @@ test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
 
     coro.fiber_cancel(&sched, h)
 
-    semaphore_release(&sched, &sem, 1)
+    semaphore_release(&sem, 1)
     testing.expect_value(t, semaphore_available_permits(&sem), 1)
 }
 
@@ -621,16 +619,13 @@ test_cancel_fiber_holding_semaphore_with_cleanup :: proc(t: ^testing.T) {
     semaphore_init(&sem, initial_permits = 1, max_permits = 1)
     defer semaphore_destroy(&sem)
 
-    Sem_Cleanup_Ctx :: struct { sched: ^coro.Scheduler, sem: ^Fiber_Semaphore }; ctx := Sem_Cleanup_Ctx{sched = &sched, sem = &sem}
-
-    h := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ctx: ^Sem_Cleanup_Ctx) {
-        semaphore_acquire(f, ctx.sem)
-        coro.fiber_defer(f, proc(user_data: rawptr) {
-            c := (^Sem_Cleanup_Ctx)(user_data)
-            semaphore_release(c.sched, c.sem)
-        }, ctx)
+    h := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore) {
+        semaphore_acquire(f, sem)
+        coro.fiber_defer(f, proc(s: ^Fiber_Semaphore) {
+            semaphore_release(s)
+        }, sem)
         coro.wait(f, 5.0)
-    }, &ctx)
+    }, &sem)
 
     coro.scheduler_step(&sched, 0.01)
     testing.expect_value(t, semaphore_available_permits(&sem), 0)
@@ -652,7 +647,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
         coro.wait(f, 1.0)
-        mutex_unlock(f.sched, m)
+        mutex_unlock(m)
     }, &m)
 
     coro.scheduler_step(&sched, 0.01)
@@ -661,7 +656,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     waiter := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
         coro.wait(f, 0.1)
-        mutex_unlock(f.sched, m)
+        mutex_unlock(m)
     }, &m)
 
     coro.scheduler_step(&sched, 0.01)
@@ -669,7 +664,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
 
     coro.fiber_cancel(&sched, waiter)
 
-    mutex_unlock(&sched, &m)
+    mutex_unlock(&m)
     testing.expect(t, !mutex_is_locked(&m))
 }
 
@@ -765,12 +760,11 @@ test_semaphore_high_contention_random_cancellations :: proc(t: ^testing.T) {
     for i in 0 ..< 12 {
         handles[i] = coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Worker_Ctx) {
             semaphore_acquire(f, c.sem)
-            coro.fiber_defer(f, proc(user_data: rawptr) {
-                ctx := (^Sem_Worker_Ctx)(user_data)
-                semaphore_release(ctx.sched, ctx.sem)
+            coro.fiber_defer(f, proc(ctx: ^Sem_Worker_Ctx) {
+                semaphore_release(ctx.sem)
             }, c)
             coro.wait(f, 0.05)
-            semaphore_release(c.sched, c.sem)
+            semaphore_release(c.sem)
             coro.fiber_defer_cancel(f)
             c.completed^ += 1
         }, &ctx)
@@ -808,20 +802,18 @@ test_mutex_lock_unlock_cancellation_churn :: proc(t: ^testing.T) {
     Mutex_Worker_Ctx :: struct {
         m:         ^Fiber_Mutex,
         completed: ^int,
-        sched:     ^coro.Scheduler,
     }
 
-    ctx := Mutex_Worker_Ctx{m = &m, completed = &completed, sched = &sched}
+    ctx := Mutex_Worker_Ctx{m = &m, completed = &completed}
 
     for i in 0 ..< 10 {
         handles[i] = coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Mutex_Worker_Ctx) {
             mutex_lock(f, c.m)
-            coro.fiber_defer(f, proc(user_data: rawptr) {
-                ctx := (^Mutex_Worker_Ctx)(user_data)
-                mutex_unlock(ctx.sched, ctx.m)
+            coro.fiber_defer(f, proc(ctx: ^Mutex_Worker_Ctx) {
+                mutex_unlock(ctx.m)
             }, c)
             coro.wait(f, 0.03)
-            mutex_unlock(c.sched, c.m)
+            mutex_unlock(c.m)
             coro.fiber_defer_cancel(f)
             c.completed^ += 1
         }, &ctx)
@@ -1126,7 +1118,7 @@ test_mutex_stale_waiter_abort_immunity :: proc(t: ^testing.T) {
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, p: ^F1_Ctx) {
         mutex_lock(f, p.m)
         coro.wait(f, 0.04)
-        mutex_unlock(f.sched, p.m)
+        mutex_unlock(p.m)
         p.done = true
     }, &f1_ctx)
 
@@ -1554,10 +1546,10 @@ test_defensive_semaphore_non_positive :: proc(t: ^testing.T) {
     semaphore_init(&sem, initial_permits = 2, max_permits = 5)
     defer semaphore_destroy(&sem)
 
-    semaphore_release(&sched, &sem, 0)
+    semaphore_release(&sem, 0)
     testing.expect_value(t, semaphore_available_permits(&sem), 2)
 
-    semaphore_release(&sched, &sem, -3)
+    semaphore_release(&sem, -3)
     testing.expect_value(t, semaphore_available_permits(&sem), 2)
 
 }
@@ -1932,12 +1924,12 @@ test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
     testing.expect_value(t, acquired_count, 0)
     testing.expect_value(t, coro.wait_queue_count(&sem.waiters), 5)
 
-    semaphore_release(&sched, &sem, 3)
+    semaphore_release(&sem, 3)
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, acquired_count, 3)
     testing.expect_value(t, coro.wait_queue_count(&sem.waiters), 2)
 
-    semaphore_release(&sched, &sem, 2)
+    semaphore_release(&sem, 2)
     coro.scheduler_step(&sched, 0.016)
     testing.expect_value(t, acquired_count, 5)
     testing.expect_value(t, coro.wait_queue_count(&sem.waiters), 0)
@@ -1971,7 +1963,7 @@ test_mutex_owner_tracking_and_unlock_safety :: proc(t: ^testing.T) {
         append(c.step_log, c.id * 10 + 1)
         coro.yield(f)
         append(c.step_log, c.id * 10 + 2)
-        mutex_unlock(f.sched, c.m)
+        mutex_unlock(c.m)
     }, &ctx1, name = "Mutex Owner 1")
 
     h2 := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Mutex_Test_Ctx) {
@@ -1979,7 +1971,7 @@ test_mutex_owner_tracking_and_unlock_safety :: proc(t: ^testing.T) {
         append(c.step_log, c.id * 10 + 1)
         coro.yield(f)
         append(c.step_log, c.id * 10 + 2)
-        mutex_unlock(f.sched, c.m)
+        mutex_unlock(c.m)
     }, &ctx2, name = "Mutex Owner 2")
 
     coro.scheduler_step(&sched, 0.016)
@@ -2390,6 +2382,249 @@ test_chan_is_closed_and_zero_heap_select_timeout :: proc(t: ^testing.T) {
     testing.expect_value(t, chan_is_closed(&ch_b), false)
 }
 
+@(test)
+test_mutex_and_semaphore_ready_cancel_wakeup_relay :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    f2_ran := false
+    f3_ran := false
+
+    M_Ctx :: struct {
+        m:    ^Fiber_Mutex,
+        flag: ^bool,
+    }
+    mc2 := M_Ctx{m = &m, flag = &f2_ran}
+    mc3 := M_Ctx{m = &m, flag = &f3_ran}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
+        mutex_lock(f, m)
+        coro.wait(f, 5.0)
+        mutex_unlock(m)
+    }, &m)
+    h2 := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^M_Ctx) {
+        mutex_lock(f, c.m)
+        c.flag^ = true
+        mutex_unlock(c.m)
+    }, &mc2)
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^M_Ctx) {
+        mutex_lock(f, c.m)
+        c.flag^ = true
+        mutex_unlock(c.m)
+    }, &mc3)
+
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, mutex_waiter_count(&m), 2)
+
+    mutex_unlock(&m)
+    testing.expect_value(t, mutex_owner(&m), h2)
+    coro.fiber_cancel(&sched, h2)
+
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, f2_ran, false)
+    testing.expect_value(t, f3_ran, true)
+    testing.expect_value(t, mutex_is_locked(&m), false)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, 1, 1)
+    defer semaphore_destroy(&sem)
+
+    s2_ran := false
+    s3_ran := false
+    S_Ctx :: struct {
+        sem:  ^Fiber_Semaphore,
+        flag: ^bool,
+    }
+    sc2 := S_Ctx{sem = &sem, flag = &s2_ran}
+    sc3 := S_Ctx{sem = &sem, flag = &s3_ran}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore) {
+        semaphore_acquire(f, sem)
+        coro.wait(f, 5.0)
+        semaphore_release(sem)
+    }, &sem)
+    hs2 := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^S_Ctx) {
+        semaphore_acquire(f, c.sem)
+        c.flag^ = true
+        semaphore_release(c.sem)
+    }, &sc2)
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^S_Ctx) {
+        semaphore_acquire(f, c.sem)
+        c.flag^ = true
+        semaphore_release(c.sem)
+    }, &sc3)
+
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, semaphore_waiter_count(&sem), 2)
+
+    semaphore_release(&sem, 1)
+    coro.fiber_cancel(&sched, hs2)
+
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, s2_ran, false)
+    testing.expect_value(t, s3_ran, true)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+@(test)
+test_mutex_and_semaphore_timeout_variants :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    m: Fiber_Mutex
+    mutex_init(&m)
+    defer mutex_destroy(&m)
+
+    sem: Fiber_Semaphore
+    semaphore_init(&sem, 1, 1)
+    defer semaphore_destroy(&sem)
+
+    Ctx :: struct {
+        m:        ^Fiber_Mutex,
+        sem:      ^Fiber_Semaphore,
+        m_fast:   bool,
+        m_expire: bool,
+        m_ok:     bool,
+        s_fast:   bool,
+        s_expire: bool,
+        s_ok:     bool,
+    }
+    ctx := Ctx{m = &m, sem = &sem, m_expire = true, s_expire = true}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Ctx) {
+        c.m_fast = mutex_lock_timeout(f, c.m, 0.1)
+        mutex_unlock(c.m)
+
+        c.s_fast = semaphore_acquire_timeout(f, c.sem, 0.1)
+        semaphore_release(c.sem)
+
+        coro.wait(f, 0.01)
+        c.m_expire = mutex_lock_timeout(f, c.m, 0.03)
+        c.m_ok = mutex_lock_timeout(f, c.m, 0.2)
+        if c.m_ok do mutex_unlock(c.m)
+
+        c.s_expire = semaphore_acquire_timeout(f, c.sem, 0.03)
+        c.s_ok = semaphore_acquire_timeout(f, c.sem, 0.2)
+        if c.s_ok do semaphore_release(c.sem)
+    }, &ctx)
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Ctx) {
+        mutex_lock(f, c.m)
+        semaphore_acquire(f, c.sem)
+        coro.wait(f, 0.06)
+        mutex_unlock(c.m)
+        coro.wait(f, 0.06)
+        semaphore_release(c.sem)
+    }, &ctx)
+
+    for _ in 0 ..< 20 {
+        coro.scheduler_step(&sched, 0.015)
+    }
+
+    testing.expect_value(t, ctx.m_fast, true)
+    testing.expect_value(t, ctx.m_expire, false)
+    testing.expect_value(t, ctx.m_ok, true)
+    testing.expect_value(t, ctx.s_fast, true)
+    testing.expect_value(t, ctx.s_expire, false)
+    testing.expect_value(t, ctx.s_ok, true)
+    testing.expect_value(t, mutex_is_locked(&m), false)
+    testing.expect_value(t, semaphore_available_permits(&sem), 1)
+}
+
+@(test)
+test_thread_channel_mpsc_cross_thread_and_race :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    ch: Thread_Channel(int)
+    thread_chan_init(&ch, 16)
+    defer thread_chan_destroy(&ch)
+
+    testing.expect_value(t, thread_chan_cap(&ch), 16)
+    testing.expect_value(t, thread_chan_count(&ch), 0)
+    testing.expect_value(t, thread_chan_is_closed(&ch), false)
+
+    worker := thread.create_and_start_with_data(&ch, proc(raw: rawptr) {
+        c := (^Thread_Channel(int))(raw)
+        for i in 1 ..< 11 {
+            for !thread_chan_try_send(c, i * 10) {
+                time.sleep(1 * time.Millisecond)
+            }
+            time.sleep(2 * time.Millisecond)
+        }
+        thread_chan_close(c)
+    })
+    defer {
+        thread.join(worker)
+        thread.destroy(worker)
+    }
+
+    Recv_Ctx :: struct {
+        ch:    ^Thread_Channel(int),
+        sum:   int,
+        count: int,
+        done:  bool,
+    }
+    rctx := Recv_Ctx{ch = &ch}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Recv_Ctx) {
+        for {
+            v, ok := thread_chan_recv(f, c.ch)
+            if !ok do break
+            c.sum += v
+            c.count += 1
+        }
+        c.done = true
+    }, &rctx)
+
+    for _ in 0 ..< 200 {
+        coro.scheduler_step(&sched, 0.016)
+        if rctx.done do break
+        time.sleep(2 * time.Millisecond)
+    }
+
+    testing.expect_value(t, rctx.done, true)
+    testing.expect_value(t, rctx.count, 10)
+    testing.expect_value(t, rctx.sum, 550)
+    testing.expect_value(t, thread_chan_is_closed(&ch), true)
+
+    ch2: Thread_Channel(int)
+    thread_chan_init(&ch2, 4)
+    defer thread_chan_destroy(&ch2)
+
+    Race_Ctx :: struct {
+        ch:     ^Thread_Channel(int),
+        winner: int,
+        got:    int,
+    }
+    race_ctx := Race_Ctx{ch = &ch2, winner = -1}
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Race_Ctx) {
+        out := 0
+        c.winner = coro.race(f,
+            branch_thread_chan_recv(c.ch, &out),
+            coro.branch_wait(0.03),
+        )
+        c.got = out
+    }, &race_ctx)
+
+    for _ in 0 ..< 4 {
+        coro.scheduler_step(&sched, 0.015)
+    }
+    testing.expect_value(t, race_ctx.winner, 1)
+    testing.expect_value(t, thread_chan_is_closed(&ch2), false)
+    testing.expect_value(t, thread_chan_try_send(&ch2, 999), true)
+    pop_v, pop_ok := thread_chan_try_recv(&ch2)
+    testing.expect_value(t, pop_ok, true)
+    testing.expect_value(t, pop_v, 999)
+}
+
 run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: int, failed: int) {
     tests := []struct{ name: string, fn: proc(^testing.T) } {
         { "test_fiber_mutex_contention", test_fiber_mutex_contention },
@@ -2446,6 +2681,9 @@ run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: in
         { "test_heterogeneous_race_channels_events_and_timeout", test_heterogeneous_race_channels_events_and_timeout },
         { "test_channel_abort_wakeup_relay_and_unbuf_try_send", test_channel_abort_wakeup_relay_and_unbuf_try_send },
         { "test_chan_is_closed_and_zero_heap_select_timeout", test_chan_is_closed_and_zero_heap_select_timeout },
+        { "test_mutex_and_semaphore_ready_cancel_wakeup_relay", test_mutex_and_semaphore_ready_cancel_wakeup_relay },
+        { "test_mutex_and_semaphore_timeout_variants", test_mutex_and_semaphore_timeout_variants },
+        { "test_thread_channel_mpsc_cross_thread_and_race", test_thread_channel_mpsc_cross_thread_and_race },
     }
     total := len(tests)
     for test, i in tests {

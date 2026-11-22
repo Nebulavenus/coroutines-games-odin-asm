@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 210-test coverage (156 core + 54 sync, full multi-ISA QEMU parity) plus 22 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`) and per-fiber WebAssembly shadow stacks.
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 216-test coverage (159 core + 57 sync, full multi-ISA QEMU parity) plus 23 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`) and per-fiber WebAssembly shadow stacks.
 
 ---
 
@@ -24,7 +24,7 @@ This document records the comprehensive verification matrix, architectural analy
 | **Pure CSP Typed Channels (`Channel(T)`)** | `sync/sync.odin` — Symmetrical rendezvous (unbuffered `capacity == 0`) and bounded FIFO queues with deadlock-safe timeouts and multi-channel select | **PASS** |
 | **Memory Pre-Warming & Stats** | `pool.odin` & `scheduler.odin` — `scheduler_prewarm` and `scheduler_pool_stats` telemetry | **PASS** |
 | **Handle Introspection & Diagnostics** | `api.odin` — `fiber_is_alive` and `fiber_status` queries with circular handle history | **PASS** |
-| **Unopinionated Async Job Bridge** | `api.odin` — Zero-allocation lock-free `Async_Token` and `await_async` bridging background workers to main-thread fibers | **PASS** |
+| **Cancellation-Aware Async Bridge & MPSC Channel** | `api.odin` & `sync/sync.odin` — Lock-free typed `Async_Future(T)` / `Async_Token` with automatic abort-to-worker cancellation (`async_is_cancelled`), plus bounded MPSC `Thread_Channel(T)` | **PASS** |
 | **Inline 128-Byte By-Value Payloads** | `api.odin` — `spawn_val` / `branch_val` zero-heap transient payload buffers | **PASS** |
 | **Headless Virtual Simulation Stepping** | `scheduler.odin` — Independent `clock_advance` and `scheduler_run` stepping in virtual delta-time | **PASS** |
 | **Hierarchical Sub-Scope Cancellation** | `scheduler.odin` — `scope_cancel` and `scope_destroy` across heterogeneous states in $O(1)$ | **PASS** |
@@ -32,23 +32,23 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (210 Native/QEMU Tests + 22 WebAssembly Suites)
+## 2. Test Suite Execution Results (216 Native/QEMU Tests + 23 WebAssembly Suites)
 
-All **210 native unit tests** execute cleanly via `build.ps1 test` (both default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0`) and across Linux AMD64, ARM64 QEMU, and RISC-V 64 QEMU via `run_wsl_qemu.ps1 test`:
+All **216 native unit tests** execute cleanly via `build.ps1 test` (both default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0`) and across Linux AMD64, ARM64 QEMU, and RISC-V 64 QEMU via `run_wsl_qemu.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 156 tests in ~320ms. All tests were successful.
+Finished 159 tests in ~340ms. All tests were successful.
 
 Testing coroutine/sync package ()...
-Finished 54 tests in ~30ms. All tests were successful.
+Finished 57 tests in ~50ms. All tests were successful.
 
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-And all **22 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify + per-fiber shadow stacks, plus 1,000 interactive web game frames via `build.ps1 test-web-game`.
+And all **23 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify + per-fiber shadow stacks, plus 1,000 interactive web game frames via `build.ps1 test-web-game`.
 
-### Coverage Overview across 210 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
+### Coverage Overview across 216 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -229,15 +229,15 @@ All 12 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
-| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (210/210 tests, 0 leaks) |
+| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
+| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (216/216 tests, 0 leaks) |
 | `boss_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `bench_binary` | `-o:speed` | `native` | Headless Benchmark App | **PASS** (Zero Leaks) |

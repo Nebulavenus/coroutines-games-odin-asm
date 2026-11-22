@@ -44,6 +44,7 @@ scheduler_set_trace_hook :: proc(sched: ^Scheduler, hook: Trace_Hook, user_data:
     sched.trace_user_data = user_data
 }
 
+@(private="package")
 scheduler_emit_trace :: #force_inline proc(sched: ^Scheduler, event: Trace_Event, f: ^Fiber) {
     if sched != nil && sched.trace_hook != nil {
         sched.trace_hook(event, f, sched.trace_user_data)
@@ -75,6 +76,14 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
             wait_queue_clear(&fiber.join_waiters)
             if fiber.scope != nil {
                 fiber_scope_detach(fiber)
+            }
+            if fiber.async_header != nil {
+                if fiber.async_cancel_on_abort {
+                    intrinsics.atomic_store_explicit(&fiber.async_header.cancelled, true, .Release)
+                }
+                fiber.async_header = nil
+                fiber.async_index = -1
+                fiber.async_cancel_on_abort = false
             }
             for i := fiber.cleanup_count - 1; i >= 0; i -= 1 {
                 hook := fiber.cleanups[i]
@@ -150,6 +159,7 @@ heap_sift_down :: proc(heap: ^[dynamic]^Fiber, start_idx: int) {
     }
 }
 
+@(private="package")
 clock_heap_push :: proc(clock: ^Clock_Domain, fiber: ^Fiber) {
     idx := len(clock.timer_heap)
     fiber.heap_index = idx
@@ -157,6 +167,7 @@ clock_heap_push :: proc(clock: ^Clock_Domain, fiber: ^Fiber) {
     heap_sift_up(&clock.timer_heap, idx)
 }
 
+@(private="package")
 clock_heap_pop :: proc(clock: ^Clock_Domain) -> ^Fiber {
     count := len(clock.timer_heap)
     if count == 0 do return nil
@@ -174,6 +185,7 @@ clock_heap_pop :: proc(clock: ^Clock_Domain) -> ^Fiber {
     return root
 }
 
+@(private="package")
 clock_heap_remove :: proc(clock: ^Clock_Domain, index: int) {
     count := len(clock.timer_heap)
     if index < 0 || index >= count do return
@@ -202,6 +214,7 @@ clock_heap_remove :: proc(clock: ^Clock_Domain, index: int) {
 // Tree Hierarchy Utilities
 // ============================================================================
 
+@(private="package")
 fiber_link_child :: proc(parent: ^Fiber, child: ^Fiber) {
     child.parent = parent
     child.next_sibling = nil
@@ -215,6 +228,7 @@ fiber_link_child :: proc(parent: ^Fiber, child: ^Fiber) {
     parent.child_count += 1
 }
 
+@(private="package")
 fiber_unlink_child :: proc(parent: ^Fiber, child: ^Fiber) {
     if parent == nil || child == nil || child.parent != parent do return
 
@@ -311,16 +325,18 @@ scheduler_run_impl :: proc(sched: ^Scheduler, max_resumes: int) -> (resumed: int
         write_idx := 0
         for i := 0; i < len(sched.async_waiters); i += 1 {
             f := sched.async_waiters[i]
-            if f == nil || f.status != .Suspended_Join || f.async_token == nil {
+            if f == nil || f.status != .Suspended_Join || f.async_header == nil {
                 if f != nil {
                     f.async_index = -1
-                    f.async_token = nil
+                    f.async_header = nil
+                    f.async_cancel_on_abort = false
                 }
                 continue
             }
-            if intrinsics.atomic_load(&f.async_token.state) != .Pending {
+            if intrinsics.atomic_load_explicit(&f.async_header.state, .Acquire) != .Pending {
                 f.async_index = -1
-                f.async_token = nil
+                f.async_header = nil
+                f.async_cancel_on_abort = false
                 f.status = .Ready
                 append(&sched.ready_queue, f.handle)
             } else {
@@ -463,6 +479,7 @@ fiber_is_ancestor_or_self :: proc "contextless" (ancestor: ^Fiber, node: ^Fiber)
     return false
 }
 
+@(private="package")
 fiber_on_finish :: proc(fiber: ^Fiber) {
     if fiber.join_coord != nil {
         coord := fiber.join_coord
@@ -591,6 +608,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 // Fiber Recycling & Memory Lifecycle
 // ============================================================================
 
+@(private="package")
 fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     for fiber.first_child != nil {
         fiber_abort_tree(sched, fiber.first_child)
@@ -639,6 +657,7 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
     fiber_pool_recycle(&sched.fiber_pool, fiber)
 }
 
+@(private="package")
 fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     if root == nil || root.status == .Unused || root.status == .Aborted do return
 
@@ -684,19 +703,25 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     case .Suspended_Join, .Running, .Completed, .Failed, .Aborted, .Unused:
     }
 
-    if root.async_index >= 0 {
-        idx := root.async_index
-        if idx < len(sched.async_waiters) && sched.async_waiters[idx] == root {
-            last := len(sched.async_waiters) - 1
-            if idx != last {
-                moved := sched.async_waiters[last]
-                sched.async_waiters[idx] = moved
-                moved.async_index = idx
-            }
-            pop(&sched.async_waiters)
+    if root.async_header != nil {
+        if root.async_cancel_on_abort {
+            intrinsics.atomic_store_explicit(&root.async_header.cancelled, true, .Release)
         }
-        root.async_index = -1
-        root.async_token = nil
+        if root.async_index >= 0 {
+            idx := root.async_index
+            if idx < len(sched.async_waiters) && sched.async_waiters[idx] == root {
+                last := len(sched.async_waiters) - 1
+                if idx != last {
+                    moved := sched.async_waiters[last]
+                    sched.async_waiters[idx] = moved
+                    moved.async_index = idx
+                }
+                pop(&sched.async_waiters)
+            }
+            root.async_index = -1
+        }
+        root.async_header = nil
+        root.async_cancel_on_abort = false
     }
     root.event_dest = nil
 
@@ -736,6 +761,7 @@ fiber_cancel_fiber :: #force_inline proc(f: ^Fiber, handle: Fiber_Handle) -> boo
 
 fiber_cancel :: proc{fiber_cancel_sched, fiber_cancel_fiber}
 
+@(private="package")
 fiber_scope_attach :: #force_inline proc "contextless" (scope: ^Fiber_Scope, fiber: ^Fiber) {
     if scope == nil || fiber == nil do return
     fiber.scope = scope
@@ -750,6 +776,7 @@ fiber_scope_attach :: #force_inline proc "contextless" (scope: ^Fiber_Scope, fib
     scope.count += 1
 }
 
+@(private="package")
 fiber_scope_detach :: #force_inline proc "contextless" (fiber: ^Fiber) {
     if fiber == nil || fiber.scope == nil do return
     scope := fiber.scope
@@ -769,6 +796,7 @@ fiber_scope_detach :: #force_inline proc "contextless" (fiber: ^Fiber) {
     fiber.scope = nil
 }
 
+@(private="package")
 scope_wake_waiters :: proc(scope: ^Fiber_Scope) {
     if scope == nil do return
     for {

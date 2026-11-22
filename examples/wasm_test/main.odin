@@ -1108,7 +1108,7 @@ test_wasm_branch_task_async_budget_and_chan_closed :: proc() {
 
     tk: coroutine.Task(int)
     tok: coroutine.Async_Token
-    coroutine.async_token_init(&tok)
+    coroutine.async_init(&tok)
 
     coroutine.spawn_task(&sched, &tk, proc(f: ^coroutine.Fiber) -> int {
         coroutine.wait(f, 0.02)
@@ -1143,7 +1143,7 @@ test_wasm_branch_task_async_budget_and_chan_closed :: proc() {
     coroutine.scheduler_step(&sched, f32(next_dt))
     assert(ctx.w1 == 0 && ctx.v1 == 314, "branch_task must win race and populate stack-local out pointer")
 
-    coroutine.async_token_complete(&tok, true)
+    coroutine.async_complete(&tok, true)
     coroutine.scheduler_step(&sched, 0.016)
     assert(ctx.w2 == 0, "branch_async must win race when token completes")
 
@@ -1164,6 +1164,124 @@ test_wasm_branch_task_async_budget_and_chan_closed :: proc() {
     assert(!sync.chan_is_closed(&ch), "Open channel must report chan_is_closed == false")
     sync.chan_close(&ch)
     assert(sync.chan_is_closed(&ch), "Closed channel must report chan_is_closed == true")
+    fmt.println("OK")
+}
+
+g_wasm_nil_defer_ran := false
+
+test_wasm_async_future_scoped_task_timeouts_and_thread_chan :: proc() {
+    fmt.print("  [Test 23] Async_Future(T), Scoped Task, Mutex/Sem Timeout & Thread_Channel... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    fut: coroutine.Async_Future(int)
+    fut_cancel: coroutine.Async_Future(int)
+    coroutine.async_init(&fut)
+    coroutine.async_init(&fut_cancel)
+
+    m: sync.Fiber_Mutex
+    sync.mutex_init(&m)
+    defer sync.mutex_destroy(&m)
+
+    sem: sync.Fiber_Semaphore
+    sync.semaphore_init(&sem, 1, 1)
+    defer sync.semaphore_destroy(&sem)
+
+    tch: sync.Thread_Channel(int)
+    sync.thread_chan_init(&tch, 4)
+    defer sync.thread_chan_destroy(&tch)
+
+    g_wasm_nil_defer_ran = false
+
+    Ctx :: struct {
+        fut:        ^coroutine.Async_Future(int),
+        fut_cancel: ^coroutine.Async_Future(int),
+        m:          ^sync.Fiber_Mutex,
+        sem:        ^sync.Fiber_Semaphore,
+        tch:        ^sync.Thread_Channel(int),
+        fut_val:    int,
+        task_val:   int,
+        child_dead: int,
+        m_timeout:  bool,
+        s_timeout:  bool,
+        tch_val:    int,
+    }
+    ctx := Ctx{
+        fut        = &fut,
+        fut_cancel = &fut_cancel,
+        m          = &m,
+        sem        = &sem,
+        tch        = &tch,
+        m_timeout  = true,
+        s_timeout  = true,
+    }
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Ctx) {
+        coroutine.fiber_defer(f, proc() {
+            g_wasm_nil_defer_ran = true
+        })
+
+        v, ok := coroutine.await_async(f, c.fut)
+        assert(ok && v == 9001, "Async_Future(int) must deliver 9001")
+        c.fut_val = v
+
+        dummy := 0
+        w := coroutine.race(f,
+            coroutine.branch_async(c.fut_cancel, &dummy),
+            coroutine.branch_wait(0.02),
+        )
+        assert(w == 1, "Timeout branch must win")
+        assert(coroutine.async_is_cancelled(c.fut_cancel), "Async_Future must mark cancelled on race abort")
+
+        local_tk: coroutine.Task(int)
+        coroutine.spawn_task(f, &local_tk, proc(child: ^coroutine.Fiber) -> int {
+            coroutine.yield(child)
+            return 555
+        })
+        tv, tok := coroutine.task_await(f, &local_tk)
+        assert(tok && tv == 555, "Child-scoped stack-local Task(int) must complete")
+        c.task_val = tv
+
+        assert(sync.mutex_try_lock(f, c.m), "Hold mutex")
+        assert(sync.semaphore_try_acquire(c.sem), "Hold semaphore")
+        c.m_timeout = sync.mutex_lock_timeout(f, c.m, 0.02)
+        c.s_timeout = sync.semaphore_acquire_timeout(f, c.sem, 0.02)
+        sync.mutex_unlock(c.m)
+        sync.semaphore_release(c.sem)
+
+        tv2, tok2 := sync.thread_chan_recv(f, c.tch)
+        assert(tok2 && tv2 == 4242, "Thread_Channel(int) must deliver 4242")
+        c.tch_val = tv2
+    }, &ctx)
+
+    h_abort := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Ctx) {
+        local_tk: coroutine.Task(int)
+        coroutine.spawn_task(f, &local_tk, proc(child: ^coroutine.Fiber, c: ^Ctx) -> int {
+            coroutine.fiber_defer(child, proc(c: ^Ctx) {
+                c.child_dead += 1
+            }, c)
+            coroutine.wait(child, 5.0)
+            return 0
+        }, c)
+        _, _ = coroutine.task_await(f, &local_tk)
+    }, &ctx)
+
+    coroutine.scheduler_step(&sched, 0.01)
+    coroutine.fiber_cancel(&sched, h_abort)
+    assert(ctx.child_dead == 1, "Cancelling parent must abort child-scoped Task(int)")
+
+    coroutine.async_complete(&fut, 9001)
+    for _ in 0 ..< 10 {
+        coroutine.scheduler_step(&sched, 0.015)
+    }
+    assert(sync.thread_chan_try_send(&tch, 4242), "thread_chan_try_send must succeed")
+    coroutine.scheduler_step(&sched, 0.015)
+
+    assert(ctx.fut_val == 9001 && ctx.task_val == 555 && ctx.tch_val == 4242, "Async_Future, Task, and Thread_Channel results must match")
+    assert(!ctx.m_timeout && !ctx.s_timeout, "mutex_lock_timeout and semaphore_acquire_timeout must expire cleanly")
+    assert(g_wasm_nil_defer_ran, "Nilary fiber_defer must execute on Wasm")
+    assert(!coroutine.scheduler_has_active(&sched), "All fibers must be cleaned up")
     fmt.println("OK")
 }
 
@@ -1198,9 +1316,10 @@ main :: proc() {
     test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select()
     test_wasm_per_fiber_shadow_stack_isolation_and_no_leak()
     test_wasm_branch_task_async_budget_and_chan_closed()
+    test_wasm_async_future_scoped_task_timeouts_and_thread_chan()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 22 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 23 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

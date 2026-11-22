@@ -536,7 +536,7 @@ world_sim_step :: proc(w: ^World, sim_dt: f32, real_dt: f32) {
         w.knight.action_color = rl.GOLD
         coroutine.spawn(&w.sched, proc(f: ^coroutine.Fiber, k: ^Knight_AI) {
             coroutine.wait(f, 1.2)
-            coroutine.spawn(f.sched, knight_ai_fiber, k, scope = &k.scope, name = "Knight AI (fallback)")
+            coroutine.spawn(f, knight_ai_fiber, k, &k.scope, name = "Knight AI (fallback)")
         }, &w.knight, scope = &w.knight.scope, name = "Knight Stun Recovery")
     }
 
@@ -785,7 +785,7 @@ world_render :: proc(w: ^World) {
                     }
                     status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
                     status_col = rl.PURPLE
-                } else if f.async_token != nil {
+                } else if coroutine.fiber_is_awaiting_async(f) {
                     status_str = "Async"
                     status_col = rl.ORANGE
                 } else {

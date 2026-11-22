@@ -114,7 +114,52 @@ spawn_nil :: proc(
     return fiber.handle
 }
 
-spawn :: proc{spawn_ptr, spawn_val, spawn_nil}
+spawn_fiber_ptr :: proc(
+    f: ^Fiber,
+    entry: proc(f: ^Fiber, data: ^$T),
+    data: ^T,
+    scope: ^Fiber_Scope,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_ptr(f.sched, entry, data, scope, name, c)
+}
+
+spawn_fiber_val :: proc(
+    f: ^Fiber,
+    entry: proc(f: ^Fiber, data: $T),
+    data: T,
+    scope: ^Fiber_Scope,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle where !intrinsics.type_is_pointer(T) {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_val(f.sched, entry, data, scope, name, c)
+}
+
+spawn_fiber_nil :: proc(
+    f: ^Fiber,
+    entry: proc(f: ^Fiber),
+    scope: ^Fiber_Scope,
+    name: string = "",
+    clock: Clock_ID = CLOCK_INHERIT,
+) -> Fiber_Handle {
+    if f == nil || f.sched == nil do return 0
+    c := clock == CLOCK_INHERIT ? f.clock_id : clock
+    return spawn_nil(f.sched, entry, scope, name, c)
+}
+
+spawn :: proc{
+    spawn_ptr,
+    spawn_val,
+    spawn_nil,
+    spawn_fiber_ptr,
+    spawn_fiber_val,
+    spawn_fiber_nil,
+}
 
 // ============================================================================
 // Clock Domain Selection & Time Queries
@@ -333,6 +378,14 @@ fiber_set_name :: #force_inline proc(f: ^Fiber, name: string) {
     }
 }
 
+fiber_scheduler :: #force_inline proc "contextless" (f: ^Fiber) -> ^Scheduler {
+    return f != nil ? f.sched : nil
+}
+
+fiber_is_awaiting_async :: #force_inline proc "contextless" (f: ^Fiber) -> bool {
+    return f != nil && f.async_header != nil
+}
+
 fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
     return f != nil ? f.debug_name : ""
 }
@@ -362,9 +415,23 @@ fiber_defer_ptr :: proc(f: ^Fiber, cleanup_proc: proc(user_data: ^$T), user_data
     fiber_defer_raw(f, cast(proc(rawptr))cleanup_proc, rawptr(user_data))
 }
 
+@(private="file")
+fiber_defer_nil_trampoline :: proc(user_data: rawptr) {
+    fn := cast(proc())user_data
+    if fn != nil {
+        fn()
+    }
+}
+
+fiber_defer_nil :: proc(f: ^Fiber, cleanup_proc: proc()) {
+    if cleanup_proc == nil do return
+    fiber_defer_raw(f, fiber_defer_nil_trampoline, rawptr(cleanup_proc))
+}
+
 fiber_defer :: proc{
     fiber_defer_raw,
     fiber_defer_ptr,
+    fiber_defer_nil,
 }
 
 fiber_defer_cancel :: proc(f: ^Fiber) {
@@ -536,17 +603,42 @@ branch_task :: proc(task: ^Task($T), out: ^T, fail_on_error: bool = true, name :
     }, Payload{task = task, out = out, fail_on_error = fail_on_error}, name)
 }
 
-branch_async :: proc(token: ^Async_Token, fail_on_error: bool = true, name := "await_async") -> Branch_Desc {
+branch_async_token :: proc(token: ^Async_Token, fail_on_error: bool = true, name := "await_async") -> Branch_Desc {
     Payload :: struct {
         token:         ^Async_Token,
         fail_on_error: bool,
     }
     return branch_val(proc(f: ^Fiber, p: Payload) {
-        ok := await_async(f, p.token)
+        ok := await_async_token(f, p.token)
         if !ok && p.fail_on_error {
             fail(f)
         }
     }, Payload{token = token, fail_on_error = fail_on_error}, name)
+}
+
+branch_async_future :: proc(fut: ^Async_Future($T), out: ^T, fail_on_error: bool = true, name := "await_async") -> Branch_Desc where T != struct{} {
+    Payload :: struct {
+        fut:           ^Async_Future(T),
+        out:           ^T,
+        fail_on_error: bool,
+    }
+    return branch_val(proc(f: ^Fiber, p: Payload) {
+        val, ok := await_async_future(f, p.fut)
+        if !ok {
+            if p.fail_on_error {
+                fail(f)
+            }
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{fut = fut, out = out, fail_on_error = fail_on_error}, name)
+}
+
+branch_async :: proc{
+    branch_async_token,
+    branch_async_future,
 }
 
 // ============================================================================
@@ -1059,8 +1151,6 @@ signal_emit_fiber :: proc(f: ^Fiber, sig: ^Signal) {
 event_emit :: proc{
     event_emit_sched,
     event_emit_fiber,
-    signal_emit_sched,
-    signal_emit_fiber,
 }
 
 event_waiter_count :: #force_inline proc "contextless" (ev: ^Event($T)) -> int {
@@ -1187,43 +1277,84 @@ sticky_signal_emit :: proc{
     sticky_signal_emit_fiber,
 }
 
-sticky_emit :: proc{
-    sticky_event_emit_sched,
-    sticky_event_emit_fiber,
-    sticky_signal_emit_sched,
-    sticky_signal_emit_fiber,
-}
-
-sticky_wait :: proc{
-    sticky_event_wait,
-    sticky_signal_wait,
-}
-
 // ============================================================================
-// Async Job Integration (await_async / Async_Token)
+// Cross-Thread Async Bridge (Async_Future(T), Async_Token, await_async)
 // ============================================================================
 
-async_token_init :: proc(token: ^Async_Token) {
-    if token == nil do return
-    token.state = .Pending
-}
-
-async_token_complete :: proc(token: ^Async_Token, success := true) {
-    if token == nil do return
-    intrinsics.atomic_store(&token.state, success ? .Completed : .Failed)
-}
-
-await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
-    if f == nil || token == nil || f.sched == nil do return false
-
-    if intrinsics.atomic_load(&token.state) == .Pending {
-        f.async_token = token
+fiber_await_async_header :: proc(f: ^Fiber, header: ^Async_Header, cancel_on_abort: bool = true) {
+    if f == nil || header == nil || f.sched == nil do return
+    if intrinsics.atomic_load_explicit(&header.state, .Acquire) == .Pending {
+        f.async_header = (^Async_Header)(rawptr(header))
+        f.async_cancel_on_abort = cancel_on_abort
         f.async_index = len(f.sched.async_waiters)
         append(&f.sched.async_waiters, f)
         fiber_suspend(f)
     }
+}
 
-    return intrinsics.atomic_load(&token.state) == .Completed
+async_init :: proc(fut: ^Async_Future($T)) {
+    if fut == nil do return
+    fut^ = {}
+    intrinsics.atomic_store_explicit(&fut.header.state, .Pending, .Release)
+    intrinsics.atomic_store_explicit(&fut.header.cancelled, false, .Release)
+}
+
+async_complete_token :: proc(token: ^Async_Token, success := true) {
+    if token == nil do return
+    target: Async_State = success ? .Completed : .Failed
+    _, _ = intrinsics.atomic_compare_exchange_strong_explicit(&token.header.state, .Pending, target, .Release, .Relaxed)
+}
+
+async_complete_val :: proc(fut: ^Async_Future($T), value: T) where T != struct{} {
+    if fut == nil do return
+    if intrinsics.atomic_load_explicit(&fut.header.state, .Acquire) != .Pending do return
+    fut.value = value
+    _, _ = intrinsics.atomic_compare_exchange_strong_explicit(&fut.header.state, .Pending, .Completed, .Release, .Relaxed)
+}
+
+async_complete :: proc{
+    async_complete_token,
+    async_complete_val,
+}
+
+async_fail :: proc(fut: ^Async_Future($T)) {
+    if fut == nil do return
+    _, _ = intrinsics.atomic_compare_exchange_strong_explicit(&fut.header.state, .Pending, .Failed, .Release, .Relaxed)
+}
+
+async_cancel :: proc(fut: ^Async_Future($T)) {
+    if fut == nil do return
+    intrinsics.atomic_store_explicit(&fut.header.cancelled, true, .Release)
+}
+
+async_is_cancelled :: proc "contextless" (fut: ^Async_Future($T)) -> bool {
+    if fut == nil do return false
+    return intrinsics.atomic_load_explicit(&fut.header.cancelled, .Acquire)
+}
+
+async_state :: proc "contextless" (fut: ^Async_Future($T)) -> Async_State {
+    if fut == nil do return .Failed
+    return intrinsics.atomic_load_explicit(&fut.header.state, .Acquire)
+}
+
+await_async_token :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
+    if f == nil || token == nil || f.sched == nil do return false
+    fiber_await_async_header(f, &token.header, true)
+    return intrinsics.atomic_load_explicit(&token.header.state, .Acquire) == .Completed
+}
+
+await_async_future :: proc(f: ^Fiber, fut: ^Async_Future($T)) -> (val: T, ok: bool) where T != struct{} {
+    if f == nil || fut == nil || f.sched == nil do return {}, false
+    fiber_await_async_header(f, &fut.header, true)
+    if intrinsics.atomic_load_explicit(&fut.header.state, .Acquire) == .Completed {
+        return fut.value, true
+    }
+    return {}, false
+}
+
+await_async :: proc{
+    await_async_token,
+    await_async_future,
 }
 
 // ============================================================================
@@ -1311,10 +1442,9 @@ spawn_task_sched_nil :: proc(
     }
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
-        fiber_defer(f, proc(raw: rawptr) {
-            tk := (^Task(R))(raw)
+        fiber_defer(f, proc(tk: ^Task(R)) {
             task_fail_sched(nil, tk)
-        }, rawptr(p.task))
+        }, p.task)
         res := p.fn(f)
         fiber_defer_cancel(f)
         task_complete(f, p.task, res)
@@ -1339,10 +1469,9 @@ spawn_task_sched_ptr :: proc(
     }
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
-        fiber_defer(f, proc(raw: rawptr) {
-            tk := (^Task(R))(raw)
+        fiber_defer(f, proc(tk: ^Task(R)) {
             task_fail_sched(nil, tk)
-        }, rawptr(p.task))
+        }, p.task)
         res := p.fn(f, p.data)
         fiber_defer_cancel(f)
         task_complete(f, p.task, res)
@@ -1368,10 +1497,9 @@ spawn_task_sched_val :: proc(
     #assert(size_of(Task_Wrapper_Payload) <= FIBER_PAYLOAD_SIZE, "spawn_task_sched_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
-        fiber_defer(f, proc(raw: rawptr) {
-            tk := (^Task(R))(raw)
+        fiber_defer(f, proc(tk: ^Task(R)) {
             task_fail_sched(nil, tk)
-        }, rawptr(p.task))
+        }, p.task)
         res := p.fn(f, p.data)
         fiber_defer_cancel(f)
         task_complete(f, p.task, res)
@@ -1384,13 +1512,25 @@ spawn_task_fiber_nil :: proc(
     f: ^Fiber,
     task: ^Task($R),
     entry: proc(child: ^Fiber) -> R,
-    scope: ^Fiber_Scope = nil,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
 ) -> Fiber_Handle {
     if f == nil || f.sched == nil do return 0
-    c := clock == CLOCK_INHERIT ? f.clock_id : clock
-    return spawn_task_sched_nil(f.sched, task, entry, scope, name, c)
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(child: ^Fiber) -> R,
+    }
+    task_init(task)
+    h := branch_scoped_desc(f, branch_val(proc(child: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(child, proc(tk: ^Task(R)) {
+            task_fail_sched(nil, tk)
+        }, p.task)
+        res := p.fn(child)
+        fiber_defer_cancel(child)
+        task_complete(child, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry}, name, clock))
+    task.handle = h
+    return h
 }
 
 spawn_task_fiber_ptr :: proc(
@@ -1398,13 +1538,26 @@ spawn_task_fiber_ptr :: proc(
     task: ^Task($R),
     entry: proc(child: ^Fiber, data: ^$D) -> R,
     data: ^D,
-    scope: ^Fiber_Scope = nil,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
 ) -> Fiber_Handle {
     if f == nil || f.sched == nil do return 0
-    c := clock == CLOCK_INHERIT ? f.clock_id : clock
-    return spawn_task_sched_ptr(f.sched, task, entry, data, scope, name, c)
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(child: ^Fiber, data: ^D) -> R,
+        data: ^D,
+    }
+    task_init(task)
+    h := branch_scoped_desc(f, branch_val(proc(child: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(child, proc(tk: ^Task(R)) {
+            task_fail_sched(nil, tk)
+        }, p.task)
+        res := p.fn(child, p.data)
+        fiber_defer_cancel(child)
+        task_complete(child, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, name, clock))
+    task.handle = h
+    return h
 }
 
 spawn_task_fiber_val :: proc(
@@ -1412,13 +1565,27 @@ spawn_task_fiber_val :: proc(
     task: ^Task($R),
     entry: proc(child: ^Fiber, data: $D) -> R,
     data: D,
-    scope: ^Fiber_Scope = nil,
     name: string = "",
     clock: Clock_ID = CLOCK_INHERIT,
 ) -> Fiber_Handle where !intrinsics.type_is_pointer(D) {
     if f == nil || f.sched == nil do return 0
-    c := clock == CLOCK_INHERIT ? f.clock_id : clock
-    return spawn_task_sched_val(f.sched, task, entry, data, scope, name, c)
+    Task_Wrapper_Payload :: struct {
+        task: ^Task(R),
+        fn:   proc(child: ^Fiber, data: D) -> R,
+        data: D,
+    }
+    #assert(size_of(Task_Wrapper_Payload) <= FIBER_PAYLOAD_SIZE, "spawn_task_fiber_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
+    task_init(task)
+    h := branch_scoped_desc(f, branch_val(proc(child: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(child, proc(tk: ^Task(R)) {
+            task_fail_sched(nil, tk)
+        }, p.task)
+        res := p.fn(child, p.data)
+        fiber_defer_cancel(child)
+        task_complete(child, p.task, res)
+    }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, name, clock))
+    task.handle = h
+    return h
 }
 
 spawn_task :: proc{

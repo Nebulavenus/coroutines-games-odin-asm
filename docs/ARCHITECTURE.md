@@ -1231,17 +1231,17 @@ Instead of baking hardcoded simulation, real-time, and tick clocks with duplicat
 - Sleeping fibers store their cached `heap_index: int`, allowing $O(\log N)$ cancellation and removal without linear scans.
 
 ### C. Minimal Verse / SkookumScript Core vs. Optional `coroutine/sync` Package
-- **Core Package (`package coroutine`)**: Focused strictly on multi-ISA stack switching, slab/guard-page memory pools, structured concurrency combinators (`sync`, `race`, `rush`, `fallback`, `with_timeout`, `with_signal`, `fail`), `Fiber_Scope`, unified `Event(T)` / `Signal :: Event(struct{})`, `Sticky_Event(T)` / `Sticky_Signal`, `Task(T)`, and `Async_Token`.
-- **Optional Sync Subpackage (`sync/` — `package coroutine_sync`)**: Houses Go/OS-style concurrency primitives (`Fiber_Mutex`, `with_mutex`, `Fiber_Semaphore`, `with_semaphore`, `Channel(T)` ring-buffer CSP channels, and `chan_select_recv`), keeping the core runtime minimal while preserving full CSP and lock primitives for applications that need them.
+- **Core Package (`package coroutine`)**: Focused strictly on multi-ISA stack switching, slab/guard-page memory pools, structured concurrency combinators (`sync`, `race`, `rush`, `fallback`, `with_timeout`, `with_signal`, `with_sticky_signal`, `fail`), `Fiber_Scope`, unified `Event(T)` / `Signal :: Event(struct{})`, `Sticky_Event(T)` / `Sticky_Signal`, child-scoped `Task(T)`, and cancellation-aware `Async_Future(T)` / `Async_Token :: Async_Future(struct{})`. Internal pool/heap/scheduler helpers are encapsulated via `@(private="package")`.
+- **Optional Sync Subpackage (`sync/` — `package coroutine_sync`)**: Houses Go/OS-style concurrency primitives (`Fiber_Mutex`, `with_mutex`, `mutex_lock_timeout`, `Fiber_Semaphore`, `with_semaphore`, `semaphore_acquire_timeout`, `Channel(T)` ring-buffer CSP channels, `chan_select_recv`, and `Thread_Channel(T)` bounded MPSC cross-thread channels), keeping the core runtime minimal while preserving full CSP, lock, and cross-thread streaming primitives.
 
 ### D. Inline 128-Byte By-Value Payloads (`spawn_val` / `branch_val`)
 - Transient parameters are copied into `fiber.payload_storage: [FIBER_PAYLOAD_SIZE]byte`, validated via `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
 - Eliminates dangling stack pointers when spawning from transient procedures without dynamic heap allocations.
 
-### E. Pure Concurrency Primitives (`fiber_join`, `Event(T)` / `Signal`, `Async_Token`)
+### E. Pure Concurrency Primitives (`fiber_join`, `Event(T)` / `Signal`, `Async_Future(T)` / `Async_Token`)
 - **Dynamic Task Join (`fiber_join(f, handle)`)**: Allows any fiber to await the terminal completion of an independent task handle (returning `true` on `.Completed` and `false` on abort/failure).
 - **Unified Multicast Broadcast (`Event(T)` & `Signal :: Event(struct{})`)**: 1-to-many publish-subscribe mechanism that broadcasts typed data (or zero-size signals) across decoupled systems in a single step with zero heap allocations.
-- **Cross-Thread Async Bridge (`Async_Token`, `await_async`)**: Allows background OS worker threads to signal completion atomically without locking the cooperative scheduler.
+- **Cancellation-Aware Cross-Thread Async Bridge (`Async_Future(T)`, `Async_Token`, `await_async`, `branch_async`)**: Allows background OS worker threads to deliver typed results (`async_complete(&fut, val)`) or fail (`async_fail(&fut)`) atomically without locking the cooperative scheduler, while automatically setting `async_is_cancelled(&fut)` whenever the awaiting fiber is aborted, timed out, or torn down during `scheduler_destroy`.
 
 ### F. Loading-Screen Pre-Warming & Diagnostics (`scheduler_prewarm`, `Pool_Stats`)
 - **`scheduler_prewarm(sched, count)`**: Pre-allocates slab capacity during loading screens or boot, guaranteeing zero mid-game allocation spikes.

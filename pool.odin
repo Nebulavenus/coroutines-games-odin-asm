@@ -6,6 +6,7 @@ import "core:mem"
 // Stack & Fiber Pool Implementation
 // ============================================================================
 
+@(private="package")
 fiber_pool_init :: proc(
     pool: ^Fiber_Pool,
     stack_size: uint = DEFAULT_STACK_SIZE,
@@ -33,6 +34,7 @@ fiber_pool_init :: proc(
     pool.all_fibers = make([dynamic]^Fiber, pool.allocator)
 }
 
+@(private="package")
 fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
     allocator := config.allocator
     if allocator.procedure == nil {
@@ -47,6 +49,7 @@ fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
     )
 }
 
+@(private="package")
 fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     if pool == nil do return
     alloc := pool.allocator.procedure != nil ? pool.allocator : context.allocator
@@ -80,8 +83,10 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     pool.slabs = nil
 }
 
+@(private="package")
 STACK_WATERMARK :: 0xAA
 
+@(private="package")
 fiber_watermark_stack :: proc(fiber: ^Fiber) {
     if fiber.stack_base == nil do return
     start_offset := CANARY_SIZE
@@ -176,6 +181,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     }
 }
 
+@(private="package")
 fiber_init_canary :: proc(fiber: ^Fiber) {
     if fiber.stack_base == nil do return
     canary_ptr := ([^]u64)(fiber.stack_base)
@@ -197,6 +203,7 @@ fiber_check_canary :: proc(fiber: ^Fiber) -> bool {
     return true
 }
 
+@(private="package")
 fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) -> ^Fiber {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     if len(pool.free_fibers) == 0 {
@@ -222,8 +229,9 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.wake_step = 0
     fiber.heap_index = -1
     fiber.step_index = -1
-    fiber.async_token = nil
+    fiber.async_header = nil
     fiber.async_index = -1
+    fiber.async_cancel_on_abort = false
     fiber.event_dest = nil
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
@@ -259,6 +267,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     return fiber
 }
 
+@(private="package")
 fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     if fiber.status == .Unused do return
 
@@ -300,8 +309,9 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.wake_step = 0
     fiber.heap_index = -1
     fiber.step_index = -1
-    fiber.async_token = nil
+    fiber.async_header = nil
     fiber.async_index = -1
+    fiber.async_cancel_on_abort = false
     fiber.event_dest = nil
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
@@ -324,6 +334,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     append(&pool.free_fibers, fiber)
 }
 
+@(private="package")
 fiber_pool_prewarm :: proc(pool: ^Fiber_Pool, fiber_count: int, allocator := context.allocator) {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
     for len(pool.all_fibers) < fiber_count {
@@ -331,6 +342,7 @@ fiber_pool_prewarm :: proc(pool: ^Fiber_Pool, fiber_count: int, allocator := con
     }
 }
 
+@(private="package")
 fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
     total := len(pool.all_fibers)
     free_count := len(pool.free_fibers)
@@ -353,6 +365,7 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
 // Initial Stack Synthesis
 // ============================================================================
 
+@(private="package")
 fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
     top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
     top = top & ~uintptr(15)
@@ -435,6 +448,7 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
 // Trampoline Entry
 // ============================================================================
 
+@(private="package")
 fiber_trampoline_entry :: proc "c" () {
     fiber: ^Fiber
     when ODIN_ARCH == .amd64 {
@@ -477,6 +491,7 @@ fiber_trampoline_entry :: proc "c" () {
     fiber_yield_final(fiber)
 }
 
+@(private="package")
 fiber_yield_final :: proc "c" (fiber: ^Fiber) {
     when ODIN_ARCH == .wasm32 {
         return
@@ -521,7 +536,7 @@ wait_queue_push_back :: proc "contextless" (q: ^Wait_Queue, f: ^Fiber) {
     if q == nil || f == nil do return
     f.next_waiter = nil
     f.prev_waiter = q.tail
-    f.current_wait_queue = q
+    f.current_wait_queue = (^Wait_Queue)(rawptr(q))
 
     if q.tail != nil {
         q.tail.next_waiter = f

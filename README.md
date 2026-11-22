@@ -326,14 +326,14 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 - **Multi-Tiered Stack Safety**:
   - Hardware guard pages (`PAGE_NOACCESS` on Windows, `PROT_NONE` on Linux/macOS).
   - Canary watermark (`0xDEAD_BEEF_CAFE_BABE`) with high-water stack profiling (`fiber_calc_stack_usage`).
-- **Unopinionated Async Job Bridge (`await_async` / `Async_Token`)**:
-  - Atomic-backed completion token allowing fibers to yield cleanly until background OS threads or worker pools finish. Zero scheduler-side condition polling.
+- **Cancellation-Aware Cross-Thread Async Bridge (`Async_Future(T)`, `Async_Token`, `await_async`, `branch_async`)**:
+  - Atomic-backed typed future (`Async_Future(T)`) and zero-payload `Async_Token :: Async_Future(struct{})` allowing fibers to suspend with zero context switches while background OS threads execute, automatically propagating cooperative cancellation (`async_is_cancelled`) when the awaiting fiber is aborted or timed out.
 - **Modular CSP & Concurrency Subpackage (`coroutine/sync`)**:
   - Dedicated optional subpackage providing Go/OS-style synchronization when needed:
-    - `Channel(T)`: Unbuffered rendezvous and bounded FIFO buffered queues.
-    - `chan_select_recv`: Multi-channel multiplexer.
-    - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion (`with_mutex`).
-    - `Fiber_Semaphore`: Cooperative counting semaphore (`with_semaphore`).
+    - `Channel(T)`: Unbuffered rendezvous and bounded FIFO buffered queues (`chan_select_recv`, `branch_chan_recv`, `branch_chan_send`).
+    - `Thread_Channel(T)`: Lock-free/spinlock bounded MPSC cross-thread channel bridging background OS worker threads into a single-threaded scheduler (`thread_chan_try_send`, `thread_chan_recv`, `branch_thread_chan_recv`).
+    - `Fiber_Mutex`: Non-blocking cooperative mutual exclusion (`with_mutex`, `mutex_lock_timeout`, abort-safe wakeup relay).
+    - `Fiber_Semaphore`: Cooperative counting semaphore (`with_semaphore`, `semaphore_acquire_timeout`, abort-safe wakeup relay).
 
 ---
 
@@ -341,13 +341,13 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 272 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15`, TEB stack bounds | `%r12` | **210 / 210 Tests PASS (Native Host Windows, 0 Leaks)** |
-| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **210 / 210 Tests PASS (Native WSL2 Host CPU)** |
-| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **210 / 210 Tests PASS (WSL2 QEMU)** |
-| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **210 / 210 Tests PASS (WSL2 QEMU)** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 272 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15`, TEB stack bounds | `%r12` | **216 / 216 Tests PASS (Native Host Windows, 0 Leaks)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **216 / 216 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **216 / 216 Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **216 / 216 Tests PASS (WSL2 QEMU)** |
 | **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **Cross-Check PASS (AAPCS64 ABI Verified)** |
 | **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **Cross-Check PASS (SysV AMD64 ABI Verified)** |
-| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Per-Fiber 8 KB Shadow Stack + 4 KB Asyncify | Isolated `$__stack_pointer` + Asyncify Unwind/Rewind | N/A | **22 / 22 Test Suites + 1,000-Frame Headless Game PASS** |
+| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Per-Fiber 8 KB Shadow Stack + 4 KB Asyncify | Isolated `$__stack_pointer` + Asyncify Unwind/Rewind | N/A | **23 / 23 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
 
@@ -365,7 +365,7 @@ The cross-platform PowerShell build script [`build.ps1`](build.ps1) automates al
 # Run the AI & Quest Sandbox
 .\build.ps1 run-quest
 
-# Run All 210 Unit Tests (156 Core + 54 Sync) with 0 Leaks
+# Run All 216 Unit Tests (159 Core + 57 Sync) with 0 Leaks
 .\build.ps1 test
 
 # Cross-Check All 7 Multi-ISA & WebAssembly Targets
