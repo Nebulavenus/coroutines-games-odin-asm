@@ -3,7 +3,7 @@
 `coroutines_asm` is designed to be vendored into Odin projects with zero friction. It supports two primary distribution paradigms:
 
 1. **Direct Package Drop-in (`shared:coroutine`)**: Clone or submodule this repository directly.
-2. **Amalgamated Single-File Drop-in (`dist/coroutine.odin`)**: A single self-contained native file (~3,816 lines; plus `dist/coroutine_wasm32.odin` at ~3,372 lines for WebAssembly, and `dist/sync/sync.odin` at ~893 lines for `Fiber_Mutex`, `Fiber_Semaphore`, `Channel(T)`, and heterogeneous channel branches) with unified imports.
+2. **Amalgamated Single-File Drop-in (`dist/coroutine.odin`)**: A single self-contained native file (~3,872 lines; plus `dist/coroutine_wasm32.odin` at ~3,428 lines for WebAssembly, and `dist/sync/sync.odin` at ~893 lines for `Fiber_Mutex`, `Fiber_Semaphore`, `Channel(T)`, and heterogeneous channel branches) with unified imports.
 
 ---
 

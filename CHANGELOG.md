@@ -53,8 +53,12 @@ All notable changes to this project will be documented in this file.
   - Added heterogeneous branch builders `branch_event`, `branch_sticky_event`, `branch_join`, `branch_scope_wait` (core) and `branch_chan_recv`, `branch_chan_send` (`sync/`), enabling zero-polling mixed-type `race` / `sync` across `Channel(A)`, `Channel(B)`, `Event(C)`, `Signal`, `fiber_join`, `scope_wait`, and timers.
   - Hardened `sync/sync.odin` against lost wakeups when an awakened `chan_recv` or `chan_send` waiter (buffered or unbuffered) is aborted via `race`/`chan_select_recv` by relaying wakeups via `fiber_defer`, and fixed unbuffered `chan_try_send` to reject overwriting an occupied rendezvous slot (`ch.count > 0`).
   - Updated `tools/amalgamate.py` to generate and cross-check `dist/sync/sync.odin` alongside `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, verified end-to-end in `examples/dist_test/main.odin`.
+- **Zero-Overhead Trace Hooks, Expanded `fiber_defer` Capacity & Full 206-Test Multi-ISA QEMU Parity (`config.odin`, `types.odin`, `pool.odin`, `scheduler.odin`, `api.odin`, `examples/test_runner/main.odin`)**:
+  - Added optional zero-overhead profiler/tracing hooks (`Trace_Event`, `Trace_Hook`, `scheduler_set_trace_hook`) emitting paired lifecycle events (`.Spawn`, `.Resume`, `.Suspend`, `.Complete`, `.Fail`, `.Abort`), plus `fiber_resume_count` and `fiber_defer_count` diagnostics.
+  - Raised default `MAX_FIBER_CLEANUPS` from `8` to `16` (configurable via `-define:CORO_MAX_FIBER_CLEANUPS`) to comfortably support deeply nested `with_mutex`, `chan_recv`, and user `fiber_defer` chains.
+  - Synced `run_all_coroutine_tests` (153 core tests) and added `run_all_sync_tests` (53 sync tests) into `examples/test_runner/main.odin`, bringing Linux AMD64, ARM64 QEMU, and RISC-V 64 QEMU coverage to 100% parity (`206 / 206` tests).
 - **Tests, Distributions & Docs**:
-  - Expanded native unit tests to `205` (`152` core + `53` sync, passing both at default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0` with 0 leaks) and WebAssembly suites to `20`; verified all `146` standalone harness tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU).
+  - Expanded native unit tests to `206` (`153` core + `53` sync, passing both at default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0` with 0 leaks), verified all `206 / 206` tests at runtime on Windows AMD64, Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU), and passed `20 / 20` WebAssembly suites + 1,000-frame interactive headless Wasm game.
 
 ## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
 

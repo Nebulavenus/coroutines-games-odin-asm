@@ -950,6 +950,30 @@ test_wasm_zero_stack_slabs_and_heterogeneous_branch_select :: proc() {
     coroutine.fiber_cancel(&sched, h1)
     coroutine.scheduler_step(&sched, 0.016)
     assert(st.relay_v == 555, "Aborted receiver must relay wakeup to next waiter under Wasm")
+
+    Trace_Counters :: struct {
+        spawns:    int,
+        resumes:   int,
+        completes: int,
+    }
+    tc: Trace_Counters
+    coroutine.scheduler_set_trace_hook(&sched, proc(ev: coroutine.Trace_Event, f: ^coroutine.Fiber, ud: rawptr) {
+        c := (^Trace_Counters)(ud)
+        if c == nil || f == nil do return
+        #partial switch ev {
+        case .Spawn:    c.spawns += 1
+        case .Resume:   c.resumes += 1
+        case .Complete: c.completes += 1
+        }
+    }, &tc)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+        coroutine.yield(f)
+        assert(coroutine.fiber_resume_count(f) == 2, "Resume count must track yields under Wasm")
+    })
+    coroutine.scheduler_step(&sched, 0.016)
+    coroutine.scheduler_step(&sched, 0.016)
+    coroutine.scheduler_set_trace_hook(&sched, nil, nil)
+    assert(tc.spawns == 1 && tc.resumes == 2 && tc.completes == 1, "Trace hook must fire under Wasm")
     fmt.println("OK")
 }
 

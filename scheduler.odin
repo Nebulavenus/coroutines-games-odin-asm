@@ -34,6 +34,20 @@ scheduler_init :: proc(
     sched.pending_abort_root = nil
     sched.watchdog_enabled = WATCHDOG_ENABLED
     sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
+    sched.trace_hook = nil
+    sched.trace_user_data = nil
+}
+
+scheduler_set_trace_hook :: proc(sched: ^Scheduler, hook: Trace_Hook, user_data: rawptr = nil) {
+    if sched == nil do return
+    sched.trace_hook = hook
+    sched.trace_user_data = user_data
+}
+
+scheduler_emit_trace :: #force_inline proc(sched: ^Scheduler, event: Trace_Event, f: ^Fiber) {
+    if sched != nil && sched.trace_hook != nil {
+        sched.trace_hook(event, f, sched.trace_user_data)
+    }
 }
 
 scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
@@ -332,7 +346,9 @@ scheduler_run :: proc(sched: ^Scheduler) {
         }
 
         f.status = .Running
+        f.resume_count += 1
         sched.current_fiber = f
+        scheduler_emit_trace(sched, .Resume, f)
 
         if sched.watchdog_enabled {
             t0 := time.tick_now()
@@ -358,7 +374,16 @@ scheduler_run :: proc(sched: ^Scheduler) {
         // Reload status with volatile semantics to prevent compiler SSA caching across ASM switch
         status := intrinsics.volatile_load(&f.status)
         if status == .Completed || status == .Failed || status == .Aborted {
+            if status == .Completed {
+                scheduler_emit_trace(sched, .Complete, f)
+            } else if status == .Failed {
+                scheduler_emit_trace(sched, .Fail, f)
+            } else {
+                scheduler_emit_trace(sched, .Abort, f)
+            }
             fiber_cleanup_and_recycle(sched, f)
+        } else {
+            scheduler_emit_trace(sched, .Suspend, f)
         }
     }
     resize(&sched.ready_queue, write_idx)
@@ -597,6 +622,7 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
 
     prev_status := root.status
     root.status = .Aborted
+    scheduler_emit_trace(sched, .Abort, root)
 
     for root.first_child != nil {
         fiber_abort_tree(sched, root.first_child)

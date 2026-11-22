@@ -4346,6 +4346,13 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_large_event_and_sticky_event_no_payload_aliasing", test_large_event_and_sticky_event_no_payload_aliasing },
         { "test_task_failure_and_cancellation_wakes_awaiters", test_task_failure_and_cancellation_wakes_awaiters },
         { "test_unbounded_sync_with_zero_stack_array", test_unbounded_sync_with_zero_stack_array },
+        { "test_clock_pause_gates_advance_and_ready_queue", test_clock_pause_gates_advance_and_ready_queue },
+        { "test_fiber_self_cancel_and_ancestor_cancel", test_fiber_self_cancel_and_ancestor_cancel },
+        { "test_race_sibling_defer_cancels_other_sibling", test_race_sibling_defer_cancels_other_sibling },
+        { "test_fail_runs_defer_before_guard_sibling_abort", test_fail_runs_defer_before_guard_sibling_abort },
+        { "test_boss_demo_coroutine_patterns_stress", test_boss_demo_coroutine_patterns_stress },
+        { "test_branch_event_sticky_join_scope_wait_heterogeneous_race", test_branch_event_sticky_join_scope_wait_heterogeneous_race },
+        { "test_trace_hook_and_diagnostics", test_trace_hook_and_diagnostics },
     }
     total := len(tests)
     for test, i in tests {
@@ -6826,4 +6833,79 @@ test_branch_event_sticky_join_scope_wait_heterogeneous_race :: proc(t: ^testing.
     testing.expect_value(t, ctx.sync_done, true)
     testing.expect_value(t, ctx.sev_val, f32(3.5))
     testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_trace_hook_and_diagnostics :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Trace_Counts :: struct {
+        spawns:    int,
+        resumes:   int,
+        suspends:  int,
+        completes: int,
+        fails:     int,
+        aborts:    int,
+    }
+    counts: Trace_Counts
+
+    scheduler_set_trace_hook(&sched, proc(ev: Trace_Event, f: ^Fiber, ud: rawptr) {
+        c := (^Trace_Counts)(ud)
+        if c == nil || f == nil do return
+        switch ev {
+        case .Spawn:    c.spawns += 1
+        case .Resume:   c.resumes += 1
+        case .Suspend:  c.suspends += 1
+        case .Complete: c.completes += 1
+        case .Fail:     c.fails += 1
+        case .Abort:    c.aborts += 1
+        }
+    }, &counts)
+
+    Diag_Ctx :: struct {
+        resumes_seen: u64,
+        defer_peak:   int,
+        defer_runs:   int,
+    }
+    dctx: Diag_Ctx
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Diag_Ctx) {
+        for _ in 0 ..< 12 {
+            fiber_defer(f, proc(c: ^Diag_Ctx) {
+                c.defer_runs += 1
+            }, c)
+        }
+        c.defer_peak = fiber_defer_count(f)
+        yield(f)
+        yield(f)
+        c.resumes_seen = fiber_resume_count(f)
+    }, &dctx, name = "Normal")
+
+    spawn_nil(&sched, proc(f: ^Fiber) {
+        yield(f)
+        fail(f)
+    }, name = "Failing")
+
+    h_abort := spawn_nil(&sched, proc(f: ^Fiber) {
+        wait(f, 10.0)
+    }, name = "Aborting")
+
+    scheduler_step(&sched, 0.016)
+    fiber_cancel(&sched, h_abort)
+    scheduler_step(&sched, 0.016)
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, dctx.defer_peak, 12)
+    testing.expect_value(t, dctx.defer_runs, 12)
+    testing.expect_value(t, dctx.resumes_seen, u64(3))
+    testing.expect_value(t, counts.spawns, 3)
+    testing.expect_value(t, counts.resumes, 6)
+    testing.expect_value(t, counts.suspends, 4)
+    testing.expect_value(t, counts.completes, 1)
+    testing.expect_value(t, counts.fails, 1)
+    testing.expect_value(t, counts.aborts, 1)
+
+    scheduler_set_trace_hook(&sched, nil, nil)
 }

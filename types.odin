@@ -219,6 +219,7 @@ Fiber :: struct {
     debug_name:       string,
     start_time:       f64,
     stack_high_water: uint,
+    resume_count:     u64,
 }
 
 // ============================================================================
@@ -340,7 +341,21 @@ Scheduler :: struct {
     // Debug Watchdog Timer (Detects non-yielding infinite loops)
     watchdog_enabled:      bool,
     watchdog_max_slice_ms: f64,
+
+    trace_hook:            Trace_Hook,
+    trace_user_data:       rawptr,
 }
+
+Trace_Event :: enum u8 {
+    Spawn,
+    Resume,
+    Suspend,
+    Complete,
+    Fail,
+    Abort,
+}
+
+Trace_Hook :: #type proc(event: Trace_Event, f: ^Fiber, user_data: rawptr)
 
 // Tree Traversal Visitor Callback
 Fiber_Visitor :: #type proc(f: ^Fiber, depth: int, user_data: rawptr)

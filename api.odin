@@ -37,6 +37,7 @@ spawn_ptr :: proc(
     }
 
     append(&sched.ready_queue, fiber.handle)
+    scheduler_emit_trace(sched, .Spawn, fiber)
     return fiber.handle
 }
 
@@ -76,6 +77,7 @@ spawn_val :: proc(
     }
 
     append(&sched.ready_queue, fiber.handle)
+    scheduler_emit_trace(sched, .Spawn, fiber)
     return fiber.handle
 }
 
@@ -108,6 +110,7 @@ spawn_nil :: proc(
     }
 
     append(&sched.ready_queue, fiber.handle)
+    scheduler_emit_trace(sched, .Spawn, fiber)
     return fiber.handle
 }
 
@@ -334,6 +337,14 @@ fiber_name :: #force_inline proc "contextless" (f: ^Fiber) -> string {
     return f != nil ? f.debug_name : ""
 }
 
+fiber_resume_count :: #force_inline proc "contextless" (f: ^Fiber) -> u64 {
+    return f != nil ? f.resume_count : 0
+}
+
+fiber_defer_count :: #force_inline proc "contextless" (f: ^Fiber) -> int {
+    return f != nil ? f.cleanup_count : 0
+}
+
 fiber_defer_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_data: rawptr = nil) {
     if f == nil || cleanup_proc == nil do return
     if f.cleanup_count < MAX_FIBER_CLEANUPS {
@@ -533,6 +544,7 @@ branch_scoped_desc :: proc(f: ^Fiber, b: Branch_Desc) -> Fiber_Handle {
 
     fiber_link_child(f, child)
     append(&f.sched.ready_queue, child.handle)
+    scheduler_emit_trace(f.sched, .Spawn, child)
     return child.handle
 }
 
@@ -612,6 +624,7 @@ fiber_spawn_join_child :: proc(f: ^Fiber, index: int, b: ^Branch_Desc) {
 
     fiber_link_child(f, child)
     append(&f.sched.ready_queue, child.handle)
+    scheduler_emit_trace(f.sched, .Spawn, child)
 }
 
 fiber_wait_join :: proc(f: ^Fiber) {

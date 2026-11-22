@@ -242,6 +242,7 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.debug_name = ""
     fiber.start_time = 0
     fiber.stack_high_water = 0
+    fiber.resume_count = 0
     fiber.scope = nil
     fiber.next_in_scope = nil
     fiber.prev_in_scope = nil
@@ -323,6 +324,7 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.prev_waiter = nil
     fiber.current_wait_queue = nil
     fiber.join_waiters = {}
+    fiber.resume_count = 0
 
     append(&pool.free_fibers, fiber)
 }

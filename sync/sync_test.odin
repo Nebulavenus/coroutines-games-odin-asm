@@ -1,6 +1,7 @@
 #+build !js
 package coroutine_sync
 
+import "core:fmt"
 import "core:testing"
 import coro ".."
 
@@ -2329,4 +2330,78 @@ test_channel_abort_wakeup_relay_and_unbuf_try_send :: proc(t: ^testing.T) {
     v_pop2, ok_pop2 := chan_try_recv(&ch_buf)
     testing.expect_value(t, ok_pop2, true)
     testing.expect_value(t, v_pop2, 30)
+}
+
+run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: int, failed: int) {
+    tests := []struct{ name: string, fn: proc(^testing.T) } {
+        { "test_fiber_mutex_contention", test_fiber_mutex_contention },
+        { "test_with_mutex_and_abort_cleanup", test_with_mutex_and_abort_cleanup },
+        { "test_fiber_semaphore_concurrency_and_abort", test_fiber_semaphore_concurrency_and_abort },
+        { "test_channel_rendezvous_and_buffered", test_channel_rendezvous_and_buffered },
+        { "test_channel_timeouts_and_select", test_channel_timeouts_and_select },
+        { "test_channel_synchronous_rendezvous", test_channel_synchronous_rendezvous },
+        { "test_channel_buffered_fifo", test_channel_buffered_fifo },
+        { "test_channel_close_and_drain", test_channel_close_and_drain },
+        { "test_channel_ring_buffer_wraparound", test_channel_ring_buffer_wraparound },
+        { "test_fiber_semaphore_concurrency_limit", test_fiber_semaphore_concurrency_limit },
+        { "test_fiber_semaphore_try_acquire", test_fiber_semaphore_try_acquire },
+        { "test_chan_try_select_recv", test_chan_try_select_recv },
+        { "test_chan_select_recv_blocking", test_chan_select_recv_blocking },
+        { "test_chan_select_closed_channel", test_chan_select_closed_channel },
+        { "test_cancel_fiber_waiting_on_semaphore", test_cancel_fiber_waiting_on_semaphore },
+        { "test_cancel_fiber_holding_semaphore_with_cleanup", test_cancel_fiber_holding_semaphore_with_cleanup },
+        { "test_cancel_fiber_waiting_on_mutex", test_cancel_fiber_waiting_on_mutex },
+        { "test_multi_channel_select_stress_with_producer_cancellation", test_multi_channel_select_stress_with_producer_cancellation },
+        { "test_semaphore_high_contention_random_cancellations", test_semaphore_high_contention_random_cancellations },
+        { "test_mutex_lock_unlock_cancellation_churn", test_mutex_lock_unlock_cancellation_churn },
+        { "test_chan_destroy_auto_wakes_blocked_receivers", test_chan_destroy_auto_wakes_blocked_receivers },
+        { "test_chan_destroy_auto_wakes_blocked_senders", test_chan_destroy_auto_wakes_blocked_senders },
+        { "test_chan_recv_timeout_success", test_chan_recv_timeout_success },
+        { "test_chan_recv_timeout_expires", test_chan_recv_timeout_expires },
+        { "test_chan_recv_timeout_closed_channel", test_chan_recv_timeout_closed_channel },
+        { "test_channel_close_multicast_with_interleaved_receivers", test_channel_close_multicast_with_interleaved_receivers },
+        { "test_chan_recv_timeout_concurrent_producers", test_chan_recv_timeout_concurrent_producers },
+        { "test_mutex_stale_waiter_abort_immunity", test_mutex_stale_waiter_abort_immunity },
+        { "test_scoped_mutex_and_semaphore", test_scoped_mutex_and_semaphore },
+        { "test_multi_channel_select", test_multi_channel_select },
+        { "test_channel_stale_waiter_abort_immunity", test_channel_stale_waiter_abort_immunity },
+        { "test_with_mutex_val", test_with_mutex_val },
+        { "test_with_semaphore_val", test_with_semaphore_val },
+        { "test_chan_select_recv_multiplexing", test_chan_select_recv_multiplexing },
+        { "test_chan_cap_inspection", test_chan_cap_inspection },
+        { "test_chan_recv_timeout_unbuffered_safety", test_chan_recv_timeout_unbuffered_safety },
+        { "test_chan_unbuffered_sender_before_receiver", test_chan_unbuffered_sender_before_receiver },
+        { "test_chan_select_unbuffered_with_sender", test_chan_select_unbuffered_with_sender },
+        { "test_defensive_semaphore_and_latch_non_positive", test_defensive_semaphore_and_latch_non_positive },
+        { "test_chan_unbuffered_multi_sender_rendezvous", test_chan_unbuffered_multi_sender_rendezvous },
+        { "test_chan_unbuffered_sender_abort_cleanup", test_chan_unbuffered_sender_abort_cleanup },
+        { "test_with_mutex_automatic_abort_cleanup", test_with_mutex_automatic_abort_cleanup },
+        { "test_with_semaphore_automatic_abort_cleanup", test_with_semaphore_automatic_abort_cleanup },
+        { "test_chan_select_recv_buffered_priority_over_closed", test_chan_select_recv_buffered_priority_over_closed },
+        { "test_unbuffered_chan_sender_first_rendezvous", test_unbuffered_chan_sender_first_rendezvous },
+        { "test_unbuffered_chan_multi_sender_fifo_rendezvous", test_unbuffered_chan_multi_sender_fifo_rendezvous },
+        { "test_semaphore_true_zii_unbounded_permits", test_semaphore_true_zii_unbounded_permits },
+        { "test_mutex_owner_tracking_and_unlock_safety", test_mutex_owner_tracking_and_unlock_safety },
+        { "test_chan_send_timeout_success_and_expiry", test_chan_send_timeout_success_and_expiry },
+        { "test_chan_select_recv_event_driven_and_partial_close", test_chan_select_recv_event_driven_and_partial_close },
+        { "test_chan_select_recv_round_robin_fairness_and_huge_abort", test_chan_select_recv_round_robin_fairness_and_huge_abort },
+        { "test_heterogeneous_race_channels_events_and_timeout", test_heterogeneous_race_channels_events_and_timeout },
+        { "test_channel_abort_wakeup_relay_and_unbuf_try_send", test_channel_abort_wakeup_relay_and_unbuf_try_send },
+    }
+    total := len(tests)
+    for test, i in tests {
+        sub_t: testing.T
+        test.fn(&sub_t)
+        if sub_t.error_count == 0 {
+            passed += 1
+            if verbose {
+                fmt.printf("  [PASS] [sync %2d/%2d] %s\n", i + 1, total, test.name)
+            }
+        } else {
+            failed += 1
+            if t != nil do t.error_count += sub_t.error_count
+            fmt.printf("  [FAIL] [sync %2d/%2d] %s (errors: %d)\n", i + 1, total, test.name, sub_t.error_count)
+        }
+    }
+    return passed, failed
 }
