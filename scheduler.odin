@@ -20,6 +20,7 @@ scheduler_init :: proc(
     }
     sched.allocator = allocator.procedure != nil ? allocator : context.allocator
     sched.ready_queue = make([dynamic]Fiber_Handle, sched.allocator)
+    sched.async_waiters = make([dynamic]^Fiber, sched.allocator)
     for i in 0 ..< MAX_CLOCKS {
         sched.clocks[i] = Clock_Domain{
             timer_heap   = make([dynamic]^Fiber, sched.allocator),
@@ -35,27 +36,17 @@ scheduler_init :: proc(
 }
 
 scheduler_init_config :: proc(sched: ^Scheduler, config: Fiber_Pool_Config) {
-    if sched.ready_queue != nil || sched.fiber_pool.all_fibers != nil {
-        scheduler_destroy(sched)
-    }
     allocator := config.allocator
     if allocator.procedure == nil {
         allocator = context.allocator
     }
-    sched.allocator = allocator
-    sched.ready_queue = make([dynamic]Fiber_Handle, sched.allocator)
-    for i in 0 ..< MAX_CLOCKS {
-        sched.clocks[i] = Clock_Domain{
-            timer_heap   = make([dynamic]^Fiber, sched.allocator),
-            step_waiters = make([dynamic]^Fiber, sched.allocator),
-        }
-    }
-    fiber_pool_init_config(&sched.fiber_pool, config)
-
-    sched.scheduler_sp = nil
-    sched.current_fiber = nil
-    sched.watchdog_enabled = WATCHDOG_ENABLED
-    sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
+    scheduler_init(
+        sched,
+        config.stack_size == 0 ? DEFAULT_STACK_SIZE : config.stack_size,
+        config.stacks_per_slab == 0 ? STACKS_PER_SLAB : config.stacks_per_slab,
+        config.alloc_mode,
+        allocator,
+    )
 }
 
 scheduler_destroy :: proc(sched: ^Scheduler) {
@@ -82,6 +73,8 @@ scheduler_destroy :: proc(sched: ^Scheduler) {
 
     delete(sched.ready_queue)
     sched.ready_queue = nil
+    delete(sched.async_waiters)
+    sched.async_waiters = nil
     for i in 0 ..< MAX_CLOCKS {
         delete(sched.clocks[i].timer_heap)
         delete(sched.clocks[i].step_waiters)
@@ -282,6 +275,31 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
 
 scheduler_run :: proc(sched: ^Scheduler) {
     if sched == nil do return
+
+    if len(sched.async_waiters) > 0 {
+        write_idx := 0
+        for i := 0; i < len(sched.async_waiters); i += 1 {
+            f := sched.async_waiters[i]
+            if f == nil || f.status != .Suspended_Join || f.async_token == nil {
+                if f != nil {
+                    f.async_index = -1
+                    f.async_token = nil
+                }
+                continue
+            }
+            if intrinsics.atomic_load(&f.async_token.state) != .Pending {
+                f.async_index = -1
+                f.async_token = nil
+                f.status = .Ready
+                append(&sched.ready_queue, f.handle)
+            } else {
+                sched.async_waiters[write_idx] = f
+                f.async_index = write_idx
+                write_idx += 1
+            }
+        }
+        resize(&sched.async_waiters, write_idx)
+    }
 
     for i := 0; i < len(sched.ready_queue); i += 1 {
         h := sched.ready_queue[i]
@@ -560,6 +578,22 @@ fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
         }
     case .Suspended_Join, .Running, .Completed, .Failed, .Aborted, .Unused:
     }
+
+    if root.async_index >= 0 {
+        idx := root.async_index
+        if idx < len(sched.async_waiters) && sched.async_waiters[idx] == root {
+            last := len(sched.async_waiters) - 1
+            if idx != last {
+                moved := sched.async_waiters[last]
+                sched.async_waiters[idx] = moved
+                moved.async_index = idx
+            }
+            pop(&sched.async_waiters)
+        }
+        root.async_index = -1
+        root.async_token = nil
+    }
+    root.event_dest = nil
 
     if root.current_wait_queue != nil {
         wait_queue_remove(root.current_wait_queue, root)

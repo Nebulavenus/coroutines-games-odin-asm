@@ -22,6 +22,9 @@ PAYLOAD_SIZE :: #config(CORO_PAYLOAD_SIZE, 128)
 // Private per-fiber temporary arena buffer size (bound to context.temp_allocator).
 TEMP_ARENA_SIZE :: #config(CORO_TEMP_ARENA_SIZE, 4 * 1024)
 
+// WebAssembly Asyncify unwind/rewind stack serialization buffer size per fiber (in bytes).
+WASM_ASYNCIFY_STORAGE_SIZE :: #config(CORO_ASYNCIFY_STORAGE_SIZE, 4096)
+
 // --- 2. Safety, Canary & Diagnostics ---
 // Size of the canary guard watermark at the base of each stack (in bytes).
 CANARY_SIZE :: #config(CORO_CANARY_SIZE, 64)
@@ -29,7 +32,7 @@ CANARY_SIZE :: #config(CORO_CANARY_SIZE, 64)
 // Magic 64-bit watermark value used to detect stack overflow corruptions.
 CANARY_MAGIC :: #config(CORO_CANARY_MAGIC, 0xDEAD_BEEF_CAFE_BABE)
 
-// Default stack allocation mode: 0 = .Standard_Slab (Heap), 1 = .Virtual_Memory_OS (PAGE_GUARD)
+// Default stack allocation mode: 0 = .Standard_Slab (Heap), 1 = .Virtual_Memory_OS (PAGE_NOACCESS / PROT_NONE)
 DEFAULT_ALLOC_MODE_INT :: #config(CORO_ALLOC_MODE, 0)
 
 // Default watchdog runaway loop protection (enabled in debug mode by default).

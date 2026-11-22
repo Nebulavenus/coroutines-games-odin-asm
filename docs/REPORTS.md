@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 192-test coverage (142 core + 50 sync) plus 17 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 195-test coverage (145 core + 50 sync) plus 17 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -32,13 +32,13 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (192 Native Tests + 17 WebAssembly Suites)
+## 2. Test Suite Execution Results (195 Native Tests + 17 WebAssembly Suites)
 
-All **192 native unit tests** execute cleanly via `build.ps1 test`:
+All **195 native unit tests** execute cleanly via `build.ps1 test`:
 
 ```
 Testing coroutine package ()...
-Finished 142 tests in ~330ms. All tests were successful.
+Finished 145 tests in ~315ms. All tests were successful.
 
 Testing coroutine/sync package ()...
 Finished 50 tests in ~19ms. All tests were successful.
@@ -48,7 +48,7 @@ Finished 50 tests in ~19ms. All tests were successful.
 
 And all **17 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
 
-### Coverage Overview across 192 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
+### Coverage Overview across 195 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -229,15 +229,15 @@ All 12 build matrix targets pass with zero warnings:
 
 | Build Target | Optimization | Architecture | Binary Type | Result |
 | :--- | :--- | :--- | :--- | :--- |
-| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
-| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (192/192 tests, 0 leaks) |
+| `test_debug` | `-o:none -debug` | `x86-64-v1` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_minimal` | `-o:minimal` | `x86-64-v1` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_size` | `-o:size` | `x86-64-v1` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_speed` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_aggressive` | `-o:aggressive` | `native` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_x86_64_v1` | `-o:speed` | `x86-64` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_x86_64_v2` | `-o:speed` | `x86-64-v2` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_x86_64_v3` | `-o:speed` | `x86-64-v3` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
+| `test_native` | `-o:speed` | `native` | Headless Test Runner | **PASS** (195/195 tests, 0 leaks) |
 | `boss_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `showcase_demo` | `-o:speed` | `native` | Raylib Window App | **PASS** (Zero Leaks) |
 | `bench_binary` | `-o:speed` | `native` | Headless Benchmark App | **PASS** (Zero Leaks) |

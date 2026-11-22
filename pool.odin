@@ -12,7 +12,7 @@ import "core:sys/posix"
 fiber_pool_init :: proc(
     pool: ^Fiber_Pool,
     stack_size: uint = DEFAULT_STACK_SIZE,
-    stacks_per_slab: int = 32,
+    stacks_per_slab: int = STACKS_PER_SLAB,
     alloc_mode: Stack_Allocation_Mode = DEFAULT_ALLOC_MODE,
     allocator := context.allocator,
 ) {
@@ -39,7 +39,7 @@ fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
     fiber_pool_init(
         pool,
         config.stack_size == 0 ? DEFAULT_STACK_SIZE : config.stack_size,
-        config.stacks_per_slab == 0 ? 32 : config.stacks_per_slab,
+        config.stacks_per_slab == 0 ? STACKS_PER_SLAB : config.stacks_per_slab,
         config.alloc_mode,
         allocator,
     )
@@ -138,6 +138,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 fiber.generation = 1
                 fiber.status = .Unused
                 fiber.heap_index = -1
+                fiber.step_index = -1
+                fiber.async_index = -1
                 fiber_watermark_stack(fiber)
                 fiber_init_canary(fiber)
 
@@ -165,6 +167,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 fiber.generation = 1
                 fiber.status = .Unused
                 fiber.heap_index = -1
+                fiber.step_index = -1
+                fiber.async_index = -1
                 fiber_watermark_stack(fiber)
                 fiber_init_canary(fiber)
 
@@ -190,6 +194,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         fiber.generation = 1
         fiber.status = .Unused
         fiber.heap_index = -1
+        fiber.step_index = -1
+        fiber.async_index = -1
         fiber_watermark_stack(fiber)
         fiber_init_canary(fiber)
 
@@ -243,6 +249,9 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.wake_step = 0
     fiber.heap_index = -1
     fiber.step_index = -1
+    fiber.async_token = nil
+    fiber.async_index = -1
+    fiber.event_dest = nil
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
     fiber.entry_proc = nil
@@ -313,6 +322,9 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     fiber.wake_step = 0
     fiber.heap_index = -1
     fiber.step_index = -1
+    fiber.async_token = nil
+    fiber.async_index = -1
+    fiber.event_dest = nil
     fiber.ticker_interval = 0
     fiber.ticker_next_wake = 0
     fiber.entry_proc = nil

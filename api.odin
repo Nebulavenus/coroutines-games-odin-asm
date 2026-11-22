@@ -928,7 +928,6 @@ with_sticky_signal :: proc{
 // ============================================================================
 
 event_init :: proc(ev: ^Event($T)) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if ev == nil do return
     ev^ = {}
 }
@@ -939,28 +938,58 @@ event_destroy :: proc(ev: ^Event($T)) {
 }
 
 event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || ev == nil || f.sched == nil do return {}, false
 
+    if size_of(T) == 0 {
+        wait_queue_push_back(&ev.waiters, f)
+        fiber_suspend(f)
+        return {}, true
+    }
+
+    arena_tmp := mem.begin_arena_temp_memory(&f.temp_arena)
+    defer mem.end_arena_temp_memory(arena_tmp)
+
+    use_heap := size_of(T) > 2048
+    alloc := use_heap ? f.sched.allocator : mem.arena_allocator(&f.temp_arena)
+    dst := new(T, alloc)
+
+    if use_heap {
+        Heap_Free_Ctx :: struct {
+            ptr:   rawptr,
+            alloc: mem.Allocator,
+        }
+        fctx := new(Heap_Free_Ctx, mem.arena_allocator(&f.temp_arena))
+        fctx^ = Heap_Free_Ctx{ptr = dst, alloc = alloc}
+        fiber_defer(f, proc(raw: rawptr) {
+            c := (^Heap_Free_Ctx)(raw)
+            if c != nil && c.ptr != nil {
+                free(c.ptr, c.alloc)
+            }
+        }, rawptr(fctx))
+    }
+
+    f.event_dest = rawptr(dst)
     wait_queue_push_back(&ev.waiters, f)
     fiber_suspend(f)
 
-    if size_of(T) > 0 {
-        payload = (cast(^T)&f.payload_storage[0])^
+    f.event_dest = nil
+    payload = dst^
+    if use_heap {
+        fiber_defer_run_top(f)
     }
     return payload, true
 }
 
 event_emit_sched :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if sched == nil || ev == nil || wait_queue_is_empty(&ev.waiters) do return
 
     for {
         f, ok := wait_queue_pop_front(&ev.waiters)
         if !ok do break
         if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
-            if size_of(T) > 0 {
-                (cast(^T)&f.payload_storage[0])^ = payload
+            if size_of(T) > 0 && f.event_dest != nil {
+                (cast(^T)f.event_dest)^ = payload
+                f.event_dest = nil
             }
             f.status = .Ready
             append(&sched.ready_queue, f.handle)
@@ -1015,7 +1044,6 @@ signal_wait :: proc(f: ^Fiber, sig: ^Signal) {
 // ============================================================================
 
 sticky_event_init :: proc(ev: ^Sticky_Event($T)) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if ev == nil do return
     ev^ = {}
 }
@@ -1051,24 +1079,17 @@ sticky_event_has_waiters :: #force_inline proc "contextless" (ev: ^Sticky_Event(
 }
 
 sticky_event_wait :: proc(f: ^Fiber, ev: ^Sticky_Event($T)) -> (payload: T, ok: bool) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || ev == nil || f.sched == nil do return {}, false
 
-    if ev.has_value {
-        return ev.value, true
+    for !ev.has_value {
+        wait_queue_push_back(&ev.waiters, f)
+        fiber_suspend(f)
     }
 
-    wait_queue_push_back(&ev.waiters, f)
-    fiber_suspend(f)
-
-    if size_of(T) > 0 {
-        payload = (cast(^T)&f.payload_storage[0])^
-    }
-    return payload, true
+    return ev.value, true
 }
 
 sticky_event_emit_sched :: proc(sched: ^Scheduler, ev: ^Sticky_Event($T), payload: T) {
-    #assert(size_of(T) <= FIBER_PAYLOAD_SIZE, "Sticky_Event(T): payload size exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if ev == nil do return
 
     ev.has_value = true
@@ -1080,9 +1101,6 @@ sticky_event_emit_sched :: proc(sched: ^Scheduler, ev: ^Sticky_Event($T), payloa
         f, ok := wait_queue_pop_front(&ev.waiters)
         if !ok do break
         if f != nil && f.status == .Suspended_Join && fiber_is_alive(sched, f.handle) {
-            if size_of(T) > 0 {
-                (cast(^T)&f.payload_storage[0])^ = payload
-            }
             f.status = .Ready
             append(&sched.ready_queue, f.handle)
         }
@@ -1153,8 +1171,11 @@ async_token_complete :: proc(token: ^Async_Token, success := true) {
 await_async :: proc(f: ^Fiber, token: ^Async_Token) -> (success: bool) {
     if f == nil || token == nil || f.sched == nil do return false
 
-    for intrinsics.atomic_load(&token.state) == .Pending {
-        yield(f)
+    if intrinsics.atomic_load(&token.state) == .Pending {
+        f.async_token = token
+        f.async_index = len(f.sched.async_waiters)
+        append(&f.sched.async_waiters, f)
+        fiber_suspend(f)
     }
 
     return intrinsics.atomic_load(&token.state) == .Completed
@@ -1172,11 +1193,13 @@ task_init :: proc(task: ^Task($T), handle: Fiber_Handle = 0) {
 
 task_complete_sched :: proc(sched: ^Scheduler, task: ^Task($T), value: T) {
     if task == nil do return
+    task.state = .Completed
     sticky_event_emit(sched, &task.result, value)
 }
 
 task_complete_fiber :: proc(f: ^Fiber, task: ^Task($T), value: T) {
     if task == nil || f == nil do return
+    task.state = .Completed
     sticky_event_emit(f, &task.result, value)
 }
 
@@ -1185,13 +1208,48 @@ task_complete :: proc{
     task_complete_fiber,
 }
 
+task_fail_sched :: proc(sched: ^Scheduler, task: ^Task($T)) {
+    if task == nil || task.state != .Pending do return
+    task.state = .Failed
+    for {
+        w, ok := wait_queue_pop_front(&task.result.waiters)
+        if !ok do break
+        if w != nil {
+            fiber_wake(sched != nil ? sched : w.sched, w)
+        }
+    }
+}
+
+task_fail_fiber :: proc(f: ^Fiber, task: ^Task($T)) {
+    if task == nil || f == nil do return
+    task_fail_sched(f.sched, task)
+}
+
+task_fail :: proc{
+    task_fail_sched,
+    task_fail_fiber,
+}
+
 task_await :: proc(f: ^Fiber, task: ^Task($T)) -> (val: T, ok: bool) {
-    if f == nil || task == nil do return {}, false
-    return sticky_event_wait(f, &task.result)
+    if f == nil || task == nil || f.sched == nil do return {}, false
+
+    for task.state == .Pending && !task.result.has_value {
+        wait_queue_push_back(&task.result.waiters, f)
+        fiber_suspend(f)
+    }
+
+    if task.state == .Failed {
+        return {}, false
+    }
+    return task.result.value, true
 }
 
 task_is_ready :: proc(task: ^Task($T)) -> bool {
-    return task != nil && task.result.has_value
+    return task != nil && (task.state != .Pending || task.result.has_value)
+}
+
+task_state :: proc "contextless" (task: ^Task($T)) -> Task_State {
+    return task != nil ? task.state : .Failed
 }
 
 spawn_task_sched_nil :: proc(
@@ -1208,7 +1266,12 @@ spawn_task_sched_nil :: proc(
     }
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(f, proc(raw: rawptr) {
+            tk := (^Task(R))(raw)
+            task_fail_sched(nil, tk)
+        }, rawptr(p.task))
         res := p.fn(f)
+        fiber_defer_cancel(f)
         task_complete(f, p.task, res)
     }, Task_Wrapper_Payload{task = task, fn = entry}, scope, name, clock)
     task.handle = h
@@ -1231,7 +1294,12 @@ spawn_task_sched_ptr :: proc(
     }
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(f, proc(raw: rawptr) {
+            tk := (^Task(R))(raw)
+            task_fail_sched(nil, tk)
+        }, rawptr(p.task))
         res := p.fn(f, p.data)
+        fiber_defer_cancel(f)
         task_complete(f, p.task, res)
     }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, scope, name, clock)
     task.handle = h
@@ -1255,7 +1323,12 @@ spawn_task_sched_val :: proc(
     #assert(size_of(Task_Wrapper_Payload) <= FIBER_PAYLOAD_SIZE, "spawn_task_sched_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     task_init(task)
     h := spawn_val(sched, proc(f: ^Fiber, p: Task_Wrapper_Payload) {
+        fiber_defer(f, proc(raw: rawptr) {
+            tk := (^Task(R))(raw)
+            task_fail_sched(nil, tk)
+        }, rawptr(p.task))
         res := p.fn(f, p.data)
+        fiber_defer_cancel(f)
         task_complete(f, p.task, res)
     }, Task_Wrapper_Payload{task = task, fn = entry, data = data}, scope, name, clock)
     task.handle = h

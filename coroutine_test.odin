@@ -4346,6 +4346,9 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_fiber_defer_cancel_and_run_top", test_fiber_defer_cancel_and_run_top },
         { "test_zero_polling_scope_wait_and_fiber_join", test_zero_polling_scope_wait_and_fiber_join },
         { "test_scheduler_step_returns_has_active_and_o1_step_abort", test_scheduler_step_returns_has_active_and_o1_step_abort },
+        { "test_await_async_zero_context_switch_and_paused_clock", test_await_async_zero_context_switch_and_paused_clock },
+        { "test_large_event_and_sticky_event_no_payload_aliasing", test_large_event_and_sticky_event_no_payload_aliasing },
+        { "test_task_failure_and_cancellation_wakes_awaiters", test_task_failure_and_cancellation_wakes_awaiters },
     }
     total := len(tests)
     for test, i in tests {
@@ -6075,4 +6078,246 @@ test_scheduler_step_returns_has_active_and_o1_step_abort :: proc(t: ^testing.T) 
     testing.expect(t, !woken[2])
     testing.expect(t, woken[3])
     testing.expect(t, !woken[4])
+}
+
+@(test)
+test_await_async_zero_context_switch_and_paused_clock :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tok1: Async_Token
+    async_token_init(&tok1)
+    res1 := false
+    done1 := false
+
+    Async_Box :: struct {
+        tok:  ^Async_Token,
+        res:  ^bool,
+        done: ^bool,
+    }
+    box1 := Async_Box{tok = &tok1, res = &res1, done = &done1}
+    spawn(&sched, proc(f: ^Fiber, b: ^Async_Box) {
+        b.res^ = await_async(f, b.tok)
+        b.done^ = true
+    }, &box1, clock = CLOCK_SIM)
+
+    tok2: Async_Token
+    async_token_init(&tok2)
+    h2 := spawn(&sched, proc(f: ^Fiber, tok: ^Async_Token) {
+        _ = await_async(f, tok)
+    }, &tok2, clock = CLOCK_SIM)
+
+    scheduler_run(&sched)
+    testing.expect(t, !done1)
+    testing.expect_value(t, len(sched.async_waiters), 2)
+
+    fiber_cancel(&sched, h2)
+    testing.expect_value(t, len(sched.async_waiters), 1)
+
+    scheduler_run(&sched)
+    testing.expect(t, !done1)
+
+    async_token_complete(&tok1, true)
+    scheduler_run(&sched)
+    testing.expect(t, done1)
+    testing.expect(t, res1)
+    testing.expect_value(t, len(sched.async_waiters), 0)
+}
+
+@(test)
+test_large_event_and_sticky_event_no_payload_aliasing :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Big_Payload :: struct {
+        tag:  u64,
+        data: [64]u64,
+    }
+    Huge_Payload :: struct {
+        tag:  u64,
+        data: [512]u64,
+    }
+
+    ev_big: Event(Big_Payload)
+    event_init(&ev_big)
+    defer event_destroy(&ev_big)
+
+    got_tag: u64 = 0
+    got_last: u64 = 0
+    spawn_val_preserved := false
+
+    Val_Env :: struct {
+        ev:        ^Event(Big_Payload),
+        magic:     u64,
+        out_tag:   ^u64,
+        out_last:  ^u64,
+        preserved: ^bool,
+    }
+    venv := Val_Env{
+        ev        = &ev_big,
+        magic     = 0xCAFE_1234_5678_9ABC,
+        out_tag   = &got_tag,
+        out_last  = &got_last,
+        preserved = &spawn_val_preserved,
+    }
+    spawn_val(&sched, proc(f: ^Fiber, env: Val_Env) {
+        p, ok := event_wait(f, env.ev)
+        if ok {
+            env.out_tag^ = p.tag
+            env.out_last^ = p.data[63]
+        }
+        stored := (cast(^Val_Env)&f.payload_storage[0])^
+        env.preserved^ = (stored.magic == 0xCAFE_1234_5678_9ABC)
+    }, venv)
+
+    scheduler_run(&sched)
+    big := Big_Payload{tag = 77}
+    big.data[63] = 9999
+    event_emit(&sched, &ev_big, big)
+    scheduler_run(&sched)
+
+    testing.expect_value(t, got_tag, u64(77))
+    testing.expect_value(t, got_last, u64(9999))
+    testing.expect(t, spawn_val_preserved)
+
+    ev_huge: Event(Huge_Payload)
+    event_init(&ev_huge)
+    defer event_destroy(&ev_huge)
+
+    huge_tag: u64 = 0
+    Huge_Box :: struct {
+        ev:  ^Event(Huge_Payload),
+        tag: ^u64,
+    }
+    hbox := Huge_Box{ev = &ev_huge, tag = &huge_tag}
+    spawn(&sched, proc(f: ^Fiber, b: ^Huge_Box) {
+        p, ok := event_wait(f, b.ev)
+        if ok do b.tag^ = p.tag
+    }, &hbox)
+    h_abort := spawn(&sched, proc(f: ^Fiber, ev: ^Event(Huge_Payload)) {
+        _, _ = event_wait(f, ev)
+    }, &ev_huge)
+
+    scheduler_run(&sched)
+    fiber_cancel(&sched, h_abort)
+    huge := Huge_Payload{tag = 4242}
+    event_emit(&sched, &ev_huge, huge)
+    scheduler_run(&sched)
+    testing.expect_value(t, huge_tag, u64(4242))
+
+    sticky_big: Sticky_Event(Big_Payload)
+    sticky_event_init(&sticky_big)
+    defer sticky_event_destroy(&sticky_big)
+
+    sticky_out: u64 = 0
+    Sticky_Box :: struct {
+        ev:  ^Sticky_Event(Big_Payload),
+        tag: ^u64,
+    }
+    sbox := Sticky_Box{ev = &sticky_big, tag = &sticky_out}
+    spawn(&sched, proc(f: ^Fiber, b: ^Sticky_Box) {
+        p, ok := sticky_event_wait(f, b.ev)
+        if ok do b.tag^ = p.tag
+    }, &sbox)
+    scheduler_run(&sched)
+    sticky_event_emit(&sched, &sticky_big, Big_Payload{tag = 888})
+    scheduler_run(&sched)
+    testing.expect_value(t, sticky_out, u64(888))
+}
+
+@(test)
+test_task_failure_and_cancellation_wakes_awaiters :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    t_fail: Task(int)
+    spawn_task(&sched, &t_fail, proc(f: ^Fiber) -> int {
+        yield(f)
+        fail(f)
+        return 123
+    })
+
+    fail_done := false
+    fail_ok := true
+    Task_Await_Box :: struct {
+        tk:   ^Task(int),
+        done: ^bool,
+        ok:   ^bool,
+    }
+    fb := Task_Await_Box{tk = &t_fail, done = &fail_done, ok = &fail_ok}
+    spawn(&sched, proc(f: ^Fiber, b: ^Task_Await_Box) {
+        _, ok := task_await(f, b.tk)
+        b.ok^ = ok
+        b.done^ = true
+    }, &fb)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+    testing.expect(t, fail_done)
+    testing.expect(t, !fail_ok)
+    testing.expect_value(t, task_state(&t_fail), Task_State.Failed)
+    testing.expect(t, task_is_ready(&t_fail))
+
+    t_cancel: Task(int)
+    h_cancel := spawn_task(&sched, &t_cancel, proc(f: ^Fiber) -> int {
+        wait(f, 5.0)
+        return 456
+    })
+
+    cancel_done := false
+    cancel_ok := true
+    cb := Task_Await_Box{tk = &t_cancel, done = &cancel_done, ok = &cancel_ok}
+    spawn(&sched, proc(f: ^Fiber, b: ^Task_Await_Box) {
+        _, ok := task_await(f, b.tk)
+        b.ok^ = ok
+        b.done^ = true
+    }, &cb)
+
+    scheduler_step(&sched, 0.016)
+    testing.expect(t, !cancel_done)
+
+    fiber_cancel(&sched, h_cancel)
+    scheduler_run(&sched)
+    testing.expect(t, cancel_done)
+    testing.expect(t, !cancel_ok)
+    testing.expect_value(t, task_state(&t_cancel), Task_State.Failed)
+
+    Big_Result :: struct {
+        id:   int,
+        buf:  [64]u64,
+    }
+    t_big: Task(Big_Result)
+    spawn_task(&sched, &t_big, proc(f: ^Fiber) -> Big_Result {
+        yield(f)
+        r := Big_Result{id = 99}
+        r.buf[63] = 5555
+        return r
+    })
+
+    big_id := 0
+    big_last: u64 = 0
+    Big_Box :: struct {
+        tk:   ^Task(Big_Result),
+        id:   ^int,
+        last: ^u64,
+    }
+    bb := Big_Box{tk = &t_big, id = &big_id, last = &big_last}
+    spawn(&sched, proc(f: ^Fiber, b: ^Big_Box) {
+        r, ok := task_await(f, b.tk)
+        if ok {
+            b.id^ = r.id
+            b.last^ = r.buf[63]
+        }
+    }, &bb)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+    testing.expect_value(t, big_id, 99)
+    testing.expect_value(t, big_last, u64(5555))
+    testing.expect_value(t, task_state(&t_big), Task_State.Completed)
 }

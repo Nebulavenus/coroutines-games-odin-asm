@@ -46,6 +46,9 @@ wasm_dispatch_fiber :: proc(f: ^Fiber) {
         fiber_trampoline_entry()
     }
     _raw_stop_unwind()
+    if f.asyncify_buf.top > f.asyncify_buf.end {
+        panic("WebAssembly Asyncify_Buffer overflow! Increase -define:CORO_ASYNCIFY_STORAGE_SIZE.")
+    }
 }
 
 fiber_context_switch :: proc(from_sp: ^rawptr, to_sp: rawptr) {

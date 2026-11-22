@@ -22,8 +22,13 @@ All notable changes to this project will be documented in this file.
 - **Handle History & Wasm Shadow-Stack Fixes (`types.odin`, `pool.odin`, `api.odin`, `sync/sync.odin`)**:
   - Replaced `u32(handle) % HANDLE_HISTORY_CAPACITY` (which ignored the upper 16 generation bits) with bijective `fiber_handle_history_slot` mixing index and generation; fixed `fiber_join` to return `false` for unknown/missing handles.
   - Eliminated parent stack pointers in `sync/sync.odin` (`with_mutex`, `with_semaphore`, `chan_recv_timeout`, `chan_send_timeout`, `chan_select_recv`), using direct pointers and scoped `f.temp_arena` allocations for full `js_wasm32` shadow-stack safety.
+- **Zero-Context-Switch `await_async`, Arbitrary-Size `Event(T)`/`Sticky_Event(T)` & `Task(T)` Failure Propagation (`config.odin`, `types.odin`, `pool.odin`, `scheduler.odin`, `api.odin`, `asm_wasm32.odin`)**:
+  - Replaced `await_async` per-tick `yield` polling with `Scheduler.async_waiters` checked once per `scheduler_run` (0 context switches while pending, wakes across paused clocks, $O(1)$ abort removal via `Fiber.async_index`, background threads remain lock-free).
+  - Decoupled `Event(T)` and `Sticky_Event(T)` from `Fiber.payload_storage` (eliminating the 128B `#assert` cap and `spawn_val` aliasing hazard) using `Fiber.event_dest` + scoped `temp_arena`/heap delivery for `Event(T)` and direct `ev.value` reads for `Sticky_Event(T)`.
+  - Added `Task_State` (`.Pending`, `.Completed`, `.Failed`), `task_fail`, and `task_state`; `spawn_task` now registers a `fiber_defer` hook so worker `fail(f)` or external cancellation immediately wakes `task_await` callers with `ok == false` instead of deadlocking.
+  - Centralized `WASM_ASYNCIFY_STORAGE_SIZE :: #config(CORO_ASYNCIFY_STORAGE_SIZE, 4096)` in `config.odin`, added runtime `Asyncify_Buffer` overflow detection in `asm_wasm32.odin`, and replaced hardcoded `32` slab defaults in `pool.odin` with `STACKS_PER_SLAB`.
 - **Tests, Distributions & Docs**:
-  - Expanded native unit tests from `187` to `192` (`142` core + `50` sync), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
+  - Expanded native unit tests from `187` to `195` (`145` core + `50` sync), verified all 145 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
 
 ## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
 

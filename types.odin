@@ -138,7 +138,7 @@ Wait_Queue :: struct {
 // ============================================================================
 
 when ODIN_ARCH == .wasm32 {
-    ASYNCIFY_STORAGE_SIZE :: 4096
+    ASYNCIFY_STORAGE_SIZE :: WASM_ASYNCIFY_STORAGE_SIZE
 } else {
     ASYNCIFY_STORAGE_SIZE :: 8
 }
@@ -196,6 +196,9 @@ Fiber :: struct {
     wake_step:        u64,               // Target step count for Sleeping_Steps
     heap_index:       int,               // Index in Clock_Domain.timer_heap (for O(log N) deletion on abort)
     step_index:       int,               // Index in Clock_Domain.step_waiters (for O(1) deletion on abort)
+    async_token:      ^Async_Token,      // Pending background Async_Token being awaited
+    async_index:      int,               // Index in Scheduler.async_waiters (for O(1) deletion on abort)
+    event_dest:       rawptr,            // Destination pointer for active event_wait delivery
 
     // --- Built-in Zero-Drift Ticker (100% Shadow-Stack Safe on WebAssembly) ---
     ticker_interval:  f32,
@@ -237,9 +240,16 @@ Sticky_Event :: struct($T: typeid) {
 
 Sticky_Signal :: Sticky_Event(struct{})
 
+Task_State :: enum u8 {
+    Pending,
+    Completed,
+    Failed,
+}
+
 // Lightweight Verse-style task(T) container (True ZII, backed by Sticky_Event(T))
 Task :: struct($T: typeid) {
     handle: Fiber_Handle,
+    state:  Task_State,
     result: Sticky_Event(T),
 }
 
@@ -310,8 +320,9 @@ Scheduler :: struct {
     // Allocator Reference
     allocator:             mem.Allocator,
 
-    // Ready Queue & Indexed Clock Domains
+    // Ready Queue, Async Waiters & Indexed Clock Domains
     ready_queue:           [dynamic]Fiber_Handle,
+    async_waiters:         [dynamic]^Fiber,
     clocks:                [MAX_CLOCKS]Clock_Domain,
 
     // Stack Allocator & Pool
