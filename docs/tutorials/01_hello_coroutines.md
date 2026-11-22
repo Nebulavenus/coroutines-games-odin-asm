@@ -85,7 +85,7 @@ main :: proc() {
 --- Engine Tick 4 (sim_time: 2.00s) ---
 
 --- Engine Tick 5 (sim_time: 2.50s) ---
-[Step 3] Resumed after waiting 3 frames!
+[Step 3] Resumed after waiting 3 steps!
 [Step 4] Final step executed! Fiber finishing naturally.
 ```
 

@@ -142,8 +142,8 @@ Wraps any task in a deadline. If it doesn't complete in time, it is aborted clea
 
 ```odin
 // Player has 5.0 seconds to defuse the bomb before detonation
-defused := coroutine.with_timeout(f, 5.0, coroutine.branch(defuse_bomb_loop, &bomb))
-if !defused {
+timed_out := coroutine.with_timeout(f, 5.0, coroutine.branch(defuse_bomb_loop, &bomb))
+if timed_out {
     detonate_bomb(&bomb)
 }
 ```
@@ -222,8 +222,7 @@ cast_divine_shield :: proc(f: ^coroutine.Fiber, hero: ^Hero) {
     hero.is_invulnerable = true
     coroutine.fiber_defer(f, proc(h: ^Hero) { h.is_invulnerable = false }, hero)
 
-    coroutine.wait(f, 3.0) // If aborted during wait, cleanup still runs!
-    coroutine.fiber_cleanup_pop(f)
+    coroutine.wait(f, 3.0) // Cleanup runs automatically on both normal return and abort!
 }
 ```
 
@@ -293,7 +292,7 @@ main :: proc() {
 Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems kernel designed for real-time game engines:
 
 - **Universal Multi-ISA Native Inline Assembly Context Switch**:
-  - **AMD64 (x86-64)**: Fast register swap for Windows x64 (160B frame preserving `xmm6`..`xmm15`) and System V AMD64 (64B frame). Self-ID: `%r12`.
+  - **AMD64 (x86-64)**: Fast register swap for Windows x64 (240B frame preserving `xmm6`..`xmm15`) and System V AMD64 (64B frame). Self-ID: `%r12`.
   - **ARM64 (AArch64)**: Native 160B AAPCS64 frame preserving `x19`..`x28`, `x29` (FP), `x30` (LR), and `d8`..`d15` on Apple Silicon (M1–M4), Linux ARM, iOS, Android, and Nintendo Switch. Self-ID: `%x19`.
   - **RISC-V 64 (RV64GC)**: Native 208B LP64D frame preserving `ra`, `s0`..`s11`, and `fs0`..`fs11` for open-source RISC-V hardware. Self-ID: `%s2`.
   - **WebAssembly (`js_wasm32`)**: Native browser and Node.js execution via Binaryen Asyncify with shadow-stack protection.
@@ -343,13 +342,13 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 160 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **187 / 187 Tests PASS (Native Host Windows)** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 240 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **187 / 187 Tests PASS (Native Host Windows)** |
 | **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (Native WSL2 Host CPU)** |
 | **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (WSL2 QEMU)** |
 | **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **187 / 187 Tests PASS (WSL2 QEMU)** |
 | **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **187 / 187 Tests PASS (AAPCS64 ABI Verified)** |
 | **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **187 / 187 Tests PASS (SysV AMD64 ABI Verified)** |
-| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **16 / 16 Test Suites + 1,000-Frame Headless Game PASS** |
+| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **17 / 17 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
 
@@ -393,7 +392,7 @@ The documentation is organized into **4 structured engineering tracks**:
 * [`docs/tutorials/03_structured_concurrency.md`](docs/tutorials/03_structured_concurrency.md) — Boss Combat with `sync` and `race`
 * [`docs/tutorials/04_advanced_control_flow.md`](docs/tutorials/04_advanced_control_flow.md) — AI Decision Trees with `rush`, `fallback` & `with_timeout`
 * [`docs/tutorials/05_synchronization.md`](docs/tutorials/05_synchronization.md) — True ZII Signals, `Fiber_Mutex`, `Channel(T)` & `Event(T)`
-* [`docs/COOKBOOK.md`](docs/COOKBOOK.md) — 17 Production Gameplay Architecture Recipes
+* [`docs/COOKBOOK.md`](docs/COOKBOOK.md) — 19 Production Gameplay Architecture Recipes
 
 ### Track 2: Engine Integration & Architecture
 *Target Audience: Lead gameplay engineers, engine architects.*
@@ -418,7 +417,7 @@ The documentation is organized into **4 structured engineering tracks**:
 
 ### Track 4: Reliability, Safety Harness & Developer Tooling
 *Target Audience: QA engineers, tool developers, production teams.*
-* [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) — The 13 Cooperative Fiber Footguns & Prevention Guide
+* [`docs/guides/GUIDE_FOOTGUNS.md`](docs/guides/GUIDE_FOOTGUNS.md) — The 15 Cooperative Fiber Footguns & Prevention Guide
 * [`docs/guides/GUIDE_TIMING_AND_DRIFT.md`](docs/guides/GUIDE_TIMING_AND_DRIFT.md) — Frame Quantization, Time Drift & Fiber-Owned Tickers
 * [`docs/guides/GUIDE_DETERMINISM.md`](docs/guides/GUIDE_DETERMINISM.md) — Discrete Step Domain, Float Safety, Netcode & Replays
 * [`docs/guides/GUIDE_PERFORMANCE.md`](docs/guides/GUIDE_PERFORMANCE.md) — Zero-Allocation Guarantees, Pre-Warming & Cache Sizing

@@ -1,7 +1,7 @@
 # Game Engine Timing, Frame Quantization & Time Drift Prevention (`GUIDE_TIMING_AND_DRIFT.md`)
 
 > **ESSENTIAL GUIDE FOR GAMEPLAY & SYSTEMS ENGINEERS**:
-> This document details the mathematics of **frame quantization**, why cumulative time drift occurs in naive sleep loops, how other commercial engines (Unreal, Unity, SkookumScript) handle it, and how the **Odin Stackful Coroutine Engine** eliminates drift using self-correcting timestamp anchors in `coroutine.Ticker`.
+> This document details the mathematics of **frame quantization**, why cumulative time drift occurs in naive sleep loops, how other commercial engines (Unreal, Unity, SkookumScript) handle it, and how the **Odin Stackful Coroutine Engine** eliminates drift using self-correcting timestamp anchors in `coroutine.ticker_wait`.
 
 ---
 
@@ -46,7 +46,7 @@ for {
 In a `ticker_wait` loop:
 ```odin
 for {
-    coroutine.ticker_wait(f, interval = 0.5) // Calculates: f.ticker_next_wake += interval
+    coroutine.ticker_wait(f, interval_seconds = 0.5) // Calculates: f.ticker_next_wake += interval_seconds
     do_heavy_gameplay_work()
 }
 ```

@@ -1,23 +1,25 @@
-# The 13 Cooperative Fiber Footguns & Prevention Guide
+# The 15 Cooperative Fiber Footguns & Prevention Guide
 
 > **MANDATORY READING FOR ALL GAMEPLAY AND SYSTEMS ENGINEERS**:
 > Stackful cooperative coroutines provide unmatched clarity for complex gameplay state machines, hierarchical AI, cutscenes, and async pipelines. However, because fibers are **cooperative single-threaded execution contexts**, misuse can cause subtle deadlocks, memory corruption, or frame freezes.
-> This guide details the **13 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
+> This guide details the **15 real-world footguns**, how they break code, how the engine mitigates them programmatically, and the golden rules to prevent them.
 
 ---
 
-## The 11 Footguns Overview
+## The 15 Footguns Overview
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          THE 11 FIBER FOOTGUNS                              │
+│                          THE 15 FIBER FOOTGUNS                              │
 ├──────────────────────────────────────┬──────────────────────────────────────┤
-│ 1. The Non-Yielding Infinite Loop    │ 7. Cross-Fiber Temp Allocator Escape │
-│ 2. The 32KB Stack Overflow           │ 8. Save-Game Stack Serialization     │
-│ 3. The Dangling Ephemeral Pointer    │ 9. Cumulative Time Drift Loop        │
-│ 4. Stale Pointers Across Sleeps      │ 10. Unstructured Task Slices (Orphans)│
-│ 5. The Deadlocked Mutex / Semaphore  │ 11. Storing Raw ^Fiber Pointers      │
-│ 6. The Orphaned Channel Receiver     │                                      │
+│ 1. The Non-Yielding Infinite Loop    │ 9. Cumulative Time Drift Loop        │
+│ 2. The 32KB Stack Overflow           │ 10. Unstructured Task Slices (Orphans)│
+│ 3. The Dangling Ephemeral Pointer    │ 11. Storing Raw ^Fiber Pointers      │
+│ 4. Stale Pointers Across Sleeps      │ 12. Inlining Across Context Switches │
+│ 5. The Deadlocked Mutex / Semaphore  │ 13. Wasm Shadow-Stack Aliasing       │
+│ 6. The Orphaned Channel Receiver     │ 14. In-Frame Busy Spin (yield_now)   │
+│ 7. Cross-Fiber Temp Allocator Escape │ 15. Native defer on External Abort   │
+│ 8. Save-Game Stack Serialization     │                                      │
 └──────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
@@ -64,7 +66,7 @@ calculate_path :: proc(f: ^coroutine.Fiber) {
 
 ### How the Engine Mitigates It
 1. **64-Byte Stack Canary Watermark (`0xDEAD_BEEF_CAFE_BABE`)**: Verified on every fiber recycling pass; corruptions trigger immediate panics.
-2. **Hardware Guard Pages (`Stack_Allocation_Mode.Virtual_Memory_OS`)**: Uses OS virtual memory (`PAGE_GUARD` on Windows, `PROT_NONE` on POSIX) to trip a hardware exception at the exact instruction that overflowed.
+2. **Hardware Guard Pages (`Stack_Allocation_Mode.Virtual_Memory_OS`)**: Uses OS virtual memory (`PAGE_NOACCESS` on Windows, `PROT_NONE` on POSIX) to trip a hardware exception at the exact instruction that overflowed.
 3. **Usage Profiler (`fiber_calc_stack_usage`)**: Real-time stack watermarks displayed in the `F1` Hierarchy HUD.
 
 ### The Rule
@@ -159,9 +161,9 @@ charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^sync.Fiber_Mutex) {
        perform_exclusive_work(data)
    }, data)
    ```
-2. **Native Odin `defer`**:
+2. **Native Odin `defer` (Normal Return Only)**:
    ```odin
-   // SAFE: Guaranteed to unlock on return, break, or failure!
+   // SAFE for normal early returns, but NOT for external fiber cancellation (see Footgun 15):
    charge_pad_fiber :: proc(f: ^coroutine.Fiber, m: ^sync.Fiber_Mutex) {
        sync.mutex_lock(f, m)
        defer sync.mutex_unlock(f.sched, m)
@@ -355,16 +357,17 @@ for elapsed < duration {
 ```
 
 ### How the Engine Mitigates It
-1. **ABI Boundary Enforcement**: Procedures that invoke `fiber_context_switch` (`wait_steps`, `wait`, `yield`, etc.) are intentionally kept as standard non-inlined function boundaries. This forces LLVM's register allocator to spill all active caller-saved registers (`%xmm0-%xmm5`, `%rax`, `%rcx`, etc.) to the fiber stack across the call boundary according to the platform ABI.
-2. **Callee-Saved Hardware Registers Preserved**: The assembly context switch (`fiber_context_switch`) fully preserves all callee-saved registers defined by the platform ABI:
+1. **Explicit Caller-Saved Vector/FP Clobbers & `#align_stack`**: In Odin `dev-2026-11:89246b0ad`, `fiber_context_switch` explicitly declares `#align_stack`, `#volatile`, `#clobber memory`, and all caller-saved volatile float/SIMD registers (`%xmm0..%xmm5` on Win64, `%xmm0..%xmm15` on System V AMD64, `%v0..%v7` & `%v16..%v31` on ARM64, `%ft0..%ft11` & `%fa0..%fa7` on RISC-V 64). This forces LLVM to spill live floating-point/SIMD locals even when `yield` / `wait_steps` is aggressively inlined under `-o:speed -use-single-module` or `-o:aggressive`.
+2. **ABI Boundary Enforcement**: Procedures that invoke `fiber_context_switch` (`wait_steps`, `wait`, `yield`, etc.) are intentionally never `#force_inline`, preserving standard ABI call boundaries where possible.
+3. **Callee-Saved Hardware Registers Preserved**: The assembly context switch (`fiber_context_switch`) fully preserves all callee-saved registers defined by the platform ABI:
    - **Win64**: `%rbx`, `%rbp`, `%rdi`, `%rsi`, `%r12-%r15`, and `%xmm6-%xmm15` (160 bytes of SIMD state).
    - **System V**: `%rbx`, `%rbp`, `%r12-%r15`.
    - **ARM64**: `x19-x28`, `fp`, `lr`, and `d8-d15` (160 bytes).
-   - **RISC-V 64**: `s0-s11` and `fs0-fs11` (208 bytes).
-3. **Volatile Status Reloads**: Scheduler status checks across context switches use `intrinsics.volatile_load` to prevent SSA caching across inline assembly blocks.
+   - **RISC-V 64**: `ra`, `s0-s11`, and `fs0-fs11` (208 bytes).
+4. **Volatile Status Reloads**: Scheduler status checks across context switches use `intrinsics.volatile_load` to prevent SSA caching across inline assembly blocks.
 
 ### The Rule
-> **Keep yield/wait procedures as distinct function boundaries (never `#force_inline`). In test harnesses or benchmarks inspecting local scalar values modified by fibers across `scheduler_step`, aggregate values into structs or use pointers to ensure LLVM loads refreshed memory.**
+> **Keep yield/wait procedures non-`#force_inline`, and never drop caller-saved FP/SIMD `#clobber` declarations or `#align_stack` from `fiber_context_switch`.**
 
 ---
 
@@ -392,13 +395,13 @@ WebAssembly uses a **dual-stack model**. Asyncify serializes and restores the **
 Because all fibers share the single shadow stack, when `boss_ai` sleeps or yields, other interleaved fibers push their stack frames down from `$__stack_pointer` and **physically overwrite `cfg` in linear memory**. When `boss_ai` wakes, `cfg` has been corrupted by another fiber!
 
 ### The Solution
-1. **Use Fiber-Owned Timing**: Use `coroutine.ticker_wait(f, interval)` (or `coroutine.wait_ticker(f, interval)`). Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
+1. **Use Fiber-Owned Timing**: Use `coroutine.ticker_wait(f, interval)`. Timing state is stored on the persistent `Fiber` struct in the pool—100% immune to shadow-stack clobbering.
 2. **Keep Scalar Values in Locals**: Primitive values (`timer: f32`, `ticks: int`, `interval: f64`) live in Wasm VM registers and are perfectly restored by Asyncify.
 3. **Store Composite State in Entities**: Store multi-field cross-yield state in persistent entities (`^Boss`, `^Player`) or inside the fiber's private 4KB arena (`f.temp_arena`).
 4. **Deep Dive**: See [`docs/wasm/02_MEMORY_AND_LIMITATIONS.md`](../wasm/02_MEMORY_AND_LIMITATIONS.md) for full architectural analysis and stack-switching roadmap.
 
 ### The Rule
-> **Never retain pointers to local stack-allocated structs across yields when targeting WebAssembly. Use fiber-owned primitives (`wait_ticker`), fiber temp arenas (`f.temp_arena`), or persistent entity structs.**
+> **Never retain pointers to local stack-allocated structs across yields when targeting WebAssembly. Use fiber-owned primitives (`ticker_wait`), fiber temp arenas (`f.temp_arena`), or persistent entity structs.**
 
 ---
 
@@ -451,7 +454,7 @@ dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 ```
 
 ### What Happens
-In stackful fiber switching, suspended fibers waiting in the scheduler (in `.Sleeping_Time`, `.Suspended_Wait`, or `.Suspended_Join`) are cancelled externally by the scheduler or parent combinator (`fiber_abort_tree`).
+In stackful fiber switching, suspended fibers waiting in the scheduler (in `.Sleeping_Time`, `.Sleeping_Steps`, or `.Suspended_Join`) are cancelled externally by the scheduler or parent combinator (`fiber_abort_tree`).
 
 Because the fiber is simply removed from scheduling queues and recycled directly back into the fiber pool free list, **the CPU never resumes execution of the fiber's stack frame**. Therefore, the native compiler-generated `defer` instructions at the end of the procedure are completely bypassed! `p.speed` remains permanently multiplied and `p.is_dashing` remains stuck at `true`.
 
@@ -506,8 +509,9 @@ dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 │ 9. Use ticker_wait for periodic loops: Zero-drift timestamp anchor.         │
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
 │ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
-│ 12. Never #force_inline yield points: Call boundaries preserve registers.   │
-│ 13. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
-│ 14. Use fiber_defer for abort cleanup: Native defer won't run on cancel!    │
+│ 12. Never #force_inline yield points: Keep ABI boundaries & FP clobbers.    │
+│ 13. On Wasm, avoid &local_struct across yields: Use entities or temp_arena. │
+│ 14. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
+│ 15. Use fiber_defer for abort cleanup: Native defer won't run on cancel!    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```

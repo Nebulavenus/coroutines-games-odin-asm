@@ -96,7 +96,7 @@ boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 
 To permanently protect developers from this class of bugs, the coroutine engine provides built-in facilities that reside outside the shadow stack:
 
-### 1. Built-in Fiber Ticker (`wait_ticker` & `ticker_wait`)
+### 1. Built-in Fiber Ticker (`ticker_wait`)
 Instead of storing timing state on the local stack, the `Fiber` struct itself provides preallocated, persistent timing fields in heap/pool memory:
 
 ```odin
@@ -118,7 +118,7 @@ Developers can now write clean, zero-allocation timing loops without declaring a
 boss_spiral_shoot_subloop :: proc(f: ^coroutine.Fiber, b: ^Boss) {
     for {
         // Zero stack allocations! Stored directly on Fiber:
-        coroutine.wait_ticker(f, 0.08)
+        coroutine.ticker_wait(f, 0.08)
         fire_spiral_bullet(b)
     }
 }

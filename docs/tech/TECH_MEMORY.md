@@ -80,43 +80,45 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 Stack overflows in native stackful coroutines are notoriously catastrophic if undetected. The engine provides a 3-tier defense-in-depth safety system:
 
 ```
- High Address (Base)
+ High Address (Stack Top)
 ┌──────────────────────────────────────────────┐
-│ Watermark Canary (0xDEAD_BEEF_CAFE_BABE)     │ ◄── Tier 1: Software Canary
+│ Active Call Stack & Local Variables          │
+│ ▼ (Grows Downward)                           │
 ├──────────────────────────────────────────────┤
 │ 0xAA Watermark Pattern Fill                  │ ◄── Tier 2: Stack Usage Profiler
 │ (Scanned by fiber_calc_stack_usage)          │
 ├──────────────────────────────────────────────┤
-│ Active Call Stack & Local Variables          │
-│ ▼ (Grows Downward)                           │
+│ 64-Byte Canary (0xDEAD_BEEF_CAFE_BABE)       │ ◄── Tier 1: Software Canary (stack_base)
 ├──────────────────────────────────────────────┤
-│ OS Guard Page (PAGE_GUARD / PROT_NONE)       │ ◄── Tier 3: Hardware Trap
+│ OS Guard Page (PAGE_NOACCESS / PROT_NONE)    │ ◄── Tier 3: Hardware Trap (4KB below)
 └──────────────────────────────────────────────┘
- Low Address (Limit)
+ Low Address (Slab Base)
 ```
 
 ### Tier 1: Software Watermark Canaries
-- At `stack_base - 64` and `stack_limit`, a 64-byte magic pattern (`0xDEAD_BEEF_CAFE_BABE`) is inscribed during stack initialization.
-- Every context switch and yield asserts that the canary words remain uncorrupted. If a coroutine exceeds its stack, the canary violation is trapped immediately with an informative assertion error.
+- At `fiber.stack_base`, a 64-byte magic pattern (`CANARY_SIZE` bytes of `0xDEAD_BEEF_CAFE_BABE`) is inscribed during stack initialization (`fiber_init_canary`).
+- Every fiber recycle (`fiber_pool_recycle`) and stack usage scan (`fiber_calc_stack_usage`) verifies the canary words remain uncorrupted; if breached, recycling panics immediately and stack profiling reports 100% consumption.
 
 ### Tier 2: Stack High-Water Profiling
-- On fiber creation or recycling, unused stack memory is initialized with the `0xAA` byte pattern.
-- `fiber_calc_stack_usage(f)` scans the stack memory from `stack_limit` upwards until the first non-`0xAA` byte is found:
+- On fiber creation or acquisition, unused stack memory above `CANARY_SIZE` is filled with the `0xAA` byte pattern (`fiber_watermark_stack`).
+- `fiber_calc_stack_usage(fiber)` scans upwards from `CANARY_SIZE` until the first non-`0xAA` byte is found:
   ```odin
-  fiber_calc_stack_usage :: proc(f: ^Fiber) -> (used_bytes: int, total_bytes: int, pct: f32) {
-      total_bytes = int(uintptr(f.stack_base) - uintptr(f.stack_limit))
-      ptr := cast([^]u8)f.stack_limit
-      unused := 0
-      for i := 0; i < total_bytes; i += 1 {
-          if ptr[i] != 0xAA do break
-          unused += 1
+  fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
+      if fiber == nil || fiber.stack_base == nil do return 0, 0
+      total_bytes = fiber.stack_size
+      if !fiber_check_canary(fiber) {
+          return total_bytes, total_bytes
       }
-      used_bytes = total_bytes - unused
-      pct = (f32(used_bytes) / f32(total_bytes)) * 100.0
-      return
+      bytes := ([^]u8)(fiber.stack_base)
+      for i in CANARY_SIZE ..< int(fiber.stack_size) {
+          if bytes[i] != STACK_WATERMARK {
+              return fiber.stack_size - uint(i), total_bytes
+          }
+      }
+      return 0, total_bytes
   }
   ```
-- Returns exact stack usage in bytes and percentage (e.g. `2,140 / 32,768 bytes (6.5%)`), rendered live in the F1 hierarchy debugger.
+- Returns exact stack usage and capacity in bytes (e.g. `2,140 / 32,768 bytes`), rendered live in the hierarchy debugger.
 
 ### Tier 3: Hardware OS Virtual Memory Protection (`Virtual_Memory_OS`)
 - Configured via `Stack_Allocation_Mode.Virtual_Memory_OS`.
@@ -147,14 +149,14 @@ Passing parameters to spawned coroutines often creates a dilemma:
 ### The 128-Byte Inline Buffer (`spawn_val`)
 Every `Fiber` structure contains an embedded 128-byte raw buffer:
 ```odin
-FIBER_PAYLOAD_SIZE :: 128
-payload: [FIBER_PAYLOAD_SIZE]u8
+FIBER_PAYLOAD_SIZE :: PAYLOAD_SIZE // default: 128
+payload_storage: [FIBER_PAYLOAD_SIZE]byte
 ```
 
 - When calling `spawn_val(sched, proc(f, val), my_struct)`:
   1. Compile-time `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)` ensures payload fits.
-  2. The argument is copied directly into `fiber.payload`.
-  3. The fiber procedure receives a safe, internal pointer `cast(^T)&f.payload[0]`.
+  2. The argument is copied directly into `fiber.payload_storage`.
+  3. The wrapper thunk dereferences `(^T)(&fiber.payload_storage[0])^` and passes it by value to the user proc.
   4. Zero heap allocations; 100% immune to caller stack invalidation.
 
 ---

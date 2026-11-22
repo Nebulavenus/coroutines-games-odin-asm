@@ -150,8 +150,10 @@ hero_equipment_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler) {
     coroutine.spawn_task(sched, &task, compute_stats_proc, &req)
 
     // Await strongly typed result with zero polling:
-    stats := coroutine.task_await(f, &task)
-    fmt.printf("[Hero] Stats recalculated: Attack=%d, Crit=%.1f%%\n", stats.attack_power, stats.critical_chance * 100.0)
+    stats, ok := coroutine.task_await(f, &task)
+    if ok {
+        fmt.printf("[Hero] Stats recalculated: Attack=%d, Crit=%.1f%%\n", stats.attack_power, stats.critical_chance * 100.0)
+    }
 }
 ```
 
@@ -179,7 +181,8 @@ player_combat_stance_fiber :: proc(f: ^coroutine.Fiber, player: ^Player) {
     // Combat actions (may be aborted externally at any time!):
     coroutine.wait(f, 5.0)
 
-    // On normal exit, pop and execute the cleanup hook:
+    // On normal exit, revert state and pop the cleanup hook (pop unregisters without invoking):
+    player.in_berserk_stance = false
     coroutine.fiber_cleanup_pop(f)
 }
 ```
@@ -384,6 +387,7 @@ main :: proc() {
     }
 
     // Unified consumer multiplexer fiber
+    env := Channels_Env{&combat_chan, &network_chan}
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, env: ^Channels_Env) {
         channels := []^sync.Channel(Command){env.combat, env.network}
 
@@ -399,7 +403,7 @@ main :: proc() {
                 fmt.printf("[Network Channel #1] Received packet: %s\n", cmd.payload)
             }
         }
-    }, &Channels_Env{&combat_chan, &network_chan})
+    }, &env)
 }
 
 Channels_Env :: struct {

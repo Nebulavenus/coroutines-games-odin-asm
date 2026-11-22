@@ -19,8 +19,11 @@ All notable changes to this project will be documented in this file.
   - Fixed floating-point register corruption across aggressively inlined `yield`/`wait_steps` calls under `-o:speed -use-single-module` and `-o:aggressive`.
 - **Regenerated Amalgamated Distributions (`dist/coroutine.odin`, `dist/coroutine_wasm32.odin`)**:
   - Rebuilt standalone drop-ins via `.\build.ps1 amalgamate` and verified via `.\build.ps1 test-dist`.
-- **Documentation Suite Updated (`docs/ASM.md`, `docs/tech/TECH_ODIN_INLINE_ASM_ANALYSIS.md`, `docs/tech/TECH_ASM.md`, `docs/ARCHITECTURE.md`, `docs/DISTRIBUTION.md`, `docs/REPORTS.md`, `README.md`)**:
-  - Updated inline `asm` reference and compiler analysis to Odin `dev-2026-11:89246b0ad`, removed duplicate stale lower sections from `docs/tech/TECH_ASM.md`, and synced target architecture tables in `docs/DISTRIBUTION.md`.
+- **Documentation Suite Audit & Update (All 36 `docs/` Files + `README.md`)**:
+  - Audited and aligned all guides, technical specs, tutorials, WebAssembly docs, `ARCHITECTURE.md`, `COOKBOOK.md`, `REPORTS.md`, `DISTRIBUTION.md`, `ASM.md`, and `README.md` with the current public API and Odin `dev-2026-11:89246b0ad`.
+  - Fixed inverted return-value checks for `with_signal` (`interrupted: bool`) and `with_timeout` (`timed_out: bool`), 2-value `task_await` returns, `fiber_cleanup_pop` semantics (unregisters without executing), `fallback`/`fallback_with` return signatures, and removed legacy `tween`/`wait_ticker`/`PAGE_GUARD`/`.Finished` references.
+  - Rewrote `docs/wasm/01_ARCHITECTURE_ASYNCIFY.md` to match `Asyncify_Buffer`, `wasm_yield_leaf`, and `wasm_dispatch_fiber` in `types.odin` and `asm_wasm32.odin`; synced `docs/wasm/03_BROWSER_GAME_AND_CANVAS.md` controls/exports and test counts (`187` native tests, `17` Wasm suites) across all docs.
+  - Fixed broken relative/absolute links (verified 0 broken links across all 37 markdown files).
 
 ## [Concurrency Hardening & Developer Ergonomics (Epic Verse Alignment)] - 2026-10-17
 

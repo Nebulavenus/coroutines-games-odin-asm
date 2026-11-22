@@ -15,8 +15,8 @@ This chapter explains how to bridge multi-core OS background threads to main-thr
 │ 2. Dispatches task to worker pool         │ ─►│ 3. Computes 50,000 A* Nodes        │
 │ 4. Calls coroutine.await_async(f, &token) │   │    (Takes 15ms of CPU time)        │
 │    (Fiber suspends!)                      │   │                                    │
-│ 5. (Main thread continues rendering!)     │   │ 6. Writes result into token        │
-│ 7. Scheduler detects token.done == true   │ ◄─│ 8. atomic_store(&token.done, true) │
+│ 5. (Main thread continues rendering!)     │   │ 6. Writes result into job struct   │
+│ 7. Fiber observes token.state != .Pending│ ◄─│ 8. async_token_complete(&token)    │
 │ 9. Resumes AI Fiber on Main Thread!       │   └────────────────────────────────────┘
 └───────────────────────────────────────────┘
 ```

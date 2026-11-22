@@ -95,24 +95,23 @@ boss_combat_timeline :: proc(f: ^coroutine.Fiber, boss: ^Boss_Entity) {
     // ==========================================
     fmt.println("\n[PHASE 1] Boss engages player!")
 
-    // Using race_with to pass ^Boss_Entity to all branches cleanly,
-    // combined with the pre-built branch_wait timer:
-    winner := coroutine.race_with(f, boss,
+    // Mixing boss-context arms with the pre-built branch_wait timer using race + branch:
+    winner := coroutine.race(f,
         // Branch 0: Continuous Attack Loop
-        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             for {
                 fmt.println("  -> Boss casts Void Bolt!")
                 coroutine.wait(f, 1.0)
             }
-        },
+        }, boss, name = "Void Bolt Loop"),
 
         // Branch 1: Health Threshold Trigger
-        proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
+        coroutine.branch(proc(f: ^coroutine.Fiber, b: ^Boss_Entity) {
             for b.hp > 50 {
                 coroutine.yield(f)
             }
             fmt.println("  >>> TRIGGER: Boss HP dropped to <= 50%! <<<")
-        },
+        }, boss, name = "HP Watcher"),
 
         // Branch 2: Enrage Timer using pre-built primitive
         coroutine.branch_wait(5.0, name = "Enrage Timer"),
@@ -179,7 +178,7 @@ When a branch loses a `race` or is cancelled:
 4. Stacks are returned to the slab pool for $O(1)$ recycling.
 
 > [!WARNING]
-> Because suspended stackful fibers are cancelled externally without resuming execution on the CPU, **native Odin `defer` statements do not run on abort**. Always use `coroutine.fiber_defer` when managing external resources or reversible state (see [Guide: Footguns & Traps](file:///E:/OdinLang/Projects/coroutines_asm/docs/guides/GUIDE_FOOTGUNS.md#footgun-15-relying-on-native-odin-defer-for-external-fiber-cancellation--abort)).
+> Because suspended stackful fibers are cancelled externally without resuming execution on the CPU, **native Odin `defer` statements do not run on abort**. Always use `coroutine.fiber_defer` when managing external resources or reversible state (see [Guide: Footguns & Traps](../guides/GUIDE_FOOTGUNS.md#footgun-15-relying-on-native-odin-defer-for-external-fiber-cancellation--abort)).
 
 ---
 

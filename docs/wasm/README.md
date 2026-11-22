@@ -6,7 +6,7 @@ Welcome to the **WebAssembly Documentation Suite** for the Odin coroutine engine
 
 ## 1. Executive Summary
 
-On native operating systems (Windows, Linux, macOS) across AMD64, ARM64, and RISC-V 64, this engine performs cooperative fiber context switching via custom assembly instructions (`#byte` machine code and high-level inline assembly) in **16 nanoseconds**, allocating an isolated physical stack buffer for each fiber.
+On native operating systems (Windows, Linux, macOS) across AMD64, ARM64, and RISC-V 64, this engine performs cooperative fiber context switching via custom inline assembly (100% high-level `asm` on AMD64, hybrid high-level `asm` with minimal `#byte` on ARM64 and RISC-V 64) in **~16–19 nanoseconds**, allocating an isolated physical stack buffer for each fiber.
 
 Standard WebAssembly 1.0 does not provide physical stack pointers, register access, or first-class delimited continuations. To achieve full cross-platform parity for web browsers and Node.js:
 1. **Binaryen Asyncify (`wasm-opt --asyncify`)**: Transforms standard Odin procedure call graphs into resumable state machines capable of unwinding and rewinding the WebAssembly execution stack.
@@ -26,7 +26,7 @@ Standard WebAssembly 1.0 does not provide physical stack pointers, register acce
 | **Local Variables** | Reside on private fiber stack | Wasm VM locals saved/restored; stack structs shared |
 | **Structured Concurrency** | Fully supported (`sync`, `race`, `rush`, `branch_scoped`) | Fully supported (`sync`, `race`, `rush`, `branch_scoped`) |
 | **CSP Channels** | Symmetrical rendezvous & buffered ring buffers | Symmetrical rendezvous & buffered ring buffers |
-| **Multi-Domain Clocks** | Sim Time, Real Time, Fixed Ticks | Sim Time, Real Time, Fixed Ticks |
+| **Multi-Domain Clocks** | Indexed `Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`) | Indexed `Clock_Domain` (`CLOCK_SIM`, `CLOCK_REAL`, `CLOCK_PHYS`) |
 | **Graphics Runtime** | Native Desktop Raylib (OpenGL / DirectX) | Pure HTML5 2D Canvas Adapter (`tools/web/raylib_canvas.js`) |
 | **Build Artifact** | Native PE / ELF / Mach-O executable | Standalone `.wasm` bundle (with Asyncify passes) |
 

@@ -53,7 +53,7 @@ To achieve zero dynamic heap allocations during branch coordination, each `Fiber
          ▼                             ▼                             ▼
    [ Child Fiber A ]             [ Child Fiber B ]             [ Child Fiber C ]
    join_coord_id: coord.id       join_coord_id: coord.id       join_coord_id: coord.id
-   sibling_next: ──────────────► sibling_next: ──────────────► sibling_next: nil
+   next_sibling: ──────────────► next_sibling: ──────────────► next_sibling: nil
    parent: ^Parent               parent: ^Parent               parent: ^Parent
 ```
 
@@ -61,7 +61,7 @@ To achieve zero dynamic heap allocations during branch coordination, each `Fiber
 - `id: u64`: Monotonically incrementing coordinator ID assigned on setup (`sched.next_coord_id += 1`).
 - `join_coord_id: u64`: Stored on each child fiber matching `coord.id`. Prevents stale background branches from an earlier `rush` from accidentally corrupting subsequent `sync`, `race`, or `rush` invocations on `parent.active_coord`.
 - `first_child`: Pointer to the first active child fiber.
-- `sibling_next`: Pointer to the next sibling in the linked list.
+- `next_sibling`: Pointer to the next sibling in the intrusive linked list.
 - `parent`: Pointer back to the parent fiber.
 - `join_coord`: Intrusive struct managing join mode (`.Sync`, `.Race`, `.Rush`), active branch counts, and winner indices.
   - In `.Race`: the first completed arm wins, parent is unblocked, and all sibling branches are recursively aborted.
@@ -114,12 +114,12 @@ The engine provides 2 orthogonal cancellation models tailored to gameplay archit
 
 ### Dimension 1: Hierarchical Scopes & Sub-Scopes (`Fiber_Scope` / `scope_cancel`)
 - Attached directly to game entities (e.g. `monster.entity_scope`, `monster.combat_scope`).
-- All fibers spawned with `scope = &monster.combat_scope` are tracked in `scope.handles`.
-- When the monster dies or is stunned, calling `scope_cancel(sched, &monster.combat_scope)` cleanly cancels all attached fibers in $O(1)$ time.
+- All fibers spawned with `scope = &monster.combat_scope` are linked intrusively via `scope.head`/`scope.tail` (`next_in_scope`, `prev_in_scope`) with zero heap allocation.
+- When the monster dies or is stunned, calling `scope_cancel(sched, &monster.combat_scope)` cleanly cancels all attached fibers.
 - Task trees (`race`, `rush`, `sync`, `fallback`) automatically clean up subtrees bottom-up upon completion or failure.
 
-### Dimension 2: Interruption Races (`race` & `Signal`)
-- Combat workloads race against entity or area signals: `race(f, branch(combat_loop), branch(signal_wait(&stun_sig)))`.
+### Dimension 2: Interruption Races (`race` / `with_signal` & `Signal`)
+- Combat workloads race against entity or area signals: `race(f, branch(combat_loop, &boss), branch_signal(&stun_sig))` or `with_signal(f, &stun_sig, combat_loop, &boss)`.
 - When a stun occurs, the combat subtree is aborted with zero leaked fibers, executes stun recovery, and loops around cleanly.
 
 ---

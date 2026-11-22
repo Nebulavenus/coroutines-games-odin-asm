@@ -744,31 +744,22 @@ The scheduler supports explicit clock progression and execution:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. Advance Clocks:                                                      │
-│    • Real Clock: real_time += dt, real_ticks += dt * 1000               │
-│    • Sim Clock:  sim_time += sim_dt, sim_ticks += ticks, frames += 1   │
+│ 1. clock_advance(sched, clock_id, dt, steps = 1):                       │
+│    • Advance Clock_Domain[clock_id]: time += dt * scale, steps += steps │
+│    • Wake Timer Min-Heap:                                               │
+│      While root.wake_time <= clock.time -> pop to Ready Queue.          │
+│    • Wake Step Waiters (in-place linear partition):                     │
+│      For each waiter: if wake_step <= clock.steps -> move to Ready.     │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ 2. Wake Real Timers (Real-Timer Min-Heap):                              │
-│    While root.wake_time <= real_time -> pop to Ready Queue.             │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 3. Wake Sim Timers (Sim-Timer Min-Heap):                                │
-│    While root.wake_time <= sim_time -> pop to Ready Queue.              │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 4. Wake Integer Tick Waiters:                                           │
-│    For each waiter: if wake_ticks <= sim_ticks -> move to Ready.        │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 5. Wake Frame Waiters:                                                  │
-│    For each waiter: if wake_frame <= frame_count -> move to Ready.      │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 6. Poll Conditions:                                                     │
-│    For each waiter: if condition_fn(user_data) == true -> move to Ready │
-├─────────────────────────────────────────────────────────────────────────┤
-│ 7. Execute Ready Queue:                                                 │
-│    While len(ready_queue) > 0:                                          │
-│      f = pop_front(ready_queue)                                         │
-│      f.status = .Running                                                │
-│      fiber_context_switch(&sched.scheduler_sp, f.saved_sp)              │
-│      process_post_execution(f)                                         │
+│ 2. scheduler_run(sched):                                                │
+│    • Zero-shift index cursor over Ready Queue:                          │
+│      For i := 0; i < len(ready_queue); i += 1:                          │
+│        f = resolve(ready_queue[i])                                      │
+│        if f.status != .Ready do continue                                │
+│        f.status = .Running                                              │
+│        fiber_context_switch(&sched.scheduler_sp, f.saved_sp)            │
+│        process_post_execution(f)                                        │
+│      clear(&sched.ready_queue)                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -908,14 +899,15 @@ Every coroutine can belong to a `Fiber_Scope` (e.g., embedded in an `Enemy` or `
 
 ```odin
 // Spawn a detached or scoped root fiber (unified proc group)
-spawn_typed :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber, data: ^$T), data: ^T, scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
-spawn_nil   :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber), scope: ^Fiber_Scope = nil, name: string = "") -> Fiber_Handle
-spawn       :: proc{spawn_typed, spawn_nil}  // Call spawn(...) for both
+spawn_ptr :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber, data: ^$T), data: ^T, scope: ^Fiber_Scope = nil, name: string = "", clock: Clock_ID = CLOCK_SIM) -> Fiber_Handle
+spawn_val :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber, data: $T), data: T, scope: ^Fiber_Scope = nil, name: string = "", clock: Clock_ID = CLOCK_SIM) -> Fiber_Handle
+spawn_nil :: proc(sched: ^Scheduler, entry: proc(f: ^Fiber), scope: ^Fiber_Scope = nil, name: string = "", clock: Clock_ID = CLOCK_SIM) -> Fiber_Handle
+spawn     :: proc{spawn_ptr, spawn_val, spawn_nil} // Call spawn(...) for all three
 
 // Cancel a specific fiber or an entire entity's scope
-fiber_cancel :: proc(sched: ^Scheduler, handle: Fiber_Handle)
-scope_cancel :: proc(sched: ^Scheduler, scope: ^Fiber_Scope)
-scope_destroy :: proc(sched: ^Scheduler, scope: ^Fiber_Scope)  // sched is required
+fiber_cancel  :: proc(sched: ^Scheduler, handle: Fiber_Handle)
+scope_cancel  :: proc{scope_cancel_sched, scope_cancel_fiber}
+scope_destroy :: proc{scope_destroy_sched, scope_destroy_fiber}
 ```
 
 ### B. Suspension & Timing Primitives
@@ -930,7 +922,7 @@ wait_steps    :: proc(f: ^Fiber, steps: int)
 yield         :: proc(f: ^Fiber) // Equivalent to wait_steps(f, 1)
 
 // Precision zero-drift interval ticking (fiber-owned, 100% Wasm-safe)
-ticker_wait   :: proc(f: ^Fiber, interval: f64)
+ticker_wait   :: proc(f: ^Fiber, interval_seconds: f32)
 ticker_rebase :: proc(f: ^Fiber)
 ```
 
@@ -943,10 +935,10 @@ ticker_rebase :: proc(f: ^Fiber)
 
 ```odin
 // Creates a branch descriptor with strongly-typed payload (unified proc group)
-branch_typed :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
-branch_val   :: proc(entry: proc(f: ^Fiber, data: $T), data: T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
-branch_nil   :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
-branch       :: proc{branch_typed, branch_val, branch_nil}
+branch_ptr :: proc(entry: proc(f: ^Fiber, data: ^$T), data: ^T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch_val :: proc(entry: proc(f: ^Fiber, data: $T), data: T, name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch_nil :: proc(entry: proc(f: ^Fiber), name: string = "", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc
+branch     :: proc{branch_ptr, branch_val, branch_nil}
 ```
 
 ### B. `sync` (Join All)
@@ -974,7 +966,7 @@ rush :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
 Executes branches sequentially in priority order ($A \rightarrow B \rightarrow C$). Stops at the first branch that succeeds. If a branch calls `fail(f)`, execution cascades to the next branch.
 
 ```odin
-fallback :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
+fallback :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (succeeded: bool, winning_index: int)
 ```
 
 ### F. `branch_scoped` (Parent-Bound Fire-and-Forget)
@@ -998,7 +990,7 @@ Eliminates boilerplate `branch(...)` wrappers when all branches operate on a sha
 sync_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> bool
 race_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
 rush_with     :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
-fallback_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int)
+fallback_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (succeeded: bool, winning_index: int)
 ```
 
 ### I. Pre-Built Branch Constructors (`branch_signal`, `branch_wait`)
@@ -1164,8 +1156,8 @@ boss_ai_timeline :: proc(f: ^Fiber, boss: ^Boss) {
     // ==========================================
     // PHASE 2: Shield Charge & Super Explosion
     // ==========================================
-    // 1. Center the boss
-    tween(f, &boss.pos_x, boss.pos_x, center_x, 1.0, ease_in_out_cubic)
+    // 1. Center the boss (user-defined lerp helper using delta_time(f) + yield(f))
+    lerp_f32(f, &boss.pos_x, boss.pos_x, center_x, 1.0)
 
     // 2. Charge shield + shake camera simultaneously
     boss.shield_active = true
@@ -1174,8 +1166,8 @@ boss_ai_timeline :: proc(f: ^Fiber, boss: ^Boss) {
             apply_camera_shake(f, game, 15.0)
         }, boss.game),
         branch(proc(f: ^Fiber, b: ^Boss) {
-            tween(f, &b.shield_power, 0.0, 1.0, 0.5)
-            tween(f, &b.visual_scale, 1.0, 1.6, 1.5, ease_in_out_elastic)
+            lerp_f32(f, &b.shield_power, 0.0, 1.0, 0.5)
+            lerp_f32(f, &b.visual_scale, 1.0, 1.6, 1.5)
             wait(f, 0.5)
         }, boss),
     )
@@ -1188,7 +1180,7 @@ boss_ai_timeline :: proc(f: ^Fiber, boss: ^Boss) {
     // ==========================================
     // PHASE 3: Enraged Rapid Fire Loop
     // ==========================================
-    tween(f, &boss.visual_scale, 1.6, 1.3, 0.6, ease_in_out_cubic)
+    lerp_f32(f, &boss.visual_scale, 1.6, 1.3, 0.6)
     sync(f,
         branch(boss_rapid_fire_loop, boss, "Rapid Targeted Fire"),
         branch(boss_ring_fire_loop, boss, "Periodic Ring Pulse"),
@@ -1199,11 +1191,11 @@ boss_ai_timeline :: proc(f: ^Fiber, boss: ^Boss) {
 boss_patrol_loop :: proc(f: ^Fiber, boss: ^Boss) {
     center_x := WW() / 2
     for {
-        tween(f, &boss.pos_x, center_x, center_x + 200.0, 3.0, ease_in_out_cubic)
+        lerp_f32(f, &boss.pos_x, center_x, center_x + 200.0, 3.0)
         wait(f, 0.5)
-        tween(f, &boss.pos_x, center_x + 200.0, center_x - 200.0, 6.0, ease_in_out_cubic)
+        lerp_f32(f, &boss.pos_x, center_x + 200.0, center_x - 200.0, 6.0)
         wait(f, 0.5)
-        tween(f, &boss.pos_x, center_x - 200.0, center_x, 3.0, ease_in_out_cubic)
+        lerp_f32(f, &boss.pos_x, center_x - 200.0, center_x, 3.0)
     }
 }
 
@@ -1224,31 +1216,31 @@ boss_spiral_shoot_loop :: proc(f: ^Fiber, boss: ^Boss) {
 | **Code Style** | Tree assembly (`seq`, `select`, `loop`) | **Standard imperative Odin** (`for`, `if`, `defer`) |
 | **Loops** | `loop(seq(...))` wrapper | `for { ... wait(f, 1.0) }` |
 | **State Retention** | Manual heap allocations via `rc_new(Payload)` | **Native local variables on stack** |
-| **Cleanup / Destructors** | Custom callback wrappers in `Rc_Header` | **Native Odin `defer` blocks** |
+| **Cleanup / Destructors** | Custom callback wrappers in `Rc_Header` | **Native `defer` (normal return) & `fiber_defer` (abort-safe)** |
 | **`sync` / `race`** | Nested node combinators | `sync(f, branch(...), branch(...))` |
-| **Entity Lifetime** | Fragile `weak(..., is_alive)` polling | `scope_cancel(&entity.scope)` |
+| **Entity Lifetime** | Fragile `weak(..., is_alive)` polling | `scope_cancel(&sched, &entity.scope)` |
 
 ---
 
 # 6. Modern Architectural Expansions
 
 ### A. Indexed `Clock_Domain` Architecture (`clocks: [MAX_CLOCKS]Clock_Domain`)
-Instead of baking hardcoded simulation, real-time, and tick clocks with duplicated API procedures (`wait_real`, `wait_ticks`, `spawn_real`), the scheduler maintains an array of generic, orthogonal clock domains (`MAX_CLOCKS :: 4`; `CLOCK_SIM = 0`, `CLOCK_REAL = 1`, `CLOCK_PHYS = 2`, `CLOCK_INHERIT = -1`):
-1. **Per-Domain State (`Clock_Domain`)**: Each domain has its own `time: f64`, `dt: f32`, `steps: u64`, `time_scale: f32`, `timer_heap: [dynamic]^Fiber`, and `step_waiters: [dynamic]^Fiber`.
-2. **Fiber Clock Affinity (`f.clock_id`)**: Every fiber executes within a specific `Clock_ID`. Calling `wait(f, seconds)`, `wait_steps(f, count)`, `yield(f)`, or `ticker_wait(f, interval)` automatically schedules against `sched.clocks[f.clock_id]`.
+Instead of baking hardcoded simulation, real-time, and tick clocks with duplicated API procedures (`wait_real`, `wait_ticks`, `spawn_real`), the scheduler maintains an array of generic, orthogonal clock domains (`MAX_CLOCKS :: #config(CORO_MAX_CLOCKS, 8)`; `CLOCK_SIM = 0`, `CLOCK_REAL = 1`, `CLOCK_PHYS = 2`, `CLOCK_INHERIT = -1`):
+1. **Per-Domain State (`Clock_Domain`)**: Each domain has its own `time: f64`, `delta: f32`, `steps: u64`, `time_scale: f32`, `timer_heap: [dynamic]^Fiber`, and `step_waiters: [dynamic]^Fiber`.
+2. **Fiber Clock Affinity (`f.clock_id`)**: Every fiber executes within a specific `Clock_ID`. Calling `wait(f, seconds)`, `wait_steps(f, count)`, `yield(f)`, or `ticker_wait(f, interval_seconds)` automatically schedules against `sched.clocks[f.clock_id]`.
 3. **Hierarchical Inheritance**: Child branches spawned via `sync()`, `race()`, `rush()`, or `fallback()` automatically inherit `parent.clock_id` when `desc.clock_id == CLOCK_INHERIT`, or can override their clock domain explicitly (`branch(..., clock = CLOCK_REAL)`).
 4. **Independent Advancement**: Host game loops advance any clock domain independently with `clock_advance(&sched, clock_id, dt)` and drain ready fibers with `scheduler_run(&sched)` (or use the convenience `scheduler_step(&sched, dt)` which advances `CLOCK_SIM` and runs).
 
 ### B. $O(\log N)$ Intrusive Min-Heap Timers
 - Each `Clock_Domain` maintains an $O(\log N)$ min-heap (`timer_heap`) for time-sleeping fibers.
-- Sleeping fibers store their cached `timer_heap_index: int`, allowing $O(\log N)$ cancellation and removal without linear scans.
+- Sleeping fibers store their cached `heap_index: int`, allowing $O(\log N)$ cancellation and removal without linear scans.
 
 ### C. Minimal Verse / SkookumScript Core vs. Optional `coroutine/sync` Package
-- **Core Package (`package coroutine`)**: Focused strictly on multi-ISA stack switching, slab/guard-page memory pools, structured concurrency combinators (`sync`, `race`, `rush`, `fallback`, `with_timeout`, `fail`), `Fiber_Scope`, unified `Event(T)` / `Signal :: Event(struct{})`, and `Async_Token`.
+- **Core Package (`package coroutine`)**: Focused strictly on multi-ISA stack switching, slab/guard-page memory pools, structured concurrency combinators (`sync`, `race`, `rush`, `fallback`, `with_timeout`, `with_signal`, `fail`), `Fiber_Scope`, unified `Event(T)` / `Signal :: Event(struct{})`, `Sticky_Event(T)` / `Sticky_Signal`, `Task(T)`, and `Async_Token`.
 - **Optional Sync Subpackage (`sync/` — `package coroutine_sync`)**: Houses Go/OS-style concurrency primitives (`Fiber_Mutex`, `with_mutex`, `Fiber_Semaphore`, `with_semaphore`, `Channel(T)` ring-buffer CSP channels, and `chan_select_recv`), keeping the core runtime minimal while preserving full CSP and lock primitives for applications that need them.
 
 ### D. Inline 128-Byte By-Value Payloads (`spawn_val` / `branch_val`)
-- Transient parameters are copied into `fiber.payload: [128]u8`, validated via `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
+- Transient parameters are copied into `fiber.payload_storage: [FIBER_PAYLOAD_SIZE]byte`, validated via `#assert(size_of(T) <= FIBER_PAYLOAD_SIZE)`.
 - Eliminates dangling stack pointers when spawning from transient procedures without dynamic heap allocations.
 
 ### E. Pure Concurrency Primitives (`fiber_join`, `Event(T)` / `Signal`, `Async_Token`)
@@ -1262,7 +1254,7 @@ Instead of baking hardcoded simulation, real-time, and tick clocks with duplicat
 
 ### G. 100% Pure Structured Concurrency & POSIX Guard Page Parity (`Fiber_Scope`, `race`, `mprotect`)
 - **100% Pure Structured Concurrency**: Hierarchical lifetimes are managed via `Fiber_Scope` (`scope_cancel`, `scope_wait`), and status preemption (EMP, Stun, Phase transitions) is managed via `race` + `Signal` / `rush` or `scope_cancel`.
-- **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_GUARD`.
+- **POSIX Hardware Guard Page Parity**: Linux and macOS allocate memory slabs via `posix.mmap` and configure the bottom 4KB page with `posix.mprotect(PROT_NONE)`, providing identical hardware MMU crash trapping to Windows `VirtualAlloc` + `PAGE_NOACCESS`.
 
 ### H. Infinite Loop Watchdog & Safety Harness (`docs/guides/GUIDE_FOOTGUNS.md`)
 - **Debug Infinite Loop Watchdog**: Scheduler measures wall-clock time of each fiber slice in debug builds (`when ODIN_DEBUG`), panicking immediately with fiber handle and debug name if a fiber runs > 100ms without yielding.

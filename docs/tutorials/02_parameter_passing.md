@@ -89,14 +89,14 @@ For fire-and-forget events, temporary coordinates, or transient spell configurat
 ### How It Works Internally
 Every `Fiber` structure in the engine pre-allocates an embedded 128-byte raw buffer:
 ```odin
-FIBER_PAYLOAD_SIZE :: 128
-payload: [FIBER_PAYLOAD_SIZE]u8
+FIBER_PAYLOAD_SIZE :: PAYLOAD_SIZE // default: 128
+payload_storage: [FIBER_PAYLOAD_SIZE]byte
 ```
 
 When you call `spawn_val(sched, entry_proc, my_struct)`:
 1. The compiler checks that `size_of(T) <= 128`.
-2. The entire struct is copied by value directly into `fiber.payload`.
-3. When the fiber executes, the entry procedure receives an internal pointer pointing to its own private payload buffer.
+2. The entire struct is copied by value directly into `fiber.payload_storage`.
+3. When the fiber executes, the wrapper dereferences `(^T)(&fiber.payload_storage[0])^` and passes it by value to the entry procedure.
 4. **Result:** Zero heap allocations, zero garbage collection, and 100% immune to caller stack destruction!
 
 ```odin

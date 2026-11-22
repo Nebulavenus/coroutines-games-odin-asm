@@ -763,12 +763,12 @@ import "core:fmt"
 import "coroutine"
 
 hack_terminal_fiber :: proc(f: ^coroutine.Fiber, term: ^Terminal) {
-    completed := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, t: ^Terminal) {
+    interrupted := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, t: ^Terminal) {
         tween_f32(f, &t.hack_progress, 0.0, 1.0, 3.0)
         t.is_hacked = true
     }, term)
 
-    if !completed {
+    if interrupted {
         fmt.println("Hacking aborted: Emergency lockdown alarm sounded!")
         term.hack_progress = 0.0
     }
@@ -860,8 +860,9 @@ chest_interaction_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler
     coroutine.spawn_task(sched, &task, compute_chest_loot, &req)
 
     // Await completion with zero polling
-    reward := coroutine.task_await(f, &task)
-    fmt.printf("[Loot] Received %d gold (Legendary: %v)\n", reward.gold, reward.is_legend)
+    if reward, ok := coroutine.task_await(f, &task); ok {
+        fmt.printf("[Loot] Received %d gold (Legendary: %v)\n", reward.gold, reward.is_legend)
+    }
 }
 ```
 
@@ -873,7 +874,7 @@ chest_interaction_fiber :: proc(f: ^coroutine.Fiber, sched: ^coroutine.Scheduler
 Fibers frequently alter global or entity state (e.g., invulnerability flags, animation locks, combat stances). If a fiber is cancelled externally (such as losing a `race`, scope cancellation, or parent death), native Odin `defer` statements **do not run** because the stack is never resumed.
 
 ### Solution
-Register cleanup callbacks via `coroutine.fiber_defer`. When the fiber finishes normally, pop and run the cleanup with `fiber_cleanup_pop`:
+Register cleanup callbacks via `coroutine.fiber_defer`. Registered hooks run automatically in LIFO order on **normal return, failure, or external abort** (if you restore state manually before returning, call `coroutine.fiber_cleanup_pop(f)` to unregister the top hook without executing it):
 
 ```odin
 package gameplay
@@ -900,7 +901,6 @@ cast_divine_shield :: proc(f: ^coroutine.Fiber, hero: ^Hero) {
     // Perform spell channeling:
     coroutine.wait(f, 3.0)
 
-    // Pop and execute cleanup upon normal completion:
-    coroutine.fiber_cleanup_pop(f)
+    // Upon natural return (or external abort during wait), restore_hero_state runs automatically!
 }
 ```

@@ -42,11 +42,11 @@ Unlike traditional C/C++ coroutine ports targeting the web, this implementation 
 ├───────────────────┬──────────────────────────┬──────────────────────┬────────────────────────────────────┤
 │ Architecture      │ Target Platform / OS     │ Context Switch Mode  │ Execution Context & Preservation   │
 ├───────────────────┼──────────────────────────┼──────────────────────┼────────────────────────────────────┤
-│ 1. AMD64 (x86-64) │ Windows (x64)            │ Native #byte opcode  │ 240B Stack Frame (Win64 ABI)       │
-│                   │ Linux / Darwin (AMD64)   │ Native #byte opcode  │  64B Stack Frame (SysV ABI)        │
-│ 2. ARM64 (AArch64)│ macOS (Apple Silicon),   │ Native #byte opcode  │ 160B Stack Frame (AAPCS64 ABI)     │
+│ 1. AMD64 (x86-64) │ Windows (x64)            │ 100% High-Level asm  │ 240B Stack Frame (Win64 ABI)       │
+│                   │ Linux / Darwin (AMD64)   │ 100% High-Level asm  │  64B Stack Frame (SysV ABI)        │
+│ 2. ARM64 (AArch64)│ macOS (Apple Silicon),   │ Hybrid asm (8 #byte) │ 160B Stack Frame (AAPCS64 ABI)     │
 │                   │ Linux ARM, Android, iOS  │                      │                                    │
-│ 3. RISC-V 64      │ Linux RISC-V (RV64GC),   │ Native #byte opcode  │ 208B Stack Frame (LP64D ABI)       │
+│ 3. RISC-V 64      │ Linux RISC-V (RV64GC),   │ Hybrid asm (24 #byte)│ 208B Stack Frame (LP64D ABI)       │
 │                   │ VisionFive, SBCs         │                      │                                    │
 │ 4. WebAssembly    │ Browsers, Node.js,       │ Binaryen Asyncify    │ Dynamically Unwound Frame Stack    │
 │    (js_wasm32)    │ Cloudflare Workers, Wasm │ (State Machine IR)   │ (Stored in Fiber.asyncify_buf)     │
@@ -249,7 +249,7 @@ Fiber :: struct {
 ```
 
 ### 5.2 Initial Stack Synthesis on Wasm32
-In [`pool.odin`](../../pool.odin#L470), stack synthesis for `.wasm32` differs from native assembly:
+In [`pool.odin`](../../pool.odin), stack synthesis for `.wasm32` differs from native assembly:
 
 ```odin
 fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
@@ -271,15 +271,12 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
 - **`wasm_started`**: Initialized to `false`. On the first dispatch, `wasm_dispatch_fiber` invokes `fiber_trampoline_entry()` directly without rewinding. On subsequent dispatches, it activates rewinding.
 
 ### 5.3 Natural Termination & Trampoline Entry
-When a fiber naturally completes its user procedure, execution reaches the end of [`fiber_trampoline_entry`](../../pool.odin#L482):
+When a fiber naturally completes its user procedure, execution reaches the end of [`fiber_trampoline_entry`](../../pool.odin):
 ```odin
-    // 5. Notify completion to coordinator & parent
     fiber_on_finish(fiber)
-
-    // 6. Final yield to scheduler
     fiber_yield_final(fiber)
 ```
-In [`fiber_yield_final`](../../pool.odin#L529):
+In [`fiber_yield_final`](../../pool.odin):
 ```odin
 fiber_yield_final :: proc "c" (fiber: ^Fiber) {
     when ODIN_ARCH == .wasm32 {
@@ -373,19 +370,28 @@ When a downstream project vendors the `dist/` folder, Odin automatically selects
 
 ## 8. Test Verification Matrix & Tooling
 
-### 8.1 The 8-Suite WebAssembly Test Matrix
+### 8.1 The 17-Suite WebAssembly Test Matrix
 The WebAssembly backend is verified by [`examples/wasm_test/main.odin`](../../examples/wasm_test/main.odin), exercising every engine primitive under Asyncify transformation:
 
 | Test ID | Test Suite | Verified Subsystems & Behavioral Invariants | Status |
 | :---: | :--- | :--- | :---: |
-| **Test 1** | Minimal Fiber Spawn & Natural Finish | Fiber pool acquisition, trampoline entry, context establishment, status transitions (`Running` -> `Completed`), natural return. | **PASS** |
+| **Test 1** | Minimal Fiber Spawn & Natural Finish | Fiber pool acquisition, trampoline entry, context establishment, status transitions (`Running` → `Completed`), natural return. | **PASS** |
 | **Test 2** | Local Variables Preserved Across Yields | Stack preservation, local variables (`local_a`, `local_b`) retained across multiple `coroutine.wait()` suspension cycles. | **PASS** |
 | **Test 3** | Concurrent Fiber Interleaving | Multi-fiber ready queue scheduling, cooperative round-robin execution interleaving without cross-talk. | **PASS** |
-| **Test 4** | Structured Concurrency: `sync()` | Intrusive branch coordination, child fiber spawning, hierarchical parent suspension, deterministic multi-branch completion. | **PASS** |
-| **Test 5** | Structured Concurrency: `race()` | First-to-complete winner resolution, automatic cancellation and pruning of losing branches. | **PASS** |
-| **Test 6** | CSP Channel Rendezvous | Unbuffered synchronous communication, sender-receiver blocking synchronization, zero-copy value transfer. | **PASS** |
-| **Test 7** | Multi-Domain Clocks & Time Scaling | Simulated time domain (`sim_time`), variable time scaling (`time_scale = 0.5x`), real-time clock domain isolation. | **PASS** |
+| **Test 4** | Structured Concurrency: `sync_with()` | Intrusive branch coordination, shared-context child spawning, hierarchical parent suspension, deterministic multi-branch completion. | **PASS** |
+| **Test 5** | Structured Concurrency: `race_with()` | First-to-succeed winner resolution, automatic cancellation and pruning of losing branches. | **PASS** |
+| **Test 6** | CSP Channel Rendezvous | Unbuffered synchronous communication (`coroutine/sync`), sender-receiver blocking synchronization, zero-copy value transfer. | **PASS** |
+| **Test 7** | Multi-Domain Clocks (`CLOCK_SIM` / `CLOCK_REAL`) | Independent indexed clock domains, scaled simulation stepping, and unpaused real-time clock domain isolation. | **PASS** |
 | **Test 8** | Structured `Fiber_Scope` Abort | Group cancellation, intrusive doubly-linked scope membership pruning, cancellation of sleeping fibers. | **PASS** |
+| **Test 9** | Signal Primitives & FIFO Waiters | `signal_wait` / `signal_emit` multi-waiter FIFO wake ordering and waiter count tracking. | **PASS** |
+| **Test 10** | Nested `race` Cancels Nested `sync` | Deep nested cancellation (`race` + `branch_signal` cancelling an active `sync_with` subtree with child tickers). | **PASS** |
+| **Test 11** | Ticker Zero-Drift & Safe Scope Abort | Fiber-owned `ticker_wait` precision and clean cancellation via `Fiber_Scope`. | **PASS** |
+| **Test 12** | Multi-Round EMP Stun AI Fuzzing | Rapid `with_signal` + `sync_with` interruption stress across 300 frames with zero leaked fibers. | **PASS** |
+| **Test 13** | Verse `rush_with()` Partial Join | First arm to succeed unblocks parent while losing branches detach and continue in background. | **PASS** |
+| **Test 14** | Verse `branch_scoped()` Subtasks | Parent-bound fire-and-forget subtasks automatically aborted when parent finishes. | **PASS** |
+| **Test 15** | Latched `Sticky_Event` & `Sticky_Signal` | Late awaiters resume immediately in $O(1)$ without suspending on already-emitted events. | **PASS** |
+| **Test 16** | In-Frame Timeslice (`yield_now`) | Cooperative timeslice sharing within a single simulation tick. | **PASS** |
+| **Test 17** | `Task(T)` Futures & Combinator Helpers | `spawn_task`, `task_await`, `sync_with`, and `with_signal` under Binaryen Asyncify. | **PASS** |
 
 ### 8.2 Automation Commands ([`build.ps1`](../../build.ps1))
 

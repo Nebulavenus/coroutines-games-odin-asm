@@ -16,18 +16,24 @@ To run stackful coroutines on WebAssembly today without waiting for future brows
 
 ## 2. The Asyncify Data Structures (`types.odin`)
 
-Each `Fiber` allocated in the `Fiber_Pool` carries its own dedicated Asyncify state:
+Each `Fiber` allocated in the `Fiber_Pool` carries its own dedicated Asyncify state (`4096` bytes on `wasm32`, `8` bytes stub on native):
 
 ```odin
 // types.odin
+when ODIN_ARCH == .wasm32 {
+    ASYNCIFY_STORAGE_SIZE :: 4096
+} else {
+    ASYNCIFY_STORAGE_SIZE :: 8
+}
+
 Asyncify_Buffer :: struct {
-    data_start: rawptr, // Pointer to start of serialization buffer
-    data_end:   rawptr, // Pointer to end of serialization buffer
+    top:     u32,
+    end:     u32,
+    storage: [ASYNCIFY_STORAGE_SIZE]byte,
 }
 
 Fiber :: struct {
     // ...
-    // --- WebAssembly Asyncify Execution State ---
     wasm_started: bool,
     asyncify_buf: Asyncify_Buffer,
     // ...
@@ -35,46 +41,60 @@ Fiber :: struct {
 ```
 
 By convention in the Binaryen runtime:
-- `data_start`: Points to offset `+8` of the buffer (the first 8 bytes store the active stack pointer offset during unwinding).
-- `data_end`: Points to the upper boundary of the allocated memory slice (e.g. 16 KB or 32 KB per fiber).
+- `top` (offset `+0`): Current write/read cursor into `storage`, initialized to `uintptr(&buf.storage[0])` before each unwind.
+- `end` (offset `+4`): Upper boundary of `storage` (`uintptr(&buf.storage[0]) + ASYNCIFY_STORAGE_SIZE`).
+- `storage` (offset `+8`): Inline serialization buffer holding saved Wasm VM locals and call-frame state for that fiber.
 
 ---
 
 ## 3. The Leaf Unwind/Rewind Protocol
 
-In typical Asyncify usage from C/C++ (Emscripten), `asyncify_start_unwind` is invoked from host JavaScript or an uninstrumented foreign function. In our Odin native runtime, however, fibers yield from deep inside pure Odin code (`coroutine.wait`, `coroutine.yield`, or `coroutine.ticker_wait`).
+In typical Asyncify usage from C/C++ (Emscripten), `asyncify.start_unwind` is invoked from host JavaScript or an uninstrumented foreign function. In our Odin native runtime, however, fibers yield from deep inside pure Odin code (`coroutine.wait`, `coroutine.yield`, or `coroutine.ticker_wait`).
 
 ### The Architectural Challenge
-If `asyncify_start_unwind` is called from inside an uninstrumented leaf function, the WebAssembly engine begins unwinding immediately. However, upon **rewind**, the engine re-invokes the top-level procedure. If the leaf procedure itself is not instrumented or does not stop the rewind state, execution traps with:
+Binaryen's Asyncify pass automatically classifies functions based on which `asyncify.*` imports they invoke:
+- Calling **both** `start_unwind` and `stop_rewind` marks a procedure as **top-most runtime** (leaf boundary, left uninstrumented).
+- Calling **both** `start_rewind` and `stop_unwind` marks a procedure as **bottom-most runtime** (dispatcher boundary, left uninstrumented).
+
+If the leaf procedure does not stop the rewind state upon re-entry, execution traps with:
 ```
 RuntimeError: unreachable (or asyncify state corrupted)
 ```
 
 ### The Solution: The Symmetric Leaf Protocol in `asm_wasm32.odin`
-To achieve clean resumption from arbitrary nested procedures, the leaf switcher implements the **Symmetric Leaf Protocol**:
+To achieve clean suspension and resumption from arbitrary nested procedures without modifying `scheduler.odin`, `asm_wasm32.odin` implements `fiber_context_switch` using two uninstrumented boundary procedures (`wasm_yield_leaf` and `wasm_dispatch_fiber`):
 
 ```odin
-// asm_wasm32.odin / api.odin (when ODIN_ARCH == .wasm32)
-yield :: proc(f: ^Fiber) {
-    if f == nil || f.sched == nil do return
+// asm_wasm32.odin (when ODIN_ARCH == .wasm32)
+wasm_yield_leaf :: #force_no_inline proc(buf: ^Asyncify_Buffer) {
+    if g_wasm_is_rewinding {
+        g_wasm_is_rewinding = false
+        _raw_stop_rewind()
+        return
+    }
 
-    // 1. Mark fiber status as Ready and enqueue in scheduler ready queue
-    f.status = .Ready
-    ready_queue_push(&f.sched.ready_queue, f)
+    buf.top = u32(uintptr(&buf.storage[0]))
+    buf.end = u32(uintptr(&buf.storage[0]) + ASYNCIFY_STORAGE_SIZE)
+    _raw_start_unwind(buf)
+}
 
-    // 2. Configure Asyncify buffer pointers
-    f.asyncify_buf.data_start = rawptr(uintptr(f.stack_base) + 8)
-    f.asyncify_buf.data_end   = rawptr(uintptr(f.stack_base) + f.stack_size)
+fiber_context_switch :: proc(from_sp: ^rawptr, to_sp: rawptr) {
+    if !g_wasm_in_fiber {
+        f := (^Fiber)(to_sp)
+        if f == nil && g_wasm_current_fiber != nil {
+            f = g_wasm_current_fiber
+        }
+        if f == nil do return
 
-    // 3. Initiate Unwind back to the scheduler step boundary
-    asyncify_start_unwind(&f.asyncify_buf)
+        g_wasm_in_fiber = true
+        wasm_dispatch_fiber(f)
+        g_wasm_in_fiber = false
+    } else {
+        f := g_wasm_current_fiber
+        if f == nil do return
 
-    // 4. Perform cooperative context switch to scheduler
-    fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
-
-    // 5. CRITICAL: When rewound, execution resumes right here!
-    // Immediately stop rewind before user code continues:
-    asyncify_stop_rewind()
+        wasm_yield_leaf(&f.asyncify_buf)
+    }
 }
 ```
 
@@ -83,14 +103,15 @@ yield :: proc(f: ^Fiber) {
     ┌─────────────────────────┐             ┌─────────────────────────┐
     │     User Fiber Code     │             │     User Fiber Code     │
     └───────────┬─────────────┘             └───────────▲─────────────┘
-                │ wait()                                │ resumes!
+                │ wait() / yield()                      │ resumes!
     ┌───────────▼─────────────┐             ┌───────────┴─────────────┐
-    │       yield(f)          │             │       yield(f)          │
-    │  asyncify_start_unwind  │             │  asyncify_stop_rewind   │
+    │     wasm_yield_leaf     │             │     wasm_yield_leaf     │
+    │   _raw_start_unwind     │             │    _raw_stop_rewind     │
     └───────────┬─────────────┘             └───────────▲─────────────┘
                 │ unwinds stack                         │ fast-forwards
     ┌───────────▼─────────────┐             ┌───────────┴─────────────┐
-    │   scheduler_step(sched) │ ──next tick─►   scheduler_step(sched) │
+    │   wasm_dispatch_fiber   │ ──next tick─►   wasm_dispatch_fiber   │
+    │    _raw_stop_unwind     │             │   _raw_start_rewind     │
     └─────────────────────────┘             └─────────────────────────┘
 ```
 
@@ -101,24 +122,21 @@ yield :: proc(f: ^Fiber) {
 Because WebAssembly is single-threaded, concurrency is purely cooperative and interleaved with the host JavaScript run-loop.
 
 ### Dispatching Fresh vs. Resumed Fibers
-When `scheduler_step` selects the next fiber from the ready queue, it checks `f.wasm_started`:
+When `scheduler_run` calls `fiber_context_switch(&sched.scheduler_sp, f.saved_sp)`, `wasm_dispatch_fiber` checks `f.wasm_started`:
 
 ```odin
-// scheduler.odin
-run_fiber :: proc(sched: ^Scheduler, f: ^Fiber) {
+// asm_wasm32.odin
+wasm_dispatch_fiber :: proc(f: ^Fiber) {
+    g_wasm_current_fiber = f
     if !f.wasm_started {
-        // First run: execute normal procedure entrypoint
         f.wasm_started = true
-        f.entry_proc(f, f.user_data)
-        fiber_finish(sched, f)
+        fiber_trampoline_entry()
     } else {
-        // Subsequent run: start rewind and re-invoke entrypoint
-        asyncify_start_rewind(&f.asyncify_buf)
-        f.entry_proc(f, f.user_data)
-        // If the procedure exits naturally without yielding:
-        asyncify_stop_rewind()
-        fiber_finish(sched, f)
+        g_wasm_is_rewinding = true
+        _raw_start_rewind(&f.asyncify_buf)
+        fiber_trampoline_entry()
     }
+    _raw_stop_unwind()
 }
 ```
 
@@ -128,30 +146,32 @@ run_fiber :: proc(sched: ^Scheduler, f: ^Fiber) {
 sequenceDiagram
     autonumber
     participant Host as Browser / Node.js
-    participant Sched as Odin Scheduler
+    participant Sched as Scheduler / wasm_dispatch_fiber
     participant Fiber as Active Fiber
     participant Async as Asyncify Engine
 
     Host->>Sched: game_wasm_step(dt)
-    Sched->>Fiber: run_fiber(f)
+    Sched->>Fiber: fiber_trampoline_entry()
     Note over Fiber: Fiber executes logic
     Fiber->>Fiber: coroutine.wait(f, 0.5)
-    Fiber->>Async: asyncify_start_unwind(&buf)
+    Fiber->>Async: wasm_yield_leaf -> _raw_start_unwind(&buf)
     Note over Async: State = UNWINDING
-    Fiber-->>Sched: Unwind call stack to scheduler boundary
+    Fiber-->>Sched: Unwind call stack to wasm_dispatch_fiber
+    Sched->>Async: _raw_stop_unwind()
     Sched-->>Host: Return to browser event loop
 
     Note over Host: 0.5 seconds pass (Timer fires)
 
     Host->>Sched: game_wasm_step(dt)
-    Sched->>Async: asyncify_start_rewind(&buf)
+    Sched->>Async: _raw_start_rewind(&buf)
     Note over Async: State = REWINDING
-    Sched->>Fiber: f.entry_proc(f, user_data)
+    Sched->>Fiber: fiber_trampoline_entry()
     Note over Fiber: Fast-forwards through call tree
-    Fiber->>Async: asyncify_stop_rewind()
+    Fiber->>Async: wasm_yield_leaf -> _raw_stop_rewind()
     Note over Async: State = NORMAL
     Note over Fiber: Resumes execution immediately after wait()
     Fiber->>Sched: Fiber natural finish
+    Sched->>Async: _raw_stop_unwind()
     Sched-->>Host: Frame complete
 ```
 

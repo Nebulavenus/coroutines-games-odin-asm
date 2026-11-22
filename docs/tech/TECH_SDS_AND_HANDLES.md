@@ -34,7 +34,7 @@ In real-time game engines, physics simulators, and high-frequency network server
 │                                      │ achieving 100% zero-alloc sync.      │
 ├──────────────────────────────────────┼──────────────────────────────────────┤
 │ 4. True Zero Is Initialization (ZII) │ Default zeroed structs (Mutex, Sig,  │
-│                                      │ Latch, Token) are immediately valid. │
+│                                      │ Event, Task, Token) are ready to use.│
 └──────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
@@ -63,15 +63,15 @@ All packing and unpacking procedures are declared `#force_inline proc "contextle
 ```odin
 Fiber_Handle :: distinct u32
 
-#force_inline fiber_handle_pack :: proc "contextless" (index: u16, gen: u16) -> Fiber_Handle {
+fiber_handle_pack :: #force_inline proc "contextless" (index: u16, gen: u16) -> Fiber_Handle {
     return Fiber_Handle(u32(index) | (u32(gen) << 16))
 }
 
-#force_inline fiber_handle_index :: proc "contextless" (h: Fiber_Handle) -> u16 {
+fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
     return u16(u32(h) & 0xFFFF)
 }
 
-#force_inline fiber_handle_gen :: proc "contextless" (h: Fiber_Handle) -> u16 {
+fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
     return u16((u32(h) >> 16) & 0xFFFF)
 }
 ```
@@ -116,11 +116,12 @@ Traditional synchronization designs store waiting fibers in dynamic slices (`[dy
 Borrowing the battle-tested architecture of operating system kernels (Linux futex wait queues, Windows dispatcher objects, FreeRTOS event queues), our engine embeds the queue link pointers directly inside the `Fiber` struct:
 
 ```odin
-// Inside Fiber struct (src/coroutine/types.odin):
+// Inside Fiber struct (types.odin):
 Fiber :: struct {
     // ...
-    next_waiter:    ^Fiber, // Intrusive pointer to next waiting fiber
-    prev_waiter:    ^Fiber, // Intrusive pointer to previous waiting fiber
+    next_waiter:        ^Fiber,
+    prev_waiter:        ^Fiber,
+    current_wait_queue: ^Wait_Queue,
     // ...
 }
 
@@ -202,7 +203,7 @@ sync.mutex_lock(f, &m)
 | :--- | :--- | :---: | :---: | :---: |
 | `Signal` / `Event(T)` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Scope` | `head: ^Fiber, tail: ^Fiber, count: int` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Fiber_Mutex` (`sync/`) | `locked: bool, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
+| `Fiber_Mutex` (`sync/`) | `locked: bool, owner: Fiber_Handle, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Semaphore` (`sync/`)| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
 
 ### 4.1 Intrusive `Fiber_Scope` Doubly-Linked List (Zero-Allocation Scopes)
@@ -215,7 +216,7 @@ Following the exact same intrusive kernel pattern, `Fiber_Scope` is a 24-byte ZI
 
 ## 5. Centralized Configuration Architecture (`config.odin`)
 
-All engine limits, stack sizes, memory thresholds, and tick rates are consolidated in `src/coroutine/config.odin` using Odin's `#config` directive:
+All engine limits, stack sizes, memory thresholds, and clock domain bounds are consolidated in `config.odin` using Odin's `#config` directive:
 
 ```odin
 package coroutine
@@ -234,7 +235,7 @@ WATCHDOG_ENABLED :: #config(CORO_WATCHDOG_ENABLED, ODIN_DEBUG)
 WATCHDOG_MAX_SLICE_MS :: #config(CORO_WATCHDOG_MAX_SLICE_MS, 100.0)
 
 // --- 3. Clocks & Timers ---
-DEFAULT_TICK_RATE_HZ :: #config(CORO_TICK_RATE_HZ, 1000)
+MAX_CLOCKS :: #config(CORO_MAX_CLOCKS, 8)
 
 // --- 4. Static Capacity Bounds ---
 HANDLE_HISTORY_CAPACITY :: #config(CORO_HANDLE_HISTORY_CAPACITY, 2048)

@@ -112,7 +112,8 @@ coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, target: coroutine.Fiber_Handle
 ```
 
 - If the target fiber is already finished or invalid, `fiber_join` returns immediately in $O(1)$ time without suspending.
-- If the target fiber is alive, the calling fiber attaches to the target's intrusive join wait queue and suspends until the target terminates.
+- Self-joins (`target_handle == f.handle`) are rejected immediately returning `false`.
+- While the target fiber is alive, `fiber_join` yields cooperatively (`yield(f)`), then checks the target's terminal status via `fiber_status` (returning `true` on `.Completed`).
 
 ---
 

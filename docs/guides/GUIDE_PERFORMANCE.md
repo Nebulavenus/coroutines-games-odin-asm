@@ -27,9 +27,6 @@ level_load :: proc(world: ^Game_World) {
 
     // Pre-allocate slabs for up to 128 concurrent fibers (4 slabs = 4 MB)
     coroutine.scheduler_prewarm(&world.sched, 128)
-
-    // Pre-warm generators if needed
-    // ...
 }
 ```
 

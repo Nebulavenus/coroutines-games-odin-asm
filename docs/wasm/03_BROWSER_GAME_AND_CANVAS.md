@@ -104,22 +104,32 @@ For `js_wasm32`, `examples/game/main.odin` exports discrete lifecycle hooks:
 
 ```odin
 @(export)
-game_wasm_init :: proc() {
-    rl.InitWindow(1280, 720, "Boss Fight Web")
-    game_init(&g_game)
+game_wasm_init :: proc "c" () -> bool {
+    context = runtime.default_context()
+    rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Coroutines Boss AI Demo")
+    rl.SetTargetFPS(60)
+    game_init(&g_wasm_game)
+    g_wasm_game_ready = true
+    return true
 }
 
 @(export)
-game_wasm_step :: proc(dt: f32) {
-    // 1. Advance coroutine scheduler
-    scheduler_step(&g_game.sched, dt)
-    // 2. Render active frame to canvas
-    game_draw(&g_game)
+game_wasm_step :: proc "c" (dt: f32) -> bool {
+    context = runtime.default_context()
+    if !g_wasm_game_ready do return false
+    game_update(&g_wasm_game, dt)
+    game_render(&g_wasm_game)
+    return true
 }
 
 @(export)
-game_wasm_destroy :: proc() {
-    game_destroy(&g_game)
+game_wasm_destroy :: proc "c" () {
+    context = runtime.default_context()
+    if g_wasm_game_ready {
+        game_destroy(&g_wasm_game)
+        rl.CloseWindow()
+        g_wasm_game_ready = false
+    }
 }
 ```
 
@@ -147,14 +157,17 @@ Standard desktop keyboard shortcuts frequently collide with browser reserved sho
 - `Space` / `Arrow Keys` (Scrolls Page)
 
 ### Ergonomic Web Keybindings
-All game controls were modernized to browser-safe ergonomic letter keys:
+All game controls support browser-safe ergonomic letter keys (alongside desktop shortcuts):
 - **`WASD` / `Arrows`**: Player Ship Navigation.
-- **`Space`**: Primary Blaster Cannon.
-- **`E`**: EMP Shockwave Stun.
-- **`P`**: Pause / Resume Simulation Time.
-- **`H`**: Toggle Live Coroutine Hierarchy HUD.
-- **`N` / `M`**: Advance Single Frame Step when paused.
-- **`R` / `Enter`**: Instant Game Restart after victory or defeat.
+- **`Left Click` / `J` / `Z`**: Primary Blaster Cannon.
+- **`Space` / `K`**: Real-Time Dash (`CLOCK_REAL`).
+- **`Right Click` / `Left Shift` / `Q`**: Matrix Bullet-Time Slow-Mo (hold).
+- **`E` / `B` / `X`**: EMP Shockwave Stun.
+- **`P` / `Esc` / `F3`**: Pause / Resume Simulation Time.
+- **`H` / `Tab` / `F1`**: Toggle Live Coroutine Hierarchy HUD.
+- **`N` / `.` / `F4`**: Advance 1 Frame Step when paused (hold for continuous stepping).
+- **`M` / `F5` / `Shift+N`**: Advance 10 Frame Steps when paused.
+- **`R` / `Enter` / `Space`**: Instant Game Restart after victory or defeat (`R` restarts anytime).
 
 ### Default Event Prevention
 In `tools/web/raylib_canvas.js`, all recognized game keys call `event.preventDefault()`:

@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 187-test coverage (138 core + 49 sync) plus 16 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 187-test coverage (138 core + 49 sync) plus 17 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -32,7 +32,7 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (187 Native Tests + 16 WebAssembly Tests)
+## 2. Test Suite Execution Results (187 Native Tests + 17 WebAssembly Suites)
 
 All **187 native unit tests** execute cleanly via `build.ps1 test`:
 
@@ -46,9 +46,9 @@ Finished 49 tests in ~16ms. All tests were successful.
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
+And all **17 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
 
-### Complete 187-Test Catalog across 18 Test Suites:
+### Coverage Overview across 187 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
 
 #### Suite 1: Basic Context Switching & Register Preservation (Tests 1–4)
 1. `test_basic_spawn_and_run`: Basic spawn and execution.
@@ -63,9 +63,8 @@ And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm`
 8. `test_timer_heap_1000_random_sort`: 1,000 random timers verifying strictly monotonic wake order.
 9. `test_timer_heap_random_cancellations`: 200 sleeping timers with 100 random mid-sleep cancellations.
 
-#### Suite 3: Condition Waiting (Tests 10–11)
-10. `test_wait_until_condition`: Polling boolean predicates across frames.
-11. `test_condition_immediate_satisfaction`: Zero-frame delay when predicate is already true.
+#### Suite 3: Straight-Line Condition Loops & Yielding
+- Polling boolean predicates with native `for !cond { yield(f) }` loops and immediate zero-step continuation when already satisfied.
 
 #### Suite 4: Structured Concurrency Combinators (Tests 12–22)
 12. `test_structured_sync`: Parallel branch join; parent resumes on all completions.
@@ -151,7 +150,7 @@ And all **16 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm`
 90. `test_interruption_race_recovery`: Validates clean combat loop resumption after stun timeout expiration.
 
 #### Suite 14: Structured Concurrency & Synchronization Primitives (Tests 91–144)
-91–144. Exhaustive validations for CSP channels, mutex contention, semaphore permit reclaims, latch countdowns, event broadcasts, timer heaps, generational handle reuse, and arena isolation.
+91–144. Exhaustive validations for CSP channels, mutex contention, semaphore permit reclaims, event broadcasts, timer heaps, generational handle reuse, and arena isolation.
 
 #### Suite 15: Pure Concurrency Hardening & Phase Isolation (Tests 145–148)
 145. `test_pure_structured_concurrency_boss_pattern`: Verifies pure structured concurrency boss loop parries and recovery.

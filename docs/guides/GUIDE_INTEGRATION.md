@@ -62,7 +62,14 @@ main :: proc() {
         if rl.IsKeyPressed(.SPACE) {
             // Spawn an interactive camera shake coroutine!
             coroutine.spawn(&world.sched, proc(f: ^coroutine.Fiber, w: ^Game_World) {
-                coroutine.tween_f32(f, &w.camera_shake, 10.0, 0.0, 0.5, coroutine.ease_out_quad)
+                elapsed: f32 = 0.0
+                for elapsed < 0.5 {
+                    t := elapsed / 0.5
+                    w.camera_shake = 10.0 * (1.0 - t) * (1.0 - t)
+                    coroutine.yield(f)
+                    elapsed += coroutine.delta_time(f)
+                }
+                w.camera_shake = 0.0
             }, &world)
         }
 
@@ -127,7 +134,7 @@ engine_update :: proc(ctx: ^Engine_Context) {
 ## 3. Clean Level Transitions & Scene Destruction
 
 When switching levels or destroying an entity:
-1. **Per-Entity Lifecycle:** Call `coroutine.scope_cancel(&entity.scope)` to instantly abort all coroutines attached to that entity.
+1. **Per-Entity Lifecycle:** Call `coroutine.scope_cancel(&sched, &entity.scope)` to instantly abort all coroutines attached to that entity.
 2. **Whole-World Cleanup:** Call `coroutine.scheduler_destroy(&sched)` on scene unload to immediately reclaim all memory slabs and reset tracking allocators.
 
 ---

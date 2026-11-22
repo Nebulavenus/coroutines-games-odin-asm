@@ -184,13 +184,13 @@ In pure Verse semantics, `race` executes arms concurrently. The **first arm to s
 For preemption triggered by external events, `coroutine.with_signal` wraps this pattern concisely:
 
 ```odin
-// Preempt lockpicking if an alarm signal fires:
-completed := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, c: ^Chest) {
+// Preempt lockpicking if an alarm signal fires (returns interrupted: bool):
+interrupted := coroutine.with_signal(f, &g_lockdown_signal, proc(f: ^coroutine.Fiber, c: ^Chest) {
     coroutine.wait(f, 3.0)
     c.is_unlocked = true
 }, &chest)
 
-if !completed {
+if interrupted {
     fmt.println("Lockpicking interrupted by emergency lockdown signal!")
 }
 ```
@@ -271,14 +271,14 @@ Elevator :: struct {
 elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
     fmt.println("Calling elevator to floor 5...")
 
-    // Runs the branch with a 4.0 second deadline directly:
-    arrived := coroutine.with_timeout(f, 4.0, proc(f: ^coroutine.Fiber, e: ^Elevator) {
+    // Runs the branch with a 4.0 second deadline (returns timed_out: bool):
+    timed_out := coroutine.with_timeout(f, 4.0, proc(f: ^coroutine.Fiber, e: ^Elevator) {
         for !(e.floor == 5 && e.door_open) {
             coroutine.yield(f)
         }
     }, e)
 
-    if arrived {
+    if !timed_out {
         fmt.println("Elevator arrived on time! Boarding...")
     } else {
         fmt.println("Elevator timed out! Taking the stairs!")
@@ -287,7 +287,7 @@ elevator_wait_task :: proc(f: ^coroutine.Fiber, e: ^Elevator) {
 ```
 
 - **Zero Leaks**: Automatically cancels and prunes the workload branch if the timeout expires first.
-- **Cross-Clock Timeouts**: An optional `timeout_clock` parameter allows racing simulation workloads against unpaused wall-clock time (`coroutine.with_timeout(f, 5.0, task, coroutine.CLOCK_REAL)`).
+- **Cross-Clock Timeouts**: An optional `timeout_clock` parameter allows racing simulation workloads against unpaused wall-clock time (`coroutine.with_timeout(f, 5.0, task, timeout_clock = coroutine.CLOCK_REAL)`).
 
 ---
 
