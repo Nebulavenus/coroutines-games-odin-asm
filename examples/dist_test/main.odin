@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import coroutine "../../dist"
+import sync "../../dist/sync"
 
 main :: proc() {
 	fmt.println("[dist_test] Initializing scheduler from amalgamated dist/coroutine.odin...")
@@ -100,5 +101,35 @@ main :: proc() {
 	assert(task_res == 100, "spawn_task and task_await must work in amalgamated dist")
 	assert(sync_a && sync_b, "sync_with must work in amalgamated dist")
 
-	fmt.printf("[dist_test] SUCCESS: Amalgamated coroutine.odin verified! (received %d, scoped: %t, task: %d, sync: %t)\n", received_val, scoped_ran, task_res, sync_a && sync_b)
+	ch_int: sync.Channel(int)
+	ch_str: sync.Channel(string)
+	sync.chan_init(&ch_int, 2)
+	sync.chan_init(&ch_str, 2)
+	defer {
+		sync.chan_destroy(&ch_int)
+		sync.chan_destroy(&ch_str)
+	}
+
+	Hetero_Ctx :: struct {
+		ch_int:  ^sync.Channel(int),
+		ch_str:  ^sync.Channel(string),
+		got_int: int,
+		got_str: string,
+		winner:  int,
+	}
+	h_ctx := Hetero_Ctx{ch_int = &ch_int, ch_str = &ch_str, winner = -1}
+	coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Hetero_Ctx) {
+		c.winner = coroutine.race(f,
+			sync.branch_chan_recv(c.ch_int, &c.got_int),
+			sync.branch_chan_recv(c.ch_str, &c.got_str),
+			coroutine.branch_wait(1.0),
+		)
+	}, &h_ctx)
+
+	coroutine.scheduler_step(&sched, 0.016)
+	sync.chan_try_send(&ch_str, "hello-dist-sync")
+	coroutine.scheduler_step(&sched, 0.016)
+	assert(h_ctx.winner == 1 && h_ctx.got_str == "hello-dist-sync", "dist/sync heterogeneous branch_chan_recv must work")
+
+	fmt.printf("[dist_test] SUCCESS: Amalgamated dist/coroutine.odin + dist/sync/sync.odin verified! (received %d, scoped: %t, task: %d, sync: %t, hetero: %s)\n", received_val, scoped_ran, task_res, sync_a && sync_b, h_ctx.got_str)
 }

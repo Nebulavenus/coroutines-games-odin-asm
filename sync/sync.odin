@@ -387,6 +387,7 @@ chan_try_send :: proc(ch: ^Channel($T), value: T) -> (ok: bool) {
     if ch == nil || ch.is_closed do return false
 
     if ch.capacity == 0 {
+        if ch.count > 0 do return false
         for {
             receiver, popped := coro.wait_queue_pop_front(&ch.recv_waiters)
             if !popped do break
@@ -467,6 +468,13 @@ chan_send :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
                     ch := (^Channel(T))(user_data)
                     if ch != nil && ch.capacity == 0 && ch.count > 0 {
                         ch.count = 0
+                        for {
+                            next_sender, popped := coro.wait_queue_pop_front(&ch.send_waiters)
+                            if !popped do break
+                            if next_sender != nil && coro.fiber_wake(next_sender.sched, next_sender) {
+                                break
+                            }
+                        }
                     }
                 }
                 coro.fiber_defer(f, cleanup_unbuf_sender, ch)
@@ -490,8 +498,22 @@ chan_send :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
             }
 
             // Another unbuffered sender is already waiting in rendezvous; wait in send_waiters
+            cleanup_queued_sender :: proc(user_data: rawptr) {
+                ch := (^Channel(T))(user_data)
+                if ch != nil && !ch.is_closed && ch.count == 0 {
+                    for {
+                        next_sender, popped := coro.wait_queue_pop_front(&ch.send_waiters)
+                        if !popped do break
+                        if next_sender != nil && coro.fiber_wake(next_sender.sched, next_sender) {
+                            break
+                        }
+                    }
+                }
+            }
+            coro.fiber_defer(f, cleanup_queued_sender, ch)
             coro.wait_queue_push_back(&ch.send_waiters, f)
             coro.fiber_suspend(f)
+            coro.fiber_defer_cancel(f)
             continue
         } else if ch.count < ch.capacity {
             ch.buffer[ch.tail] = value
@@ -508,13 +530,40 @@ chan_send :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T) -> (ok: bool) {
             return true
         }
 
+        cleanup_buf_sender :: proc(user_data: rawptr) {
+            ch := (^Channel(T))(user_data)
+            if ch != nil && !ch.is_closed && ch.count < ch.capacity {
+                for {
+                    next_sender, popped := coro.wait_queue_pop_front(&ch.send_waiters)
+                    if !popped do break
+                    if next_sender != nil && coro.fiber_wake(next_sender.sched, next_sender) {
+                        break
+                    }
+                }
+            }
+        }
+        coro.fiber_defer(f, cleanup_buf_sender, ch)
         coro.wait_queue_push_back(&ch.send_waiters, f)
         coro.fiber_suspend(f)
+        coro.fiber_defer_cancel(f)
     }
 }
 
 chan_recv :: proc(f: ^coro.Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
     if f == nil || ch == nil || f.sched == nil do return {}, false
+
+    cleanup_recv_relay :: proc(user_data: rawptr) {
+        ch := (^Channel(T))(user_data)
+        if ch != nil && (ch.count > 0 || ch.is_closed) {
+            for {
+                next_recv, popped := coro.wait_queue_pop_front(&ch.recv_waiters)
+                if !popped do break
+                if next_recv != nil && coro.fiber_wake(next_recv.sched, next_recv) {
+                    break
+                }
+            }
+        }
+    }
 
     for {
         if ch.count > 0 {
@@ -542,8 +591,10 @@ chan_recv :: proc(f: ^coro.Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
             return {}, false
         }
 
+        coro.fiber_defer(f, cleanup_recv_relay, ch)
         coro.wait_queue_push_back(&ch.recv_waiters, f)
         coro.fiber_suspend(f)
+        coro.fiber_defer_cancel(f)
     }
 }
 
@@ -785,4 +836,42 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
         return -1, {}, false
     }
     return out_idx, out_val, true
+}
+
+branch_chan_recv :: proc(ch: ^Channel($T), out: ^T, fail_on_close: bool = true, name := "chan_recv") -> coro.Branch_Desc {
+    Payload :: struct {
+        ch:            ^Channel(T),
+        out:           ^T,
+        fail_on_close: bool,
+    }
+    return coro.branch_val(proc(f: ^coro.Fiber, p: Payload) {
+        val, ok := chan_recv(f, p.ch)
+        if !ok {
+            if p.fail_on_close {
+                coro.fail(f)
+            }
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{ch = ch, out = out, fail_on_close = fail_on_close}, name)
+}
+
+branch_chan_send :: proc(ch: ^Channel($T), val_ptr: ^T, fail_on_close: bool = true, name := "chan_send") -> coro.Branch_Desc {
+    Payload :: struct {
+        ch:            ^Channel(T),
+        val_ptr:       ^T,
+        fail_on_close: bool,
+    }
+    return coro.branch_val(proc(f: ^coro.Fiber, p: Payload) {
+        if p.val_ptr == nil {
+            coro.fail(f)
+            return
+        }
+        ok := chan_send(f, p.ch, p.val_ptr^)
+        if !ok && p.fail_on_close {
+            coro.fail(f)
+        }
+    }, Payload{ch = ch, val_ptr = val_ptr, fail_on_close = fail_on_close}, name)
 }

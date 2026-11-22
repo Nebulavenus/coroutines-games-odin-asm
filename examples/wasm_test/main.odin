@@ -893,6 +893,66 @@ test_wasm_pause_self_cancel_and_asyncify_usage :: proc() {
     fmt.println("OK")
 }
 
+test_wasm_zero_stack_slabs_and_heterogeneous_branch_select :: proc() {
+    fmt.print("  [Test 20] Wasm Zero Native Stack Slabs & Heterogeneous Select/Relay... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    coroutine.scheduler_prewarm(&sched, 16)
+    stats := coroutine.scheduler_pool_stats(&sched)
+    assert(len(sched.fiber_pool.slabs) == 0, "Wasm pool must not allocate unused native stack slabs")
+    assert(stats.stack_size_bytes == coroutine.WASM_ASYNCIFY_STORAGE_SIZE, "Wasm stack_size_bytes must equal WASM_ASYNCIFY_STORAGE_SIZE")
+    assert(stats.slabs_count >= 1, "Wasm pool must report fiber slab count")
+
+    ch_int: sync.Channel(int)
+    ch_str: sync.Channel(string)
+    sync.chan_init(&ch_int, 1)
+    sync.chan_init(&ch_str, 1)
+    defer {
+        sync.chan_destroy(&ch_int)
+        sync.chan_destroy(&ch_str)
+    }
+
+    State :: struct {
+        ch_int:  ^sync.Channel(int),
+        ch_str:  ^sync.Channel(string),
+        got_int: int,
+        got_str: string,
+        winner:  int,
+        relay_v: int,
+    }
+    st := State{ch_int = &ch_int, ch_str = &ch_str, winner = -1}
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        s.winner = coroutine.race(f,
+            sync.branch_chan_recv(s.ch_int, &s.got_int),
+            sync.branch_chan_recv(s.ch_str, &s.got_str),
+            coroutine.branch_wait(1.0),
+        )
+    }, &st)
+
+    coroutine.scheduler_step(&sched, 0.016)
+    sync.chan_try_send(&ch_str, "wasm-hetero")
+    coroutine.scheduler_step(&sched, 0.016)
+    assert(st.winner == 1 && st.got_str == "wasm-hetero", "Heterogeneous race with branch_chan_recv must work under Wasm")
+
+    h1 := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        _, _ = sync.chan_recv(f, s.ch_int)
+    }, &st)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        if v, ok := sync.chan_recv(f, s.ch_int); ok {
+            s.relay_v = v
+        }
+    }, &st)
+    coroutine.scheduler_step(&sched, 0.016)
+    sync.chan_try_send(&ch_int, 555)
+    coroutine.fiber_cancel(&sched, h1)
+    coroutine.scheduler_step(&sched, 0.016)
+    assert(st.relay_v == 555, "Aborted receiver must relay wakeup to next waiter under Wasm")
+    fmt.println("OK")
+}
+
 // ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
@@ -921,9 +981,10 @@ main :: proc() {
     test_task_futures_and_combinator_helpers()
     test_wasm_hardened_sync_and_outcomes()
     test_wasm_pause_self_cancel_and_asyncify_usage()
+    test_wasm_zero_stack_slabs_and_heterogeneous_branch_select()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 19 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 20 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

@@ -2,6 +2,7 @@
 #+build !linux
 #+build !darwin
 #+build !freebsd
+#+build !wasm32
 package coroutine
 
 import "core:mem"

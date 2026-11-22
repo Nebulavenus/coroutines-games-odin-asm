@@ -6763,3 +6763,67 @@ test_boss_demo_coroutine_patterns_stress :: proc(t: ^testing.T) {
         scheduler_destroy(&sim.sched)
     }
 }
+
+@(test)
+test_branch_event_sticky_join_scope_wait_heterogeneous_race :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    ev: Event(int)
+    event_init(&ev)
+    defer event_destroy(&ev)
+
+    sev: Sticky_Event(f32)
+    sticky_event_init(&sev)
+    defer sticky_event_destroy(&sev)
+
+    scope: Fiber_Scope
+    defer scope_destroy(&sched, &scope)
+
+    Ctx :: struct {
+        ev:           ^Event(int),
+        sev:          ^Sticky_Event(f32),
+        scope:        ^Fiber_Scope,
+        target:       Fiber_Handle,
+        ev_val:       int,
+        sev_val:      f32,
+        race_winner:  int,
+        sync_done:    bool,
+    }
+    ctx := Ctx{ev = &ev, sev = &sev, scope = &scope, race_winner = -1}
+
+    ctx.target = spawn(&sched, proc(f: ^Fiber) {
+        wait(f, 0.05)
+    }, scope = &scope)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.race_winner = race(f,
+            branch_event(c.ev, &c.ev_val),
+            branch_wait(1.0),
+        )
+        ok := sync(f,
+            branch_sticky_event(c.sev, &c.sev_val),
+            branch_join(c.target),
+            branch_scope_wait(c.scope),
+        )
+        c.sync_done = ok
+    }, &ctx)
+
+    scheduler_step(&sched, 0.016)
+    event_emit(&sched, &ev, 777)
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, ctx.race_winner, 0)
+    testing.expect_value(t, ctx.ev_val, 777)
+    testing.expect_value(t, ctx.sync_done, false)
+
+    sticky_event_emit(&sched, &sev, 3.5)
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, ctx.sync_done, true)
+    testing.expect_value(t, ctx.sev_val, f32(3.5))
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}

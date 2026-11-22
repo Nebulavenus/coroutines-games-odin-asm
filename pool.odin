@@ -16,9 +16,13 @@ fiber_pool_init :: proc(
     if pool.slabs != nil || pool.all_fibers != nil || pool.free_fibers != nil {
         fiber_pool_destroy(pool)
     }
-    pool.stack_size = max(stack_size, 16 * 1024)
-    if pool.stack_size % 16 != 0 {
-        pool.stack_size = (pool.stack_size + 15) & ~uint(15)
+    when ODIN_ARCH == .wasm32 {
+        pool.stack_size = ASYNCIFY_STORAGE_SIZE
+    } else {
+        pool.stack_size = max(stack_size, 16 * 1024)
+        if pool.stack_size % 16 != 0 {
+            pool.stack_size = (pool.stack_size + 15) & ~uint(15)
+        }
     }
     pool.stacks_per_slab = max(stacks_per_slab, 1)
     pool.alloc_mode = alloc_mode
@@ -56,14 +60,16 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     pool.all_fibers = nil
     pool.free_fibers = nil
 
-    if pool.alloc_mode == .Virtual_Memory_OS {
-        slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
-        for slab in pool.slabs {
-            pool_vmem_free_slab(slab, slab_size, alloc)
-        }
-    } else {
-        for slab in pool.slabs {
-            mem.free(slab, alloc)
+    when ODIN_ARCH != .wasm32 {
+        if pool.alloc_mode == .Virtual_Memory_OS {
+            slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
+            for slab in pool.slabs {
+                pool_vmem_free_slab(slab, slab_size, alloc)
+            }
+        } else {
+            for slab in pool.slabs {
+                mem.free(slab, alloc)
+            }
         }
     }
     delete(pool.slabs)
@@ -116,45 +122,67 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
-    slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
 
-    slab: rawptr
-    has_guard := false
-    if pool.alloc_mode == .Virtual_Memory_OS {
-        slab, has_guard = pool_vmem_alloc_slab(slab_size, pool.stack_size, pool.stacks_per_slab, alloc)
-    } else {
-        err: mem.Allocator_Error
-        slab, err = mem.alloc(int(slab_size), 16, alloc)
-        if err != nil || slab == nil {
-            panic("Failed to allocate memory slab for fiber pool")
+    when ODIN_ARCH == .wasm32 {
+        fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+        append(&pool.fiber_slabs, fibers)
+
+        for i in 0 ..< pool.stacks_per_slab {
+            fiber := &fibers[i]
+            fiber.stack_base = nil
+            fiber.stack_size = ASYNCIFY_STORAGE_SIZE
+            fiber.pool_index = u32(len(pool.all_fibers))
+            fiber.generation = 1
+            fiber.status = .Unused
+            fiber.heap_index = -1
+            fiber.step_index = -1
+            fiber.async_index = -1
+
+            append(&pool.all_fibers, fiber)
+            append(&pool.free_fibers, fiber)
         }
-    }
+    } else {
+        slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
 
-    append(&pool.slabs, slab)
-    fibers := make([]Fiber, pool.stacks_per_slab, alloc)
-    append(&pool.fiber_slabs, fibers)
+        slab: rawptr
+        has_guard := false
+        if pool.alloc_mode == .Virtual_Memory_OS {
+            slab, has_guard = pool_vmem_alloc_slab(slab_size, pool.stack_size, pool.stacks_per_slab, alloc)
+        } else {
+            err: mem.Allocator_Error
+            slab, err = mem.alloc(int(slab_size), 16, alloc)
+            if err != nil || slab == nil {
+                panic("Failed to allocate memory slab for fiber pool")
+            }
+        }
 
-    guard_offset: uint = has_guard ? 4096 : 0
-    for i in 0 ..< pool.stacks_per_slab {
-        raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-        fiber := &fibers[i]
-        fiber.stack_base = rawptr(uintptr(raw_base) + uintptr(guard_offset))
-        fiber.stack_size = pool.stack_size - guard_offset
-        fiber.pool_index = u32(len(pool.all_fibers))
-        fiber.generation = 1
-        fiber.status = .Unused
-        fiber.heap_index = -1
-        fiber.step_index = -1
-        fiber.async_index = -1
-        fiber_watermark_stack(fiber)
-        fiber_init_canary(fiber)
+        append(&pool.slabs, slab)
+        fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+        append(&pool.fiber_slabs, fibers)
 
-        append(&pool.all_fibers, fiber)
-        append(&pool.free_fibers, fiber)
+        guard_offset: uint = has_guard ? 4096 : 0
+        for i in 0 ..< pool.stacks_per_slab {
+            raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
+            fiber := &fibers[i]
+            fiber.stack_base = rawptr(uintptr(raw_base) + uintptr(guard_offset))
+            fiber.stack_size = pool.stack_size - guard_offset
+            fiber.pool_index = u32(len(pool.all_fibers))
+            fiber.generation = 1
+            fiber.status = .Unused
+            fiber.heap_index = -1
+            fiber.step_index = -1
+            fiber.async_index = -1
+            fiber_watermark_stack(fiber)
+            fiber_init_canary(fiber)
+
+            append(&pool.all_fibers, fiber)
+            append(&pool.free_fibers, fiber)
+        }
     }
 }
 
 fiber_init_canary :: proc(fiber: ^Fiber) {
+    if fiber.stack_base == nil do return
     canary_ptr := ([^]u64)(fiber.stack_base)
     words := CANARY_SIZE / size_of(u64)
     for i in 0 ..< words {
@@ -310,8 +338,12 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
     total := len(pool.all_fibers)
     free_count := len(pool.free_fibers)
     active := total - free_count
-    slabs := len(pool.slabs)
-    slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(slabs)
+    slabs := len(pool.fiber_slabs)
+    when ODIN_ARCH == .wasm32 {
+        slab_bytes := uint(0)
+    } else {
+        slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(len(pool.slabs))
+    }
     fiber_bytes := uint(total) * size_of(Fiber)
 
     return Pool_Stats{
@@ -329,70 +361,72 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
 // ============================================================================
 
 fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
-    top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
-    top = top & ~uintptr(15)
-
-    when ODIN_ARCH == .amd64 {
-        when ODIN_OS == .Windows {
-            // Windows x64 frame (240B):
-            // top - 8:   alignment pad (RSP % 16 == 8 on entry)
-            // top - 16:  fiber_trampoline_entry (RET)
-            // top - 24..80: RBP, RBX, RSI, RDI, R12 (fiber), R13, R14, R15
-            // top - 240: XMM6..XMM15 (160B)
-            sp := top - 240
-            mem.zero(rawptr(sp), 240)
-
-            sp_words := ([^]rawptr)(rawptr(top - 80))
-            sp_words[3] = rawptr(fiber) // R12
-            sp_words[8] = rawptr(fiber_trampoline_entry)
-
-            fiber.saved_sp = rawptr(sp)
-        } else {
-            // System V AMD64 frame (64B):
-            // top - 8:  alignment pad
-            // top - 16: fiber_trampoline_entry (RET)
-            // top - 24..64: RBP, RBX, R12 (fiber), R13, R14, R15
-            sp := top - 64
-            mem.zero(rawptr(sp), 64)
-
-            sp_words := ([^]rawptr)(rawptr(sp))
-            sp_words[3] = rawptr(fiber) // R12
-            sp_words[6] = rawptr(fiber_trampoline_entry)
-
-            fiber.saved_sp = rawptr(sp)
-        }
-    } else when ODIN_ARCH == .arm64 {
-        // ARM64 AAPCS64 frame (160B):
-        // sp + 0..95:  x29, x30 (LR), x19 (fiber), x20..x28
-        // sp + 96..159: d8..d15
-        sp := top - 160
-        mem.zero(rawptr(sp), 160)
-
-        sp_words := ([^]rawptr)(rawptr(sp))
-        sp_words[0] = nil                            // x29 (FP)
-        sp_words[1] = rawptr(fiber_trampoline_entry) // x30 (LR)
-        sp_words[2] = rawptr(fiber)                  // x19
-
-        fiber.saved_sp = rawptr(sp)
-    } else when ODIN_ARCH == .riscv64 {
-        // RISC-V 64 LP64D frame (208B):
-        // sp + 0..103:  ra, s0, s1, s2 (fiber), s3..s11
-        // sp + 104..199: fs0..fs11 (+ 8B pad)
-        sp := top - 208
-        mem.zero(rawptr(sp), 208)
-
-        sp_words := ([^]rawptr)(rawptr(sp))
-        sp_words[0] = rawptr(fiber_trampoline_entry) // ra
-        sp_words[1] = nil                            // s0 (fp)
-        sp_words[2] = nil                            // s1
-        sp_words[3] = rawptr(fiber)                  // s2
-
-        fiber.saved_sp = rawptr(sp)
-    } else when ODIN_ARCH == .wasm32 {
+    when ODIN_ARCH == .wasm32 {
         fiber.wasm_started = false
         fiber.asyncify_buf.top = u32(uintptr(&fiber.asyncify_buf.storage[0]))
         fiber.asyncify_buf.end = u32(uintptr(&fiber.asyncify_buf.storage[0]) + ASYNCIFY_STORAGE_SIZE)
         fiber.saved_sp = fiber
+    } else {
+        top := uintptr(fiber.stack_base) + uintptr(fiber.stack_size)
+        top = top & ~uintptr(15)
+
+        when ODIN_ARCH == .amd64 {
+            when ODIN_OS == .Windows {
+                // Windows x64 frame (240B):
+                // top - 8:   alignment pad (RSP % 16 == 8 on entry)
+                // top - 16:  fiber_trampoline_entry (RET)
+                // top - 24..80: RBP, RBX, RSI, RDI, R12 (fiber), R13, R14, R15
+                // top - 240: XMM6..XMM15 (160B)
+                sp := top - 240
+                mem.zero(rawptr(sp), 240)
+
+                sp_words := ([^]rawptr)(rawptr(top - 80))
+                sp_words[3] = rawptr(fiber) // R12
+                sp_words[8] = rawptr(fiber_trampoline_entry)
+
+                fiber.saved_sp = rawptr(sp)
+            } else {
+                // System V AMD64 frame (64B):
+                // top - 8:  alignment pad
+                // top - 16: fiber_trampoline_entry (RET)
+                // top - 24..64: RBP, RBX, R12 (fiber), R13, R14, R15
+                sp := top - 64
+                mem.zero(rawptr(sp), 64)
+
+                sp_words := ([^]rawptr)(rawptr(sp))
+                sp_words[3] = rawptr(fiber) // R12
+                sp_words[6] = rawptr(fiber_trampoline_entry)
+
+                fiber.saved_sp = rawptr(sp)
+            }
+        } else when ODIN_ARCH == .arm64 {
+            // ARM64 AAPCS64 frame (160B):
+            // sp + 0..95:  x29, x30 (LR), x19 (fiber), x20..x28
+            // sp + 96..159: d8..d15
+            sp := top - 160
+            mem.zero(rawptr(sp), 160)
+
+            sp_words := ([^]rawptr)(rawptr(sp))
+            sp_words[0] = nil                            // x29 (FP)
+            sp_words[1] = rawptr(fiber_trampoline_entry) // x30 (LR)
+            sp_words[2] = rawptr(fiber)                  // x19
+
+            fiber.saved_sp = rawptr(sp)
+        } else when ODIN_ARCH == .riscv64 {
+            // RISC-V 64 LP64D frame (208B):
+            // sp + 0..103:  ra, s0, s1, s2 (fiber), s3..s11
+            // sp + 104..199: fs0..fs11 (+ 8B pad)
+            sp := top - 208
+            mem.zero(rawptr(sp), 208)
+
+            sp_words := ([^]rawptr)(rawptr(sp))
+            sp_words[0] = rawptr(fiber_trampoline_entry) // ra
+            sp_words[1] = nil                            // s0 (fp)
+            sp_words[2] = nil                            // s1
+            sp_words[3] = rawptr(fiber)                  // s2
+
+            fiber.saved_sp = rawptr(sp)
+        }
     }
 }
 

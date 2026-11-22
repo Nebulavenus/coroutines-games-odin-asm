@@ -35,10 +35,13 @@ WASM_SOURCE_FILES = [
     "config.odin",
     "types.odin",
     "asm_wasm32.odin",
-    "pool_vmem_other.odin",
     "pool.odin",
     "scheduler.odin",
     "api.odin",
+]
+
+SYNC_SOURCE_FILES = [
+    "sync/sync.odin",
 ]
 
 UNIFIED_IMPORTS = [
@@ -57,6 +60,12 @@ WASM_IMPORTS = [
     'import "core:fmt"',
     'import "core:time"',
     'import "core:mem"',
+]
+
+SYNC_IMPORTS = [
+    'import "base:intrinsics"',
+    'import "core:mem"',
+    'import coro ".."',
 ]
 
 HEADER_TEMPLATE_NATIVE = """#+build !js
@@ -91,6 +100,22 @@ HEADER_TEMPLATE_WASM = """#+build wasm32
 // ============================================================================
 
 package coroutine
+
+{imports}
+"""
+
+HEADER_TEMPLATE_SYNC = """// ============================================================================
+// Odin Stackful Coroutine Engine — Sync Package (dist/sync/sync.odin)
+//
+// Zero-Allocation Fiber_Mutex, Fiber_Semaphore, CSP Channel(T), and
+// heterogeneous channel branch builders for single-file dist/ drop-ins.
+//
+// Repository: https://github.com/Nebulavenus/coroutines-games-odin-asm
+// Generated : {timestamp}
+// License    : MIT
+// ============================================================================
+
+package coroutine_sync
 
 {imports}
 """
@@ -177,6 +202,7 @@ def amalgamate(root_dir: Path, target: Path) -> int:
 
     native_out = dist_dir / "coroutine.odin"
     wasm_out = dist_dir / "coroutine_wasm32.odin"
+    sync_out = dist_dir / "sync" / "sync.odin"
 
     ret = build_amalgamation(root_dir, NATIVE_SOURCE_FILES, HEADER_TEMPLATE_NATIVE, UNIFIED_IMPORTS, native_out)
     if ret != 0:
@@ -186,14 +212,19 @@ def amalgamate(root_dir: Path, target: Path) -> int:
     if ret != 0:
         return ret
 
-    print(f"[amalgamate] Successfully written: {native_out} & {wasm_out}")
+    ret = build_amalgamation(root_dir, SYNC_SOURCE_FILES, HEADER_TEMPLATE_SYNC, SYNC_IMPORTS, sync_out)
+    if ret != 0:
+        return ret
+
+    print(f"[amalgamate] Successfully written: {native_out}, {wasm_out} & {sync_out}")
     return 0
 
 
 def verify_build(root_dir: Path, output_dir: Path, all_targets: bool = False) -> bool:
-    """Verify that the amalgamated file compiles cleanly with Odin."""
+    """Verify that the amalgamated files compile cleanly with Odin."""
     targets = TARGETS_TO_VERIFY if all_targets else [TARGETS_TO_VERIFY[0]]
-    print(f"[amalgamate] Verifying {output_dir} with 'odin check -no-entry-point'...")
+    sync_dir = output_dir / "sync"
+    print(f"[amalgamate] Verifying {output_dir} and {sync_dir} with 'odin check -no-entry-point'...")
 
     all_passed = True
     for tgt in targets:
@@ -203,6 +234,13 @@ def verify_build(root_dir: Path, output_dir: Path, all_targets: bool = False) ->
         if result.returncode != 0:
             print(" [FAIL]")
             print(f"[ERROR] Target {tgt} failed:\n{result.stderr}\n{result.stdout}", file=sys.stderr)
+            all_passed = False
+            continue
+        cmd_sync = ["odin", "check", str(sync_dir), "-no-entry-point", f"-target:{tgt}", "-vet-shadowing"]
+        result_sync = subprocess.run(cmd_sync, cwd=str(root_dir), capture_output=True, text=True)
+        if result_sync.returncode != 0:
+            print(" [FAIL sync]")
+            print(f"[ERROR] Target {tgt} (sync) failed:\n{result_sync.stderr}\n{result_sync.stdout}", file=sys.stderr)
             all_passed = False
         else:
             print(" [PASS]")

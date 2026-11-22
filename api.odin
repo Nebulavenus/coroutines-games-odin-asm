@@ -343,7 +343,7 @@ fiber_defer_raw :: proc(f: ^Fiber, cleanup_proc: proc(user_data: rawptr), user_d
         }
         f.cleanup_count += 1
     } else {
-        panic("fiber_defer: exceeded MAX_FIBER_CLEANUPS (8)")
+        panic("fiber_defer: exceeded MAX_FIBER_CLEANUPS; increase -define:CORO_MAX_FIBER_CLEANUPS")
     }
 }
 
@@ -457,6 +457,52 @@ branch_sticky_signal :: proc(sig: ^Sticky_Signal, name := "sticky_signal_wait") 
 
 branch_wait :: proc(seconds: f32, name := "timer_wait", clock: Clock_ID = CLOCK_INHERIT) -> Branch_Desc {
     return branch_val(wait, seconds, name, clock)
+}
+
+branch_event :: proc(ev: ^Event($T), out: ^T, name := "event_wait") -> Branch_Desc {
+    Payload :: struct {
+        ev:  ^Event(T),
+        out: ^T,
+    }
+    return branch_val(proc(f: ^Fiber, p: Payload) {
+        val, ok := event_wait(f, p.ev)
+        if !ok {
+            fail(f)
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{ev = ev, out = out}, name)
+}
+
+branch_sticky_event :: proc(ev: ^Sticky_Event($T), out: ^T, name := "sticky_event_wait") -> Branch_Desc {
+    Payload :: struct {
+        ev:  ^Sticky_Event(T),
+        out: ^T,
+    }
+    return branch_val(proc(f: ^Fiber, p: Payload) {
+        val, ok := sticky_event_wait(f, p.ev)
+        if !ok {
+            fail(f)
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{ev = ev, out = out}, name)
+}
+
+branch_join :: proc(target_handle: Fiber_Handle, name := "fiber_join") -> Branch_Desc {
+    return branch_val(proc(f: ^Fiber, h: Fiber_Handle) {
+        if !fiber_join(f, h) {
+            fail(f)
+        }
+    }, target_handle, name)
+}
+
+branch_scope_wait :: proc(scope: ^Fiber_Scope, name := "scope_wait") -> Branch_Desc {
+    return branch_ptr(scope_wait, scope, name)
 }
 
 // ============================================================================

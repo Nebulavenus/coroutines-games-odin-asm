@@ -2160,3 +2160,173 @@ test_chan_select_recv_round_robin_fairness_and_huge_abort :: proc(t: ^testing.T)
     coro.scheduler_step(&sched, 0.016)
     coro.fiber_cancel(&sched, h)
 }
+
+@(test)
+test_heterogeneous_race_channels_events_and_timeout :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    ch_int: Channel(int)
+    ch_str: Channel(string)
+    ch_out: Channel(int)
+    chan_init(&ch_int, 2)
+    chan_init(&ch_str, 2)
+    chan_init(&ch_out, 1)
+    defer {
+        chan_destroy(&ch_int)
+        chan_destroy(&ch_str)
+        chan_destroy(&ch_out)
+    }
+
+    ev: coro.Event(f32)
+    coro.event_init(&ev)
+    defer coro.event_destroy(&ev)
+
+    Ctx :: struct {
+        ch_int:   ^Channel(int),
+        ch_str:   ^Channel(string),
+        ch_out:   ^Channel(int),
+        ev:       ^coro.Event(f32),
+        got_int:  int,
+        got_str:  string,
+        got_f32:  f32,
+        send_val: int,
+        w1:       int,
+        w2:       int,
+        w3:       int,
+    }
+    ctx := Ctx{
+        ch_int   = &ch_int,
+        ch_str   = &ch_str,
+        ch_out   = &ch_out,
+        ev       = &ev,
+        send_val = 999,
+        w1       = -2,
+        w2       = -2,
+        w3       = -2,
+    }
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Ctx) {
+        c.w1 = coro.race(f,
+            branch_chan_recv(c.ch_int, &c.got_int),
+            branch_chan_recv(c.ch_str, &c.got_str),
+            coro.branch_event(c.ev, &c.got_f32),
+            coro.branch_wait(1.0),
+        )
+        c.w2 = coro.race(f,
+            branch_chan_send(c.ch_out, &c.send_val),
+            coro.branch_wait(1.0),
+        )
+        c.w3 = coro.race(f,
+            branch_chan_recv(c.ch_int, &c.got_int),
+            branch_chan_recv(c.ch_str, &c.got_str),
+        )
+    }, &ctx)
+
+    coro.scheduler_step(&sched, 0.016)
+    chan_close(&ch_int)
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, ctx.w1, -2)
+
+    chan_try_send(&ch_str, "mixed-type")
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, ctx.w1, 1)
+    testing.expect_value(t, ctx.got_str, "mixed-type")
+    testing.expect_value(t, ctx.w2, 0)
+
+    sent_v, sent_ok := chan_try_recv(&ch_out)
+    testing.expect_value(t, sent_ok, true)
+    testing.expect_value(t, sent_v, 999)
+
+    chan_close(&ch_str)
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, ctx.w3, -1)
+    testing.expect_value(t, coro.scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_channel_abort_wakeup_relay_and_unbuf_try_send :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    ch_unbuf: Channel(int)
+    chan_init(&ch_unbuf, 0)
+    defer chan_destroy(&ch_unbuf)
+
+    u_recv1 := 0
+    u_recv2 := 0
+
+    Unbuf_Ctx :: struct {
+        ch: ^Channel(int),
+        v1: ^int,
+        v2: ^int,
+    }
+    uctx := Unbuf_Ctx{ch = &ch_unbuf, v1 = &u_recv1, v2 = &u_recv2}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Unbuf_Ctx) {
+        if v, ok := chan_recv(f, c.ch); ok do c.v1^ = v
+    }, &uctx)
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Unbuf_Ctx) {
+        if v, ok := chan_recv(f, c.ch); ok do c.v2^ = v
+    }, &uctx)
+    coro.scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, chan_try_send(&ch_unbuf, 111), true)
+    testing.expect_value(t, chan_try_send(&ch_unbuf, 222), false)
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, u_recv1, 111)
+    testing.expect_value(t, u_recv2, 0)
+    testing.expect_value(t, chan_try_send(&ch_unbuf, 222), true)
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, u_recv2, 222)
+
+    ch_buf: Channel(int)
+    chan_init(&ch_buf, 1)
+    defer chan_destroy(&ch_buf)
+
+    Relay_Ctx :: struct {
+        ch:        ^Channel(int),
+        r1_val:    int,
+        r2_val:    int,
+        s1_sent:   bool,
+        s2_sent:   bool,
+    }
+    rctx := Relay_Ctx{ch = &ch_buf}
+
+    h_r1 := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Relay_Ctx) {
+        if v, ok := chan_recv(f, c.ch); ok do c.r1_val = v
+    }, &rctx)
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Relay_Ctx) {
+        if v, ok := chan_recv(f, c.ch); ok do c.r2_val = v
+    }, &rctx)
+    coro.scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, chan_try_send(&ch_buf, 77), true)
+    coro.fiber_cancel(&sched, h_r1)
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, rctx.r1_val, 0)
+    testing.expect_value(t, rctx.r2_val, 77)
+
+    testing.expect_value(t, chan_try_send(&ch_buf, 10), true)
+    h_s1 := coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Relay_Ctx) {
+        c.s1_sent = chan_send(f, c.ch, 20)
+    }, &rctx)
+    coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Relay_Ctx) {
+        c.s2_sent = chan_send(f, c.ch, 30)
+    }, &rctx)
+    coro.scheduler_step(&sched, 0.016)
+
+    v_pop, ok_pop := chan_try_recv(&ch_buf)
+    testing.expect_value(t, ok_pop, true)
+    testing.expect_value(t, v_pop, 10)
+    coro.fiber_cancel(&sched, h_s1)
+    coro.scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, rctx.s1_sent, false)
+    testing.expect_value(t, rctx.s2_sent, true)
+    v_pop2, ok_pop2 := chan_try_recv(&ch_buf)
+    testing.expect_value(t, ok_pop2, true)
+    testing.expect_value(t, v_pop2, 30)
+}
