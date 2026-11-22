@@ -51,6 +51,3 @@ HANDLE_HISTORY_CAPACITY :: #config(CORO_HANDLE_HISTORY_CAPACITY, 2048)
 
 // Inline LIFO fiber_defer cleanup slot capacity per fiber.
 MAX_FIBER_CLEANUPS :: #config(CORO_MAX_FIBER_CLEANUPS, 8)
-
-// Inline stack-allocated branch descriptor fast-path capacity for combinators.
-MAX_STACK_BRANCHES :: #config(CORO_MAX_STACK_BRANCHES, 16)

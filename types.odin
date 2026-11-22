@@ -331,8 +331,9 @@ Scheduler :: struct {
     scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread
     current_fiber:         ^Fiber, // Currently executing fiber
 
-    // Concurrency Coordinator Generation Counter
+    // Concurrency Coordinator Generation Counter & Fair Select Cursor
     next_coord_id:         u64,
+    select_cursor:         u32,
 
     // Debug Watchdog Timer (Detects non-yielding infinite loops)
     watchdog_enabled:      bool,

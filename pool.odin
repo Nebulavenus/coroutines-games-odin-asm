@@ -281,9 +281,11 @@ fiber_pool_acquire :: proc(pool: ^Fiber_Pool, allocator := context.allocator) ->
     fiber.current_wait_queue = nil
     fiber.join_waiters = {}
 
-    mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
     fiber.stored_context = context
-    fiber.stored_context.temp_allocator = mem.arena_allocator(&fiber.temp_arena)
+    when TEMP_ARENA_SIZE > 0 {
+        mem.arena_init(&fiber.temp_arena, fiber.temp_arena_buffer[:])
+        fiber.stored_context.temp_allocator = mem.arena_allocator(&fiber.temp_arena)
+    }
 
     fiber_watermark_stack(fiber)
     fiber_init_canary(fiber)
@@ -309,7 +311,9 @@ fiber_pool_recycle :: proc(pool: ^Fiber_Pool, fiber: ^Fiber) {
     used, _ := fiber_calc_stack_usage(fiber)
     fiber.stack_high_water = used
 
-    mem.arena_free_all(&fiber.temp_arena)
+    when TEMP_ARENA_SIZE > 0 {
+        mem.arena_free_all(&fiber.temp_arena)
+    }
 
     fiber.generation += 1
     if fiber.generation == 0 do fiber.generation = 1 // Avoid 0

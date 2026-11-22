@@ -27,7 +27,6 @@ spawn_ptr :: proc(
     fiber.sched = sched
     fiber.clock_id = cid
     fiber.debug_name = name
-    fiber.stored_context = context
     fiber.start_time = sched.clocks[int(cid)].time
     fiber.user_data = rawptr(data)
     fiber.user_fn = rawptr(entry)
@@ -64,7 +63,6 @@ spawn_val :: proc(
     fiber.sched = sched
     fiber.clock_id = cid
     fiber.debug_name = name
-    fiber.stored_context = context
     fiber.start_time = sched.clocks[int(cid)].time
 
     data_copy := data
@@ -100,7 +98,6 @@ spawn_nil :: proc(
     fiber.sched = sched
     fiber.clock_id = cid
     fiber.debug_name = name
-    fiber.stored_context = context
     fiber.start_time = sched.clocks[int(cid)].time
     fiber.user_data = rawptr(entry)
     fiber.user_fn = rawptr(entry)
@@ -469,7 +466,6 @@ branch_scoped_desc :: proc(f: ^Fiber, b: Branch_Desc) -> Fiber_Handle {
     child.sched = f.sched
     child.clock_id = cid
     child.debug_name = b.name
-    child.stored_context = context
     child.start_time = f.sched.clocks[int(cid)].time
     if b.has_payload {
         child.payload_storage = b.payload_storage
@@ -523,8 +519,7 @@ branch_scoped :: proc{
     branch_scoped_nil,
 }
 
-@(private="file")
-fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
+fiber_begin_join :: proc(f: ^Fiber, kind: Join_Kind, branch_count: int) {
     f.sched.next_coord_id += 1
     coord_id := f.sched.next_coord_id
 
@@ -532,44 +527,54 @@ fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc
         id              = coord_id,
         kind            = kind,
         parent          = f,
-        total_branches  = len(branches),
-        active_branches = len(branches),
+        total_branches  = branch_count,
+        active_branches = branch_count,
         winner          = nil,
         winner_index    = -1,
         has_failed      = false,
         completed       = false,
     }
+}
 
-    for b, i in branches {
-        child_clock := b.clock_id == CLOCK_INHERIT ? f.clock_id : b.clock_id
-        cid := clamp_clock_id(child_clock)
+fiber_spawn_join_child :: proc(f: ^Fiber, index: int, b: Branch_Desc) {
+    child_clock := b.clock_id == CLOCK_INHERIT ? f.clock_id : b.clock_id
+    cid := clamp_clock_id(child_clock)
 
-        child := fiber_pool_acquire(&f.sched.fiber_pool)
-        child.sched = f.sched
-        child.clock_id = cid
-        child.debug_name = b.name
-        child.stored_context = context
-        child.start_time = f.sched.clocks[int(cid)].time
-        if b.has_payload {
-            child.payload_storage = b.payload_storage
-            child.user_data = &child.payload_storage[0]
-        } else {
-            child.user_data = b.user_data
-        }
-        child.user_fn = b.user_fn
-        child.entry_proc = b.entry_proc
-        child.join_coord = &f.active_coord
-        child.join_coord_id = coord_id
-        child.branch_index = i
-
-        fiber_link_child(f, child)
-        append(&f.sched.ready_queue, child.handle)
+    child := fiber_pool_acquire(&f.sched.fiber_pool)
+    child.sched = f.sched
+    child.clock_id = cid
+    child.debug_name = b.name
+    child.start_time = f.sched.clocks[int(cid)].time
+    if b.has_payload {
+        child.payload_storage = b.payload_storage
+        child.user_data = &child.payload_storage[0]
+    } else {
+        child.user_data = b.user_data
     }
+    child.user_fn = b.user_fn
+    child.entry_proc = b.entry_proc
+    child.join_coord = &f.active_coord
+    child.join_coord_id = f.active_coord.id
+    child.branch_index = index
 
+    fiber_link_child(f, child)
+    append(&f.sched.ready_queue, child.handle)
+}
+
+fiber_wait_join :: proc(f: ^Fiber) {
     f.status = .Suspended_Join
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)
     context = f.stored_context
+}
+
+@(private="file")
+fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
+    fiber_begin_join(f, kind, len(branches))
+    for b, i in branches {
+        fiber_spawn_join_child(f, i, b)
+    }
+    fiber_wait_join(f)
 }
 
 sync_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: bool) {
@@ -580,18 +585,12 @@ sync_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (all_succeeded: boo
 
 sync_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (all_succeeded: bool) {
     if f == nil || f.sched == nil || len(procs) == 0 do return true
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_nil(p)
-        }
-        return sync_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Sync, len(procs))
     for p, i in procs {
-        descs[i] = branch_nil(p)
+        fiber_spawn_join_child(f, i, branch_nil(p))
     }
-    return sync_branches(f, ..descs)
+    fiber_wait_join(f)
+    return !f.active_coord.has_failed
 }
 
 sync :: proc{
@@ -601,18 +600,12 @@ sync :: proc{
 
 sync_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (all_succeeded: bool) {
     if f == nil || f.sched == nil || len(procs) == 0 do return true
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_ptr(p, ctx)
-        }
-        return sync_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Sync, len(procs))
     for p, i in procs {
-        descs[i] = branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
     }
-    return sync_branches(f, ..descs)
+    fiber_wait_join(f)
+    return !f.active_coord.has_failed
 }
 
 race_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
@@ -623,18 +616,12 @@ race_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
 
 race_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_nil(p)
-        }
-        return race_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Race, len(procs))
     for p, i in procs {
-        descs[i] = branch_nil(p)
+        fiber_spawn_join_child(f, i, branch_nil(p))
     }
-    return race_branches(f, ..descs)
+    fiber_wait_join(f)
+    return f.active_coord.winner_index
 }
 
 race :: proc{
@@ -644,18 +631,12 @@ race :: proc{
 
 race_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_ptr(p, ctx)
-        }
-        return race_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Race, len(procs))
     for p, i in procs {
-        descs[i] = branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
     }
-    return race_branches(f, ..descs)
+    fiber_wait_join(f)
+    return f.active_coord.winner_index
 }
 
 rush_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int) {
@@ -666,18 +647,12 @@ rush_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (winner_index: int)
 
 rush_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_nil(p)
-        }
-        return rush_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Rush, len(procs))
     for p, i in procs {
-        descs[i] = branch_nil(p)
+        fiber_spawn_join_child(f, i, branch_nil(p))
     }
-    return rush_branches(f, ..descs)
+    fiber_wait_join(f)
+    return f.active_coord.winner_index
 }
 
 rush :: proc{
@@ -687,18 +662,12 @@ rush :: proc{
 
 rush_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
-    if len(procs) <= MAX_STACK_BRANCHES {
-        stack_descs: [MAX_STACK_BRANCHES]Branch_Desc
-        for p, i in procs {
-            stack_descs[i] = branch_ptr(p, ctx)
-        }
-        return rush_branches(f, ..stack_descs[:len(procs)])
-    }
-    descs := make([]Branch_Desc, len(procs), context.temp_allocator)
+    fiber_begin_join(f, .Rush, len(procs))
     for p, i in procs {
-        descs[i] = branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
     }
-    return rush_branches(f, ..descs)
+    fiber_wait_join(f)
+    return f.active_coord.winner_index
 }
 
 fallback_branches :: proc(f: ^Fiber, branches: ..Branch_Desc) -> (succeeded: bool, winning_index: int) {
@@ -944,38 +913,41 @@ event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
         return {}, true
     }
 
+    arena_avail := len(f.temp_arena.data) - f.temp_arena.offset
+    use_heap := arena_avail < size_of(T) + 64
+
+    if use_heap {
+        Event_Heap_Box :: struct {
+            alloc: mem.Allocator,
+            val:   T,
+        }
+        box := new(Event_Heap_Box, f.sched.allocator)
+        box.alloc = f.sched.allocator
+        fiber_defer(f, proc(raw: rawptr) {
+            b := (^Event_Heap_Box)(raw)
+            if b != nil do free(b, b.alloc)
+        }, rawptr(box))
+
+        f.event_dest = rawptr(&box.val)
+        wait_queue_push_back(&ev.waiters, f)
+        fiber_suspend(f)
+
+        f.event_dest = nil
+        payload = box.val
+        fiber_defer_run_top(f)
+        return payload, true
+    }
+
     arena_tmp := mem.begin_arena_temp_memory(&f.temp_arena)
     defer mem.end_arena_temp_memory(arena_tmp)
 
-    use_heap := size_of(T) > 2048
-    alloc := use_heap ? f.sched.allocator : mem.arena_allocator(&f.temp_arena)
-    dst := new(T, alloc)
-
-    if use_heap {
-        Heap_Free_Ctx :: struct {
-            ptr:   rawptr,
-            alloc: mem.Allocator,
-        }
-        fctx := new(Heap_Free_Ctx, mem.arena_allocator(&f.temp_arena))
-        fctx^ = Heap_Free_Ctx{ptr = dst, alloc = alloc}
-        fiber_defer(f, proc(raw: rawptr) {
-            c := (^Heap_Free_Ctx)(raw)
-            if c != nil && c.ptr != nil {
-                free(c.ptr, c.alloc)
-            }
-        }, rawptr(fctx))
-    }
-
+    dst := new(T, mem.arena_allocator(&f.temp_arena))
     f.event_dest = rawptr(dst)
     wait_queue_push_back(&ev.waiters, f)
     fiber_suspend(f)
 
     f.event_dest = nil
-    payload = dst^
-    if use_heap {
-        fiber_defer_run_top(f)
-    }
-    return payload, true
+    return dst^, true
 }
 
 event_emit_sched :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {

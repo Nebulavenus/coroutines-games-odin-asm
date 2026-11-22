@@ -2908,7 +2908,7 @@ test_plan5_config_constants_integration :: proc(t: ^testing.T) {
     testing.expect_value(t, STACK_SIZE % 16, 0)
     testing.expect(t, STACKS_PER_SLAB >= 1)
     testing.expect(t, PAYLOAD_SIZE >= 64)
-    testing.expect(t, TEMP_ARENA_SIZE >= 1024)
+    testing.expect(t, TEMP_ARENA_SIZE == 0 || TEMP_ARENA_SIZE >= 1024)
     testing.expect_value(t, CANARY_SIZE, 64)
     testing.expect_value(t, u64(CANARY_MAGIC), 0xDEAD_BEEF_CAFE_BABE)
     testing.expect_value(t, HANDLE_HISTORY_CAPACITY, 2048)
@@ -4349,6 +4349,7 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_await_async_zero_context_switch_and_paused_clock", test_await_async_zero_context_switch_and_paused_clock },
         { "test_large_event_and_sticky_event_no_payload_aliasing", test_large_event_and_sticky_event_no_payload_aliasing },
         { "test_task_failure_and_cancellation_wakes_awaiters", test_task_failure_and_cancellation_wakes_awaiters },
+        { "test_unbounded_sync_with_zero_stack_array", test_unbounded_sync_with_zero_stack_array },
     }
     total := len(tests)
     for test, i in tests {
@@ -6320,4 +6321,32 @@ test_task_failure_and_cancellation_wakes_awaiters :: proc(t: ^testing.T) {
     testing.expect_value(t, big_id, 99)
     testing.expect_value(t, big_last, u64(5555))
     testing.expect_value(t, task_state(&t_big), Task_State.Completed)
+}
+
+@(test)
+test_unbounded_sync_with_zero_stack_array :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    count := 0
+    inc :: proc(f: ^Fiber, c: ^int) {
+        yield(f)
+        c^ += 1
+    }
+
+    spawn(&sched, proc(f: ^Fiber, c: ^int) {
+        ok := sync_with(f, c,
+            inc, inc, inc, inc, inc, inc,
+            inc, inc, inc, inc, inc, inc,
+            inc, inc, inc, inc, inc, inc,
+            inc, inc, inc, inc, inc, inc,
+        )
+        if !ok do c^ = -1
+    }, &count)
+
+    for _ in 0 ..< 5 {
+        scheduler_step(&sched, 0.016)
+    }
+    testing.expect_value(t, count, 24)
 }

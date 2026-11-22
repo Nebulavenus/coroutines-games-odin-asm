@@ -2108,3 +2108,56 @@ test_chan_select_recv_event_driven_and_partial_close :: proc(t: ^testing.T) {
     coro.fiber_cancel(&sched, h)
     testing.expect_value(t, chan_recv_waiter_count(&ch3), 0)
 }
+
+@(test)
+test_chan_select_recv_round_robin_fairness_and_huge_abort :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    ch0: Channel(int)
+    ch1: Channel(int)
+    chan_init(&ch0, 10)
+    chan_init(&ch1, 10)
+    defer {
+        chan_destroy(&ch0)
+        chan_destroy(&ch1)
+    }
+
+    for i in 0 ..< 10 {
+        chan_try_send(&ch0, i)
+        chan_try_send(&ch1, 100 + i)
+    }
+
+    Fair_Box :: struct {
+        chans:  [2]^Channel(int),
+        counts: [2]int,
+    }
+    box := Fair_Box{chans = {&ch0, &ch1}}
+
+    coro.spawn(&sched, proc(f: ^coro.Fiber, b: ^Fair_Box) {
+        for _ in 0 ..< 10 {
+            idx, _, ok := chan_select_recv(f, b.chans[:])
+            if ok && idx >= 0 && idx < 2 {
+                b.counts[idx] += 1
+            }
+        }
+    }, &box)
+
+    coro.scheduler_step(&sched, 0.016)
+    testing.expect_value(t, box.counts[0], 5)
+    testing.expect_value(t, box.counts[1], 5)
+
+    Huge_Msg :: struct {
+        data: [512]u64,
+    }
+    ch_huge: Channel(Huge_Msg)
+    chan_init(&ch_huge, 1)
+    defer chan_destroy(&ch_huge)
+
+    h := coro.spawn(&sched, proc(f: ^coro.Fiber, ch: ^Channel(Huge_Msg)) {
+        _, _ = chan_recv_timeout(f, ch, 5.0)
+    }, &ch_huge)
+    coro.scheduler_step(&sched, 0.016)
+    coro.fiber_cancel(&sched, h)
+}

@@ -71,7 +71,7 @@ Runs the complete Boss Battle game engine for **1000 frames** (16.7 seconds @ 60
 # Run the 1000-frame headless game simulation test:
 .\build.ps1 test-web-game
 
-# Verify native unit tests (195 tests: 145 core + 50 sync):
+# Verify native unit tests (197 tests: 146 core + 51 sync):
 .\build.ps1 test
 ```
 

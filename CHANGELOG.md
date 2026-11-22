@@ -32,8 +32,13 @@ All notable changes to this project will be documented in this file.
   - Centralized `MAX_FIBER_CLEANUPS :: #config(CORO_MAX_FIBER_CLEANUPS, 8)` and `MAX_STACK_BRANCHES :: #config(CORO_MAX_STACK_BRANCHES, 16)` in `config.odin`.
   - Replaced `(value, ok, timed_out)` / `(ok, timed_out)` on `chan_recv_timeout` and `chan_send_timeout` with `Chan_Outcome :: enum u8 { Ok, Closed, Timed_Out }`, and removed unused `FIBER_PAYLOAD_SIZE` `#assert` caps on `with_mutex_val` / `with_semaphore_val`.
   - Added WebAssembly Suite 18 in `examples/wasm_test/main.odin` covering `Chan_Outcome`, event-driven `chan_select_recv`, `with_mutex` abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)` under Binaryen Asyncify.
+- **Zero-Stack-Array Combinators, Fair Round-Robin `chan_select_recv` & Opt-Out `CORO_TEMP_ARENA_SIZE=0` (`config.odin`, `types.odin`, `pool.odin`, `api.odin`, `sync/sync.odin`)**:
+  - Replaced `fiber_setup_branches` + `[16]Branch_Desc` stack buffers (~2.8 KB per call) with streaming `fiber_begin_join` / `fiber_spawn_join_child` / `fiber_wait_join` across `sync`/`race`/`rush` `_procs`/`_with` and `chan_select_recv`, supporting unbounded branch/channel counts with 0 heap branch arrays and removing `MAX_STACK_BRANCHES`.
+  - Added deterministic round-robin `Scheduler.select_cursor` in `chan_select_recv` so constantly ready channels at index `0` never starve later channels while preserving lockstep replay determinism.
+  - Fixed redundant `stored_context = context` overwrites in `spawn_*` / `branch_scoped_desc` that were clobbering per-fiber `temp_allocator` bindings set by `fiber_pool_acquire`.
+  - Enabled full `-define:CORO_TEMP_ARENA_SIZE=0` support (reducing `size_of(Fiber)` by 4 KB) with live arena capacity checks and abort-safe `fiber_defer` heap fallback across `event_wait`, `chan_recv_timeout`, `chan_send_timeout`, and `chan_select_recv`.
 - **Tests, Distributions & Docs**:
-  - Expanded native unit tests from `187` to `195` (`145` core + `50` sync) and WebAssembly suites from `17` to `18`, verified all 145 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
+  - Expanded native unit tests to `197` (`146` core + `51` sync, passing both at default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0` with 0 leaks) and WebAssembly suites to `18`; verified all 146 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU).
 
 ## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
 
