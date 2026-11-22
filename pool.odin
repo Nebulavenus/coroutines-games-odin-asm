@@ -367,13 +367,19 @@ fiber_synthesize_initial_stack :: proc(fiber: ^Fiber) {
 
         when ODIN_ARCH == .amd64 {
             when ODIN_OS == .Windows {
-                // Windows x64 frame (240B):
-                // top - 8:   alignment pad (RSP % 16 == 8 on entry)
-                // top - 16:  fiber_trampoline_entry (RET)
+                // Windows x64 frame (272B):
+                // top - 8:      alignment pad (RSP % 16 == 8 on entry)
+                // top - 16:     fiber_trampoline_entry (RET)
                 // top - 24..80: RBP, RBX, RSI, RDI, R12 (fiber), R13, R14, R15
-                // top - 240: XMM6..XMM15 (160B)
-                sp := top - 240
-                mem.zero(rawptr(sp), 240)
+                // top - 88..112: TEB pad, DeallocationStack, StackLimit, StackBase (32B)
+                // top - 272:    XMM6..XMM15 (160B)
+                sp := top - 272
+                mem.zero(rawptr(sp), 272)
+
+                teb_words := ([^]rawptr)(rawptr(sp + 160))
+                teb_words[0] = rawptr(top)
+                teb_words[1] = fiber.stack_base
+                teb_words[2] = fiber.stack_base
 
                 sp_words := ([^]rawptr)(rawptr(top - 80))
                 sp_words[3] = rawptr(fiber) // R12

@@ -1,7 +1,6 @@
 package coroutine_sync
 
 import "base:intrinsics"
-import "core:mem"
 import coro ".."
 
 // ============================================================================
@@ -354,6 +353,10 @@ chan_is_full :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
     return ch != nil && ch.capacity > 0 && ch.count >= ch.capacity
 }
 
+chan_is_closed :: #force_inline proc "contextless" (ch: ^Channel($T)) -> bool {
+    return ch == nil || ch.is_closed
+}
+
 chan_send_waiter_count :: #force_inline proc "contextless" (ch: ^Channel($T)) -> int {
     return ch != nil ? coro.wait_queue_count(&ch.send_waiters) : 0
 }
@@ -599,69 +602,47 @@ chan_recv :: proc(f: ^coro.Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
 }
 
 chan_recv_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), timeout_seconds: f32) -> (value: T, outcome: Chan_Outcome) {
-    if f == nil || ch == nil || f.sched == nil do return {}, .Closed
+    if f == nil || ch == nil || f.sched == nil do return value, .Closed
 
     if ch.count > 0 {
-        val, ok_recv := chan_try_recv(ch)
-        if ok_recv do return val, .Ok
+        ok_recv: bool
+        value, ok_recv = chan_try_recv(ch)
+        if ok_recv do return value, .Ok
     }
 
     if ch.is_closed {
-        return {}, .Closed
+        return value, .Closed
     }
 
     if timeout_seconds <= 0.0 {
-        val, ok_recv := chan_try_recv(ch)
-        return val, ok_recv ? .Ok : .Timed_Out
+        ok_recv: bool
+        value, ok_recv = chan_try_recv(ch)
+        return value, ok_recv ? .Ok : .Timed_Out
     }
 
     Recv_State :: struct {
-        alloc: mem.Allocator,
-        ch:    ^Channel(T),
-        val:   T,
-        ok:    bool,
+        ch:  ^Channel(T),
+        out: ^T,
+        ok:  bool,
     }
-
-    arena_avail := len(f.temp_arena.data) - f.temp_arena.offset
-    use_heap := arena_avail < size_of(Recv_State) + 64
-    arena_tmp: mem.Arena_Temp_Memory
-    state: ^Recv_State
-
-    if use_heap {
-        state = new(Recv_State, f.sched.allocator)
-        state.alloc = f.sched.allocator
-        coro.fiber_defer(f, proc(raw: rawptr) {
-            s := (^Recv_State)(raw)
-            if s != nil do free(s, s.alloc)
-        }, rawptr(state))
-    } else {
-        arena_tmp = mem.begin_arena_temp_memory(&f.temp_arena)
-        state = new(Recv_State, mem.arena_allocator(&f.temp_arena))
-    }
-    state.ch = ch
+    state := Recv_State{ch = ch, out = &value}
 
     winner := coro.race(f,
         coro.branch(proc(f: ^coro.Fiber, s: ^Recv_State) {
             v, ok_recv := chan_recv(f, s.ch)
-            s.val = v
+            if ok_recv {
+                s.out^ = v
+            }
             s.ok = ok_recv
-        }, state, name = "Chan Recv Branch"),
+        }, &state, name = "Chan Recv Branch"),
 
         coro.branch_wait(timeout_seconds, name = "Chan Timeout Branch"),
     )
 
-    out_val := state.val
-    out_ok := state.ok
-    if use_heap {
-        coro.fiber_defer_run_top(f)
-    } else {
-        mem.end_arena_temp_memory(arena_tmp)
-    }
-
     if winner == 1 {
-        return {}, .Timed_Out
+        return value, .Timed_Out
     }
-    return out_val, out_ok ? .Ok : .Closed
+    return value, state.ok ? .Ok : .Closed
 }
 
 chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_seconds: f32) -> (outcome: Chan_Outcome) {
@@ -680,50 +661,25 @@ chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_se
     }
 
     Send_State :: struct {
-        alloc: mem.Allocator,
-        ch:    ^Channel(T),
-        val:   T,
-        ok:    bool,
+        ch:      ^Channel(T),
+        val_ptr: ^T,
+        ok:      bool,
     }
-
-    arena_avail := len(f.temp_arena.data) - f.temp_arena.offset
-    use_heap := arena_avail < size_of(Send_State) + 64
-    arena_tmp: mem.Arena_Temp_Memory
-    state: ^Send_State
-
-    if use_heap {
-        state = new(Send_State, f.sched.allocator)
-        state.alloc = f.sched.allocator
-        coro.fiber_defer(f, proc(raw: rawptr) {
-            s := (^Send_State)(raw)
-            if s != nil do free(s, s.alloc)
-        }, rawptr(state))
-    } else {
-        arena_tmp = mem.begin_arena_temp_memory(&f.temp_arena)
-        state = new(Send_State, mem.arena_allocator(&f.temp_arena))
-    }
-    state.ch = ch
-    state.val = value
+    val_local := value
+    state := Send_State{ch = ch, val_ptr = &val_local}
 
     winner := coro.race(f,
         coro.branch(proc(f: ^coro.Fiber, s: ^Send_State) {
-            s.ok = chan_send(f, s.ch, s.val)
-        }, state, name = "Chan Send Branch"),
+            s.ok = chan_send(f, s.ch, s.val_ptr^)
+        }, &state, name = "Chan Send Branch"),
 
         coro.branch_wait(timeout_seconds, name = "Chan Send Timeout Branch"),
     )
 
-    out_ok := state.ok
-    if use_heap {
-        coro.fiber_defer_run_top(f)
-    } else {
-        mem.end_arena_temp_memory(arena_tmp)
-    }
-
     if winner == 1 {
         return .Timed_Out
     }
-    return out_ok ? .Ok : .Closed
+    return state.ok ? .Ok : .Closed
 }
 
 // --- Multi-Channel Select (CSP Multiplexer) ---
@@ -731,17 +687,18 @@ chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_se
 chan_try_select_recv :: proc(channels: []^Channel($T)) -> (ready_index: int, value: T, ok: bool) {
     for ch, i in channels {
         if ch != nil {
-            val, popped := chan_try_recv(ch)
+            popped: bool
+            value, popped = chan_try_recv(ch)
             if popped {
-                return i, val, true
+                return i, value, true
             }
         }
     }
-    return -1, {}, false
+    return -1, value, false
 }
 
 chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_index: int, value: T, ok: bool) {
-    if f == nil || f.sched == nil || len(channels) == 0 do return -1, {}, false
+    if f == nil || f.sched == nil || len(channels) == 0 do return -1, value, false
 
     n := len(channels)
     start := int(f.sched.select_cursor % u32(n))
@@ -753,8 +710,9 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
         ch := channels[i]
         if ch != nil {
             if chan_count(ch) > 0 {
-                val, popped := chan_try_recv(ch)
-                if popped do return i, val, true
+                popped: bool
+                value, popped = chan_try_recv(ch)
+                if popped do return i, value, true
             }
             if !ch.is_closed {
                 open_count += 1
@@ -762,12 +720,11 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
         }
     }
 
-    if open_count == 0 do return -1, {}, false
+    if open_count == 0 do return -1, value, false
 
     Select_State :: struct {
-        alloc:       mem.Allocator,
         ready_index: int,
-        value:       T,
+        out:         ^T,
         ok:          bool,
     }
 
@@ -777,23 +734,7 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
         state:    ^Select_State,
     }
 
-    arena_avail := len(f.temp_arena.data) - f.temp_arena.offset
-    use_heap := arena_avail < size_of(Select_State) + 64
-    arena_tmp: mem.Arena_Temp_Memory
-    state: ^Select_State
-
-    if use_heap {
-        state = new(Select_State, f.sched.allocator)
-        state.alloc = f.sched.allocator
-        coro.fiber_defer(f, proc(raw: rawptr) {
-            s := (^Select_State)(raw)
-            if s != nil do free(s, s.alloc)
-        }, rawptr(state))
-    } else {
-        arena_tmp = mem.begin_arena_temp_memory(&f.temp_arena)
-        state = new(Select_State, mem.arena_allocator(&f.temp_arena))
-    }
-    state.ready_index = -1
+    state := Select_State{ready_index = -1, out = &value}
 
     coro.fiber_begin_join(f, .Race, open_count)
     b_idx := 0
@@ -804,7 +745,7 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
             entry := Select_Entry{
                 ch       = ch,
                 orig_idx = i,
-                state    = state,
+                state    = &state,
             }
             desc := coro.branch_val(proc(child: ^coro.Fiber, e: Select_Entry) {
                 v, recv_ok := chan_recv(child, e.ch)
@@ -813,7 +754,7 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
                     return
                 }
                 e.state.ready_index = e.orig_idx
-                e.state.value = v
+                e.state.out^ = v
                 e.state.ok = true
             }, entry, name = "Chan Select Watcher")
             coro.fiber_spawn_join_child(f, b_idx, &desc)
@@ -823,19 +764,10 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
     coro.fiber_wait_join(f)
 
     winner := f.active_coord.winner_index
-    out_idx := state.ready_index
-    out_val := state.value
-    out_ok := state.ok
-    if use_heap {
-        coro.fiber_defer_run_top(f)
-    } else {
-        mem.end_arena_temp_memory(arena_tmp)
+    if winner < 0 || !state.ok {
+        return -1, value, false
     }
-
-    if winner < 0 || !out_ok {
-        return -1, {}, false
-    }
-    return out_idx, out_val, true
+    return state.ready_index, value, true
 }
 
 branch_chan_recv :: proc(ch: ^Channel($T), out: ^T, fail_on_close: bool = true, name := "chan_recv") -> coro.Branch_Desc {

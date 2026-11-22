@@ -4353,6 +4353,9 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_boss_demo_coroutine_patterns_stress", test_boss_demo_coroutine_patterns_stress },
         { "test_branch_event_sticky_join_scope_wait_heterogeneous_race", test_branch_event_sticky_join_scope_wait_heterogeneous_race },
         { "test_trace_hook_and_diagnostics", test_trace_hook_and_diagnostics },
+        { "test_branch_task_and_branch_async", test_branch_task_and_branch_async },
+        { "test_scheduler_next_wake_time_and_run_budget", test_scheduler_next_wake_time_and_run_budget },
+        { "test_win64_teb_stack_bounds_and_chkstk_probe", test_win64_teb_stack_bounds_and_chkstk_probe },
     }
     total := len(tests)
     for test, i in tests {
@@ -6908,4 +6911,268 @@ test_trace_hook_and_diagnostics :: proc(t: ^testing.T) {
     testing.expect_value(t, counts.aborts, 1)
 
     scheduler_set_trace_hook(&sched, nil, nil)
+}
+
+@(test)
+test_branch_task_and_branch_async :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    tk_ok: Task(int)
+    tk_fail: Task(int)
+    tok_ok: Async_Token
+    tok_fail: Async_Token
+    async_token_init(&tok_ok)
+    async_token_init(&tok_fail)
+
+    spawn_task(&sched, &tk_ok, proc(f: ^Fiber) -> int {
+        wait(f, 0.02)
+        return 777
+    })
+    spawn_task(&sched, &tk_fail, proc(f: ^Fiber) -> int {
+        wait(f, 0.01)
+        fail(f)
+        return 0
+    })
+
+    Ctx :: struct {
+        tk_ok:    ^Task(int),
+        tk_fail:  ^Task(int),
+        tok_ok:   ^Async_Token,
+        tok_fail: ^Async_Token,
+        w1:       int,
+        v1:       int,
+        w2:       int,
+        w3:       int,
+        w4:       int,
+    }
+    ctx := Ctx{
+        tk_ok    = &tk_ok,
+        tk_fail  = &tk_fail,
+        tok_ok   = &tok_ok,
+        tok_fail = &tok_fail,
+        w1       = -2,
+        w2       = -2,
+        w3       = -2,
+        w4       = -2,
+    }
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        local_val := 0
+        c.w1 = race(f,
+            branch_task(c.tk_ok, &local_val),
+            branch_wait(1.0),
+        )
+        c.v1 = local_val
+
+        dummy := 0
+        c.w2 = race(f,
+            branch_task(c.tk_fail, &dummy),
+            branch_wait(0.05),
+        )
+
+        c.w3 = race(f,
+            branch_async(c.tok_ok),
+            branch_wait(1.0),
+        )
+
+        c.w4 = race(f,
+            branch_async(c.tok_fail),
+            branch_wait(0.05),
+        )
+    }, &ctx)
+
+    scheduler_step(&sched, 0.01)
+    scheduler_step(&sched, 0.02)
+    testing.expect_value(t, ctx.w1, 0)
+    testing.expect_value(t, ctx.v1, 777)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.02)
+    }
+    testing.expect_value(t, ctx.w2, 1)
+
+    async_token_complete(&tok_ok, true)
+    scheduler_step(&sched, 0.01)
+    testing.expect_value(t, ctx.w3, 0)
+
+    async_token_complete(&tok_fail, false)
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.02)
+    }
+    testing.expect_value(t, ctx.w4, 1)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_scheduler_next_wake_time_and_run_budget :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    dt0, ok0 := scheduler_next_wake_time(&sched)
+    testing.expect_value(t, ok0, false)
+    testing.expect_value(t, dt0, f64(0.0))
+
+    fired: [2]bool
+    spawn_ptr(&sched, proc(f: ^Fiber, flag: ^bool) {
+        wait(f, 0.5)
+        flag^ = true
+    }, &fired[0])
+    spawn_ptr(&sched, proc(f: ^Fiber, flag: ^bool) {
+        wait(f, 0.2)
+        flag^ = true
+    }, &fired[1])
+
+    scheduler_run(&sched)
+
+    dt1, ok1 := scheduler_next_wake_time(&sched)
+    testing.expect_value(t, ok1, true)
+    testing.expect(t, abs(dt1 - 0.2) < 0.0001, "Earliest timer must be 0.2s")
+
+    clock_set_paused(&sched, CLOCK_SIM, true)
+    _, ok_paused := scheduler_next_wake_time(&sched)
+    testing.expect_value(t, ok_paused, false)
+    clock_set_paused(&sched, CLOCK_SIM, false)
+
+    scheduler_step(&sched, f32(dt1))
+    testing.expect_value(t, fired[1], true)
+    testing.expect_value(t, fired[0], false)
+
+    dt2, ok2 := scheduler_next_wake_time(&sched)
+    testing.expect_value(t, ok2, true)
+    testing.expect(t, abs(dt2 - 0.3) < 0.0001, "Remaining timer must be 0.3s")
+
+    scheduler_step(&sched, f32(dt2))
+    testing.expect_value(t, fired[0], true)
+    _, ok3 := scheduler_next_wake_time(&sched)
+    testing.expect_value(t, ok3, false)
+
+    Order_Ctx :: struct {
+        order: [5]int,
+        count: int,
+    }
+    octx: Order_Ctx
+    Item :: struct {
+        id:  int,
+        ctx: ^Order_Ctx,
+    }
+    for i in 0 ..< 5 {
+        spawn_val(&sched, proc(f: ^Fiber, it: Item) {
+            it.ctx.order[it.ctx.count] = it.id
+            it.ctx.count += 1
+        }, Item{id = i, ctx = &octx})
+    }
+
+    r1, more1 := scheduler_run_budget(&sched, 2)
+    testing.expect_value(t, r1, 2)
+    testing.expect_value(t, more1, true)
+    testing.expect_value(t, octx.count, 2)
+
+    r2, more2 := scheduler_run_budget(&sched, 2)
+    testing.expect_value(t, r2, 2)
+    testing.expect_value(t, more2, true)
+    testing.expect_value(t, octx.count, 4)
+
+    r3, more3 := scheduler_run_budget(&sched, 2)
+    testing.expect_value(t, r3, 1)
+    testing.expect_value(t, more3, false)
+    testing.expect_value(t, octx.count, 5)
+    for i in 0 ..< 5 {
+        testing.expect_value(t, octx.order[i], i)
+    }
+}
+
+@(test)
+test_win64_teb_stack_bounds_and_chkstk_probe :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    when ODIN_OS == .Windows && ODIN_ARCH == .amd64 {
+        read_win64_teb_bounds :: asm() -> (base, limit, dealloc: rawptr) [
+            #volatile,
+            #clobber %rax,
+            #clobber memory,
+        ] {
+            xor %rax, %rax
+            #byte 0x65, 0x48, 0x8B, 0x04, 0x25, 0x30, 0x00, 0x00, 0x00
+            mov base,    [%rax + 0x08]
+            mov limit,   [%rax + 0x10]
+            mov dealloc, [%rax + 0x1478]
+        }
+
+        host_base, host_limit, host_dealloc := read_win64_teb_bounds()
+
+        Probe_Ctx :: struct {
+            fiber_base:        rawptr,
+            fiber_limit:       rawptr,
+            fiber_dealloc:     rawptr,
+            expected_base:     rawptr,
+            expected_limit:    rawptr,
+            checksum_ok:       bool,
+        }
+        pctx: Probe_Ctx
+
+        spawn_ptr(&sched, proc(f: ^Fiber, c: ^Probe_Ctx) {
+            big_buf: [10 * 1024]u8
+            for i in 0 ..< len(big_buf) {
+                big_buf[i] = u8((i * 7 + 3) & 0xFF)
+            }
+            yield(f)
+
+            top := (uintptr(f.stack_base) + uintptr(f.stack_size)) & ~uintptr(15)
+            c.expected_base = rawptr(top)
+            c.expected_limit = f.stack_base
+            c.fiber_base, c.fiber_limit, c.fiber_dealloc = read_win64_teb_bounds()
+
+            ok := true
+            for i in 0 ..< len(big_buf) {
+                if big_buf[i] != u8((i * 7 + 3) & 0xFF) {
+                    ok = false
+                    break
+                }
+            }
+            c.checksum_ok = ok
+        }, &pctx)
+
+        scheduler_step(&sched, 0.016)
+        mid_base, mid_limit, mid_dealloc := read_win64_teb_bounds()
+        testing.expect_value(t, mid_base, host_base)
+        testing.expect_value(t, mid_limit, host_limit)
+        testing.expect_value(t, mid_dealloc, host_dealloc)
+
+        scheduler_step(&sched, 0.016)
+        end_base, end_limit, end_dealloc := read_win64_teb_bounds()
+        testing.expect_value(t, end_base, host_base)
+        testing.expect_value(t, end_limit, host_limit)
+        testing.expect_value(t, end_dealloc, host_dealloc)
+
+        testing.expect_value(t, pctx.fiber_base, pctx.expected_base)
+        testing.expect_value(t, pctx.fiber_limit, pctx.expected_limit)
+        testing.expect_value(t, pctx.fiber_dealloc, pctx.expected_limit)
+        testing.expect_value(t, pctx.checksum_ok, true)
+    } else {
+        checksum_ok := false
+        spawn_ptr(&sched, proc(f: ^Fiber, ok_out: ^bool) {
+            big_buf: [10 * 1024]u8
+            for i in 0 ..< len(big_buf) {
+                big_buf[i] = u8((i * 7 + 3) & 0xFF)
+            }
+            yield(f)
+            ok := true
+            for i in 0 ..< len(big_buf) {
+                if big_buf[i] != u8((i * 7 + 3) & 0xFF) {
+                    ok = false
+                    break
+                }
+            }
+            ok_out^ = ok
+        }, &checksum_ok)
+
+        scheduler_step(&sched, 0.016)
+        scheduler_step(&sched, 0.016)
+        testing.expect_value(t, checksum_ok, true)
+    }
 }

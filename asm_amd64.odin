@@ -6,10 +6,11 @@ package coroutine
 
 when ODIN_ARCH == .amd64 {
     when ODIN_OS == .Windows {
-        // Windows x64 ABI Context Switch:
+        // Windows x64 ABI Context Switch (272B frame):
         // Preserves:
         // - GPRs: RBP, RBX, RSI, RDI, R12, R13, R14, R15 (8 * 8 = 64 bytes)
         // - XMM:  XMM6 through XMM15 (10 * 16 = 160 bytes)
+        // - TEB:  StackBase, StackLimit, DeallocationStack (24 bytes + 8 bytes pad = 32 bytes)
         fiber_context_switch :: asm(from_rsp: ^rawptr, to_rsp: rawptr) [
             from_rsp = %rcx,
             to_rsp   = %rdx,
@@ -47,8 +48,8 @@ when ODIN_ARCH == .amd64 {
             push %r14
             push %r15
 
-            // 2. Save Callee-Saved XMM Registers (160 bytes)
-            sub %rsp, 160
+            // 2. Save Callee-Saved XMM Registers (160 bytes) & TEB Stack Bounds (32 bytes)
+            sub %rsp, 192
             movdqu [%rsp + 0],   %xmm15
             movdqu [%rsp + 16],  %xmm14
             movdqu [%rsp + 32],  %xmm13
@@ -60,9 +61,24 @@ when ODIN_ARCH == .amd64 {
             movdqu [%rsp + 128], %xmm7
             movdqu [%rsp + 144], %xmm6
 
+            #byte 0x65, 0x48, 0x8B, 0x04, 0x25, 0x30, 0x00, 0x00, 0x00
+            mov %r8,  [%rax + 0x08]
+            mov %r9,  [%rax + 0x10]
+            mov %r10, [%rax + 0x1478]
+            mov [%rsp + 160], %r8
+            mov [%rsp + 168], %r9
+            mov [%rsp + 176], %r10
+
             // 3. Swap Stack Pointers (*from_rsp = rsp; rsp = to_rsp)
             mov [from_rsp], %rsp
             xchg %rsp, to_rsp
+
+            mov %r8,  [%rsp + 160]
+            mov %r9,  [%rsp + 168]
+            mov %r10, [%rsp + 176]
+            mov [%rax + 0x08],   %r8
+            mov [%rax + 0x10],   %r9
+            mov [%rax + 0x1478], %r10
 
             // 4. Restore Callee-Saved XMM Registers (160 bytes)
             movdqu %xmm6,  [%rsp + 144]
@@ -75,7 +91,7 @@ when ODIN_ARCH == .amd64 {
             movdqu %xmm13, [%rsp + 32]
             movdqu %xmm14, [%rsp + 16]
             movdqu %xmm15, [%rsp + 0]
-            add %rsp, 160
+            add %rsp, 192
 
             // 5. Restore Callee-Saved GPRs (64 bytes)
             pop %r15
@@ -87,7 +103,7 @@ when ODIN_ARCH == .amd64 {
             pop %rbx
             pop %rbp
 
-            // 6. Return to target fiber's saved RIP (jz links CFG block to .switch_done; ZF=0 after add %rsp, 160)
+            // 6. Return to target fiber's saved RIP (jz links CFG block to .switch_done; ZF=0 after add %rsp, 192)
             jz .switch_done
             ret
         .switch_done:

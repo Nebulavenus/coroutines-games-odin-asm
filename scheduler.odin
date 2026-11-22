@@ -303,8 +303,9 @@ clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64
     }
 }
 
-scheduler_run :: proc(sched: ^Scheduler) {
-    if sched == nil do return
+@(private="file")
+scheduler_run_impl :: proc(sched: ^Scheduler, max_resumes: int) -> (resumed: int, has_more_ready: bool) {
+    if sched == nil do return 0, false
 
     if len(sched.async_waiters) > 0 {
         write_idx := 0
@@ -345,6 +346,14 @@ scheduler_run :: proc(sched: ^Scheduler) {
             continue
         }
 
+        if max_resumes >= 0 && resumed >= max_resumes {
+            sched.ready_queue[write_idx] = h
+            write_idx += 1
+            has_more_ready = true
+            continue
+        }
+
+        resumed += 1
         f.status = .Running
         f.resume_count += 1
         sched.current_fiber = f
@@ -387,6 +396,28 @@ scheduler_run :: proc(sched: ^Scheduler) {
         }
     }
     resize(&sched.ready_queue, write_idx)
+    return resumed, has_more_ready
+}
+
+scheduler_run :: proc(sched: ^Scheduler) {
+    _, _ = scheduler_run_impl(sched, -1)
+}
+
+scheduler_run_budget :: proc(sched: ^Scheduler, max_resumes: int) -> (resumed: int, has_more_ready: bool) {
+    limit := max_resumes < 0 ? 0 : max_resumes
+    return scheduler_run_impl(sched, limit)
+}
+
+scheduler_next_wake_time :: proc "contextless" (sched: ^Scheduler, clock_id: Clock_ID = CLOCK_SIM) -> (dt_seconds: f64, ok: bool) {
+    if sched == nil do return 0.0, false
+    cid := int(clock_id)
+    if cid < 0 || cid >= MAX_CLOCKS do cid = 0
+    clk := &sched.clocks[cid]
+    if clk.paused || len(clk.timer_heap) == 0 do return 0.0, false
+    next_f := clk.timer_heap[0]
+    if next_f == nil do return 0.0, false
+    rem := next_f.wake_time - clk.time
+    return rem > 0.0 ? rem : 0.0, true
 }
 
 scheduler_has_active :: #force_inline proc "contextless" (sched: ^Scheduler) -> bool {

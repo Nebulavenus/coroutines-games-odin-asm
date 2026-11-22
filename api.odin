@@ -516,6 +516,39 @@ branch_scope_wait :: proc(scope: ^Fiber_Scope, name := "scope_wait") -> Branch_D
     return branch_ptr(scope_wait, scope, name)
 }
 
+branch_task :: proc(task: ^Task($T), out: ^T, fail_on_error: bool = true, name := "task_await") -> Branch_Desc {
+    Payload :: struct {
+        task:          ^Task(T),
+        out:           ^T,
+        fail_on_error: bool,
+    }
+    return branch_val(proc(f: ^Fiber, p: Payload) {
+        val, ok := task_await(f, p.task)
+        if !ok {
+            if p.fail_on_error {
+                fail(f)
+            }
+            return
+        }
+        if p.out != nil {
+            p.out^ = val
+        }
+    }, Payload{task = task, out = out, fail_on_error = fail_on_error}, name)
+}
+
+branch_async :: proc(token: ^Async_Token, fail_on_error: bool = true, name := "await_async") -> Branch_Desc {
+    Payload :: struct {
+        token:         ^Async_Token,
+        fail_on_error: bool,
+    }
+    return branch_val(proc(f: ^Fiber, p: Payload) {
+        ok := await_async(f, p.token)
+        if !ok && p.fail_on_error {
+            fail(f)
+        }
+    }, Payload{token = token, fail_on_error = fail_on_error}, name)
+}
+
 // ============================================================================
 // Scoped Fire-and-Forget Subtasks (Verse branch:)
 // ============================================================================
@@ -982,47 +1015,14 @@ event_destroy :: proc(ev: ^Event($T)) {
 event_wait :: proc(f: ^Fiber, ev: ^Event($T)) -> (payload: T, ok: bool) {
     if f == nil || ev == nil || f.sched == nil do return {}, false
 
-    if size_of(T) == 0 {
-        wait_queue_push_back(&ev.waiters, f)
-        fiber_suspend(f)
-        return {}, true
+    if size_of(T) > 0 {
+        f.event_dest = rawptr(&payload)
     }
-
-    arena_avail := len(f.temp_arena.data) - f.temp_arena.offset
-    use_heap := arena_avail < size_of(T) + 64
-
-    if use_heap {
-        Event_Heap_Box :: struct {
-            alloc: mem.Allocator,
-            val:   T,
-        }
-        box := new(Event_Heap_Box, f.sched.allocator)
-        box.alloc = f.sched.allocator
-        fiber_defer(f, proc(raw: rawptr) {
-            b := (^Event_Heap_Box)(raw)
-            if b != nil do free(b, b.alloc)
-        }, rawptr(box))
-
-        f.event_dest = rawptr(&box.val)
-        wait_queue_push_back(&ev.waiters, f)
-        fiber_suspend(f)
-
-        f.event_dest = nil
-        payload = box.val
-        fiber_defer_run_top(f)
-        return payload, true
-    }
-
-    arena_tmp := mem.begin_arena_temp_memory(&f.temp_arena)
-    defer mem.end_arena_temp_memory(arena_tmp)
-
-    dst := new(T, mem.arena_allocator(&f.temp_arena))
-    f.event_dest = rawptr(dst)
     wait_queue_push_back(&ev.waiters, f)
     fiber_suspend(f)
 
     f.event_dest = nil
-    return dst^, true
+    return payload, true
 }
 
 event_emit_sched :: proc(sched: ^Scheduler, ev: ^Event($T), payload: T) {

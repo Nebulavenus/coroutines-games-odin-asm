@@ -2332,6 +2332,64 @@ test_channel_abort_wakeup_relay_and_unbuf_try_send :: proc(t: ^testing.T) {
     testing.expect_value(t, v_pop2, 30)
 }
 
+@(test)
+test_chan_is_closed_and_zero_heap_select_timeout :: proc(t: ^testing.T) {
+    sched: coro.Scheduler
+    coro.scheduler_init(&sched)
+    defer coro.scheduler_destroy(&sched)
+
+    nil_ch: ^Channel(int) = nil
+    testing.expect_value(t, chan_is_closed(nil_ch), true)
+
+    ch_a: Channel(int)
+    ch_b: Channel(int)
+    chan_init(&ch_a, 2)
+    chan_init(&ch_b, 2)
+    defer {
+        chan_destroy(&ch_a)
+        chan_destroy(&ch_b)
+    }
+
+    testing.expect_value(t, chan_is_closed(&ch_a), false)
+    testing.expect_value(t, chan_is_closed(&ch_b), false)
+
+    Ctx :: struct {
+        ch_a:         ^Channel(int),
+        ch_b:         ^Channel(int),
+        recv_outcome: Chan_Outcome,
+        recv_val:     int,
+        send_outcome: Chan_Outcome,
+        sel_idx:      int,
+        sel_val:      int,
+        sel_ok:       bool,
+    }
+    ctx := Ctx{ch_a = &ch_a, ch_b = &ch_b, sel_idx = -1}
+
+    coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Ctx) {
+        c.recv_val, c.recv_outcome = chan_recv_timeout(f, c.ch_a, 0.5)
+        chs := [2]^Channel(int){c.ch_a, c.ch_b}
+        c.sel_idx, c.sel_val, c.sel_ok = chan_select_recv(f, chs[:])
+        c.send_outcome = chan_send_timeout(f, c.ch_b, 999, 0.5)
+    }, &ctx)
+
+    coro.scheduler_step(&sched, 0.016)
+    chan_try_send(&ch_a, 123)
+    coro.scheduler_step(&sched, 0.016)
+    chan_try_send(&ch_b, 456)
+    coro.scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, ctx.recv_outcome, Chan_Outcome.Ok)
+    testing.expect_value(t, ctx.recv_val, 123)
+    testing.expect_value(t, ctx.sel_ok, true)
+    testing.expect_value(t, ctx.sel_idx, 1)
+    testing.expect_value(t, ctx.sel_val, 456)
+    testing.expect_value(t, ctx.send_outcome, Chan_Outcome.Ok)
+
+    chan_close(&ch_a)
+    testing.expect_value(t, chan_is_closed(&ch_a), true)
+    testing.expect_value(t, chan_is_closed(&ch_b), false)
+}
+
 run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: int, failed: int) {
     tests := []struct{ name: string, fn: proc(^testing.T) } {
         { "test_fiber_mutex_contention", test_fiber_mutex_contention },
@@ -2387,6 +2445,7 @@ run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: in
         { "test_chan_select_recv_round_robin_fairness_and_huge_abort", test_chan_select_recv_round_robin_fairness_and_huge_abort },
         { "test_heterogeneous_race_channels_events_and_timeout", test_heterogeneous_race_channels_events_and_timeout },
         { "test_channel_abort_wakeup_relay_and_unbuf_try_send", test_channel_abort_wakeup_relay_and_unbuf_try_send },
+        { "test_chan_is_closed_and_zero_heap_select_timeout", test_chan_is_closed_and_zero_heap_select_timeout },
     }
     total := len(tests)
     for test, i in tests {

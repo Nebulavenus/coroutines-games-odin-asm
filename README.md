@@ -291,10 +291,10 @@ main :: proc() {
 Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems kernel designed for real-time game engines:
 
 - **Universal Multi-ISA Native Inline Assembly Context Switch**:
-  - **AMD64 (x86-64)**: Fast register swap for Windows x64 (240B frame preserving `xmm6`..`xmm15`) and System V AMD64 (64B frame). Self-ID: `%r12`.
+  - **AMD64 (x86-64)**: Fast register swap for Windows x64 (272B frame preserving `xmm6`..`xmm15` and Windows TEB `StackBase`/`StackLimit`/`DeallocationStack`) and System V AMD64 (64B frame). Self-ID: `%r12`.
   - **ARM64 (AArch64)**: Native 160B AAPCS64 frame preserving `x19`..`x28`, `x29` (FP), `x30` (LR), and `d8`..`d15` on Apple Silicon (M1–M4), Linux ARM, iOS, Android, and Nintendo Switch. Self-ID: `%x19`.
   - **RISC-V 64 (RV64GC)**: Native 208B LP64D frame preserving `ra`, `s0`..`s11`, and `fs0`..`fs11` for open-source RISC-V hardware. Self-ID: `%s2`.
-  - **WebAssembly (`js_wasm32`)**: Native browser and Node.js execution via Binaryen Asyncify with shadow-stack protection.
+  - **WebAssembly (`js_wasm32`)**: Native browser and Node.js execution via Binaryen Asyncify with per-fiber linear-memory shadow stacks (`$__stack_pointer` switching), eliminating cross-yield `&local` aliasing and abort SP leaks with zero JS host changes.
 - **100% Zero Allocations During Gameplay (True ZII)**:
   - Primitives (`Signal`, `Event(T)`, `Wait_Queue`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization.
   - Generational 64-bit handles (`Fiber_Handle`) ensure $O(1)$ lookups with ABA safety.
@@ -341,13 +341,13 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 
 | Target Architecture | ABI Standard | Frame Size | Preserved State | Self-Identity Register | Verification Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows x86-64 (AMD64)** | Microsoft x64 | 240 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15` | `%r12` | **197 / 197 Tests PASS (Native Host Windows)** |
-| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **146 / 146 Core Tests PASS (Native WSL2 Host CPU)** |
-| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **146 / 146 Core Tests PASS (WSL2 QEMU)** |
-| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **146 / 146 Core Tests PASS (WSL2 QEMU)** |
+| **Windows x86-64 (AMD64)** | Microsoft x64 | 272 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15`, `xmm6`..`xmm15`, TEB stack bounds | `%r12` | **210 / 210 Tests PASS (Native Host Windows, 0 Leaks)** |
+| **Linux x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **210 / 210 Tests PASS (Native WSL2 Host CPU)** |
+| **Linux ARM64 (AArch64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **210 / 210 Tests PASS (WSL2 QEMU)** |
+| **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **210 / 210 Tests PASS (WSL2 QEMU)** |
 | **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **Cross-Check PASS (AAPCS64 ABI Verified)** |
 | **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **Cross-Check PASS (SysV AMD64 ABI Verified)** |
-| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **18 / 18 Test Suites + 1,000-Frame Headless Game PASS** |
+| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Per-Fiber 8 KB Shadow Stack + 4 KB Asyncify | Isolated `$__stack_pointer` + Asyncify Unwind/Rewind | N/A | **22 / 22 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
 
@@ -365,7 +365,7 @@ The cross-platform PowerShell build script [`build.ps1`](build.ps1) automates al
 # Run the AI & Quest Sandbox
 .\build.ps1 run-quest
 
-# Run All 197 Unit Tests (146 Core + 51 Sync) with 0 Leaks
+# Run All 210 Unit Tests (156 Core + 54 Sync) with 0 Leaks
 .\build.ps1 test
 
 # Cross-Check All 7 Multi-ISA & WebAssembly Targets

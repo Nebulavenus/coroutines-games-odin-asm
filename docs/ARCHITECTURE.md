@@ -1,23 +1,17 @@
-Here is a comprehensive architectural analysis and design proposal for building a **SkookumScript-inspired, Structured Concurrency Coroutine Library** in Odin from the ground up, utilizing native **inline assembly (`asm`)**.
+# Architecture Specification: Stackful Structured Concurrency in Odin
+
+This document describes the architecture of the **Verse / SkookumScript-inspired Stackful Coroutine Engine** implemented in Odin using native **inline assembly (`asm`)** on AMD64, ARM64, and RISC-V 64, and **Binaryen Asyncify with per-fiber linear-memory shadow stacks** on WebAssembly (`js_wasm32`).
 
 ---
 
-# 1. Paradigm Shift: Where We Are vs. Where We Want to Be
+# 1. Design Philosophy: Native Stackful Structured Concurrency
 
-### Current Architecture (The AST / Tagged-Union State Machine)
-Your current implementation uses a **stackless AST graph**:
-- Coroutines are trees of `Node` structs stored in a handle map.
-- Execution steps down the tree frame-by-frame.
-- **The Friction:**
-  - Control flow cannot use native Odin keywords (`if`, `for`, `switch`, local variables).
-  - State persistence across yields requires manual closure emulation via `Rc(T)`, headers, raw pointers, and thunk wrappers.
-  - Composing logic feels like building an expression tree rather than writing gameplay code.
+Traditional gameplay scripting often falls back to manual state-machine switches, callback chains, or heap-allocated stackless AST nodes where native `for`/`if`/local-variable control flow is lost.
 
-### Proposed Architecture (Native Stackful Structured Concurrency via ASM)
-With Odin's new inline `asm` templates, we can implement **lightweight, cooperative green threads (Fibers)** directly into Odin.
-- Coroutines become **real Odin procedures** with standard local variables, loops, and conditions.
-- Pausing execution (`wait`, `yield`, `race`, `sync`) is a direct CPU register context switch taking **~5–15 nanoseconds**.
-- **SkookumScript's killer feature**—Hierarchical Structured Concurrency (`race`, `sync`, branch cancellation, and lifecycle scopes)—is built on a parent-child fiber tree rather than a manual AST.
+With Odin's inline `asm` templates (and per-fiber shadow stacks on WebAssembly), coroutines are **lightweight cooperative green threads (Fibers)**:
+- Coroutines are **regular Odin procedures** with standard local variables, loops, pointers to stack locals, and control flow.
+- Pausing execution (`wait`, `yield`, `race`, `sync`) is a direct register context switch taking **~15–20 nanoseconds** on native CPUs.
+- **Verse / SkookumScript structured concurrency** (`sync`, `race`, `rush`, `fallback`, `branch_scoped`, `Fiber_Scope`, and hierarchical bottom-up cancellation) is built directly into an intrusive parent-child fiber tree with zero gameplay heap allocations.
 
 ---
 
@@ -488,10 +482,10 @@ In Odin, `context.temp_allocator` relies on a ring-buffer arena. To prevent two 
 * **Option 2 (Frame-Scoped Reset):** Enforce that `free_all(context.temp_allocator)` is called at the boundary of top-level fiber execution.
 * *Recommendation:* Assigning a dedicated `mem.Arena` to `fiber.stored_context.temp_allocator` provides complete memory isolation across fibers.
 
-### C. Windows Thread Information Block (TIB / TEB) Considerations
-On Windows x64, the OS stores stack limits in the Thread Environment Block (`GS:[0x08]` StackBase, `GS:[0x10]` StackLimit).
-* For pure gameplay scripting and mathematics, modifying the TEB on every switch is unnecessary.
-* If a fiber makes deep Win32 OS calls or triggers Windows Structured Exception Handling (SEH), updating `GS:[0x08]` and `GS:[0x10]` in the context switch prevents the OS from misidentifying the fiber stack as a corrupted thread stack.
+### C. Windows Thread Information Block (TIB / TEB) Preservation
+On Windows x64, the OS stores thread stack bounds in the Thread Environment Block (`GS:[0x08]` `StackBase`, `GS:[0x10]` `StackLimit`, and `GS:[0x1478]` `DeallocationStack`).
+* `asm_amd64.odin` loads the TEB self-pointer (`GS:[0x30]`) and saves/restores all three stack-bound fields inside the 272-byte Windows x64 context-switch frame.
+* This guarantees that Win32/DirectX/C library calls, Structured Exception Handling (SEH), and >4 KB local stack probes (`__chkstk`) inside fibers always observe valid OS stack bounds.
 
 ---
 
@@ -603,7 +597,7 @@ Fiber :: struct {
     user_data:        rawptr,
     user_fn:          rawptr,            // Function pointer for generic/value entry thunks
     payload_storage:  [FIBER_PAYLOAD_SIZE]byte, // Inline buffer for by-value parameters
-    cleanups:         [MAX_FIBER_CLEANUPS]Fiber_Cleanup, // 8-slot LIFO defer stack executed on abort/finish
+    cleanups:         [MAX_FIBER_CLEANUPS]Fiber_Cleanup, // 16-slot LIFO defer stack executed on abort/finish
     cleanup_count:    int,
 
     // --- Isolated Temporary Allocator ---

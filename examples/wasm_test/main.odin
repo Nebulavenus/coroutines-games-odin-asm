@@ -1093,6 +1093,73 @@ test_wasm_per_fiber_shadow_stack_isolation_and_no_leak :: proc() {
     fmt.println("OK")
 }
 
+test_wasm_branch_task_async_budget_and_chan_closed :: proc() {
+    fmt.print("  [Test 22] branch_task, branch_async, next_wake_time, run_budget & chan_is_closed... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    tk: coroutine.Task(int)
+    tok: coroutine.Async_Token
+    coroutine.async_token_init(&tok)
+
+    coroutine.spawn_task(&sched, &tk, proc(f: ^coroutine.Fiber) -> int {
+        coroutine.wait(f, 0.02)
+        return 314
+    })
+
+    Ctx :: struct {
+        tk:  ^coroutine.Task(int),
+        tok: ^coroutine.Async_Token,
+        w1:  int,
+        v1:  int,
+        w2:  int,
+    }
+    ctx := Ctx{tk = &tk, tok = &tok, w1 = -1, w2 = -1}
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Ctx) {
+        local_res := 0
+        c.w1 = coroutine.race(f,
+            coroutine.branch_task(c.tk, &local_res),
+            coroutine.branch_wait(1.0),
+        )
+        c.v1 = local_res
+        c.w2 = coroutine.race(f,
+            coroutine.branch_async(c.tok),
+            coroutine.branch_wait(1.0),
+        )
+    }, &ctx)
+
+    coroutine.scheduler_run(&sched)
+    next_dt, has_next := coroutine.scheduler_next_wake_time(&sched)
+    assert(has_next && next_dt > 0.01 && next_dt <= 0.021, "scheduler_next_wake_time must report 0.02s earliest timer")
+
+    coroutine.scheduler_step(&sched, f32(next_dt))
+    assert(ctx.w1 == 0 && ctx.v1 == 314, "branch_task must win race and populate stack-local out pointer")
+
+    coroutine.async_token_complete(&tok, true)
+    coroutine.scheduler_step(&sched, 0.016)
+    assert(ctx.w2 == 0, "branch_async must win race when token completes")
+
+    order_count := 0
+    for _ in 0 ..< 4 {
+        coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, cnt: ^int) {
+            cnt^ += 1
+        }, &order_count)
+    }
+    r1, more1 := coroutine.scheduler_run_budget(&sched, 2)
+    assert(r1 == 2 && more1 && order_count == 2, "scheduler_run_budget must cap resumes to 2")
+    r2, more2 := coroutine.scheduler_run_budget(&sched, 2)
+    assert(r2 == 2 && !more2 && order_count == 4, "scheduler_run_budget must finish remaining 2 fibers")
+
+    ch: sync.Channel(int)
+    sync.chan_init(&ch, 1)
+    defer sync.chan_destroy(&ch)
+    assert(!sync.chan_is_closed(&ch), "Open channel must report chan_is_closed == false")
+    sync.chan_close(&ch)
+    assert(sync.chan_is_closed(&ch), "Closed channel must report chan_is_closed == true")
+    fmt.println("OK")
+}
+
 // ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
@@ -1123,9 +1190,10 @@ main :: proc() {
     test_wasm_pause_self_cancel_and_asyncify_usage()
     test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select()
     test_wasm_per_fiber_shadow_stack_isolation_and_no_leak()
+    test_wasm_branch_task_async_budget_and_chan_closed()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 21 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 22 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }
