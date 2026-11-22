@@ -239,6 +239,13 @@ ticker_rebase :: proc(f: ^Fiber) {
 fail :: proc(f: ^Fiber) {
     if f == nil || f.sched == nil do return
     f.status = .Failed
+    for i := f.cleanup_count - 1; i >= 0; i -= 1 {
+        hook := f.cleanups[i]
+        if hook.proc_ptr != nil {
+            hook.proc_ptr(hook.user_data != nil ? hook.user_data : f.user_data)
+        }
+    }
+    f.cleanup_count = 0
     fiber_on_finish(f)
     f.stored_context = context
     fiber_context_switch(&f.saved_sp, f.sched.scheduler_sp)

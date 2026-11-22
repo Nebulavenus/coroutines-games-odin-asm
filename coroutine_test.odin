@@ -6346,3 +6346,420 @@ test_unbounded_sync_with_zero_stack_array :: proc(t: ^testing.T) {
     }
     testing.expect_value(t, count, 24)
 }
+
+@(test)
+test_clock_pause_gates_advance_and_ready_queue :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+    defer signal_destroy(&sig)
+
+    Ctx :: struct {
+        sig:          ^Signal,
+        sim_ran:      int,
+        sig_woke:     int,
+        yield_now_ok: bool,
+        real_ran:     int,
+    }
+    ctx := Ctx{sig = &sig}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        signal_wait(f, c.sig)
+        c.sig_woke += 1
+    }, &ctx, clock = CLOCK_SIM)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        for _ in 0 ..< 3 {
+            yield(f)
+            c.real_ran += 1
+        }
+    }, &ctx, clock = CLOCK_REAL)
+
+    scheduler_step(&sched, 0.016, CLOCK_SIM)
+
+    clock_set_paused(&sched, CLOCK_SIM, true)
+    testing.expect_value(t, clock_is_paused(&sched, CLOCK_SIM), true)
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.sim_ran += 1
+        yield_now(f)
+        c.yield_now_ok = true
+    }, &ctx, clock = CLOCK_SIM)
+
+    signal_emit(&sched, &sig)
+
+    t_before := scheduler_time(&sched, CLOCK_SIM)
+    s_before := scheduler_steps(&sched, CLOCK_SIM)
+
+    for _ in 0 ..< 4 {
+        clock_advance(&sched, CLOCK_SIM, 0.1)
+        clock_advance(&sched, CLOCK_REAL, 0.016)
+        scheduler_run(&sched)
+    }
+
+    testing.expect_value(t, scheduler_time(&sched, CLOCK_SIM), t_before)
+    testing.expect_value(t, scheduler_steps(&sched, CLOCK_SIM), s_before)
+    testing.expect_value(t, ctx.sim_ran, 0)
+    testing.expect_value(t, ctx.sig_woke, 0)
+    testing.expect_value(t, ctx.yield_now_ok, false)
+    testing.expect_value(t, ctx.real_ran, 3)
+
+    clock_set_paused(&sched, CLOCK_SIM, false)
+    testing.expect_value(t, clock_is_paused(&sched, CLOCK_SIM), false)
+
+    scheduler_step(&sched, 0.016, CLOCK_SIM)
+
+    testing.expect_value(t, ctx.sim_ran, 1)
+    testing.expect_value(t, ctx.sig_woke, 1)
+    testing.expect_value(t, ctx.yield_now_ok, true)
+}
+
+@(test)
+test_fiber_self_cancel_and_ancestor_cancel :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Self_Ctx :: struct {
+        defer_ran:   bool,
+        after_ran:   bool,
+        self_handle: Fiber_Handle,
+    }
+    self_ctx: Self_Ctx
+
+    h_self := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Self_Ctx) {
+        c.self_handle = f.handle
+        fiber_defer(f, proc(c: ^Self_Ctx) {
+            c.defer_ran = true
+        }, c)
+        fiber_cancel(f, f.handle)
+        c.after_ran = true
+    }, &self_ctx, name = "Self Canceller")
+
+    scheduler_step(&sched, 0.016)
+
+    testing.expect_value(t, self_ctx.defer_ran, true)
+    testing.expect_value(t, self_ctx.after_ran, false)
+    testing.expect_value(t, fiber_is_alive(&sched, h_self), false)
+    st, ok := fiber_status(&sched, h_self)
+    testing.expect_value(t, ok, true)
+    testing.expect_value(t, st, Fiber_Status.Aborted)
+
+    scope: Fiber_Scope
+    defer scope_destroy(&sched, &scope)
+
+    Anc_Ctx :: struct {
+        scope:          ^Fiber_Scope,
+        parent_defer:   bool,
+        sibling_defer:  bool,
+        child_defer:    bool,
+        other_defer:    bool,
+        child_after:    bool,
+        waiter_woke:    bool,
+    }
+    anc_ctx := Anc_Ctx{scope = &scope}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Anc_Ctx) {
+        fiber_defer(f, proc(c: ^Anc_Ctx) {
+            c.other_defer = true
+        }, c)
+        wait(f, 10.0)
+    }, &anc_ctx, scope = &scope, name = "Scope Peer")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Anc_Ctx) {
+        fiber_defer(f, proc(c: ^Anc_Ctx) {
+            c.parent_defer = true
+        }, c)
+        sync_with(f, c,
+            proc(cf: ^Fiber, c: ^Anc_Ctx) {
+                fiber_defer(cf, proc(c: ^Anc_Ctx) {
+                    c.sibling_defer = true
+                }, c)
+                wait(cf, 10.0)
+            },
+            proc(cf: ^Fiber, c: ^Anc_Ctx) {
+                fiber_defer(cf, proc(c: ^Anc_Ctx) {
+                    c.child_defer = true
+                }, c)
+                yield(cf)
+                scope_cancel(cf, c.scope)
+                c.child_after = true
+            },
+        )
+    }, &anc_ctx, scope = &scope, name = "Scope Ancestor")
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Anc_Ctx) {
+        scope_wait(f, c.scope)
+        c.waiter_woke = true
+    }, &anc_ctx, name = "Scope Waiter")
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, anc_ctx.other_defer, true)
+    testing.expect_value(t, anc_ctx.parent_defer, true)
+    testing.expect_value(t, anc_ctx.sibling_defer, true)
+    testing.expect_value(t, anc_ctx.child_defer, true)
+    testing.expect_value(t, anc_ctx.child_after, false)
+    testing.expect_value(t, anc_ctx.waiter_woke, true)
+    testing.expect_value(t, scope_is_empty(&scope), true)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_race_sibling_defer_cancels_other_sibling :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    Ctx :: struct {
+        sched:       ^Scheduler,
+        c_handle:    Fiber_Handle,
+        b_defer_ran: bool,
+        c_defer_ran: bool,
+        spawned_ran: bool,
+        winner:      int,
+    }
+    ctx := Ctx{sched = &sched, winner = -1}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.winner = race_with(f, c,
+            proc(bf: ^Fiber, c: ^Ctx) {
+                yield(bf)
+            },
+            proc(bf: ^Fiber, c: ^Ctx) {
+                fiber_defer(bf, proc(c: ^Ctx) {
+                    c.b_defer_ran = true
+                    if c.c_handle != 0 {
+                        fiber_cancel(c.sched, c.c_handle)
+                    }
+                    spawn_ptr(c.sched, proc(sf: ^Fiber, c: ^Ctx) {
+                        c.spawned_ran = true
+                    }, c)
+                }, c)
+                wait(bf, 5.0)
+            },
+            proc(bf: ^Fiber, c: ^Ctx) {
+                c.c_handle = bf.handle
+                fiber_defer(bf, proc(c: ^Ctx) {
+                    c.c_defer_ran = true
+                }, c)
+                wait(bf, 5.0)
+            },
+        )
+    }, &ctx)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, ctx.winner, 0)
+    testing.expect_value(t, ctx.b_defer_ran, true)
+    testing.expect_value(t, ctx.c_defer_ran, true)
+    testing.expect_value(t, ctx.spawned_ran, true)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_fail_runs_defer_before_guard_sibling_abort :: proc(t: ^testing.T) {
+    sched: Scheduler
+    scheduler_init(&sched)
+    defer scheduler_destroy(&sched)
+
+    sig: Signal
+    signal_init(&sig)
+    defer signal_destroy(&sig)
+
+    Ctx :: struct {
+        sig:               ^Signal,
+        primary_defer_ran: bool,
+        outcome:           Signal_Outcome,
+    }
+    ctx := Ctx{sig = &sig}
+
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Ctx) {
+        c.outcome = with_signal(f, c.sig, proc(bf: ^Fiber, c: ^Ctx) {
+            fiber_defer(bf, proc(c: ^Ctx) {
+                c.primary_defer_ran = true
+            }, c)
+            yield(bf)
+            fail(bf)
+        }, c)
+    }, &ctx)
+
+    for _ in 0 ..< 4 {
+        scheduler_step(&sched, 0.016)
+    }
+
+    testing.expect_value(t, ctx.primary_defer_ran, true)
+    testing.expect_value(t, ctx.outcome, Signal_Outcome.Failed)
+    testing.expect_value(t, signal_has_waiters(&sig), false)
+    testing.expect_value(t, scheduler_has_active(&sched), false)
+}
+
+@(test)
+test_boss_demo_coroutine_patterns_stress :: proc(t: ^testing.T) {
+    CLOCK_PLAYER :: Clock_ID(3)
+
+    Sim :: struct {
+        sched:         Scheduler,
+        boss_scope:    Fiber_Scope,
+        player_scope:  Fiber_Scope,
+        vfx_scope:     Fiber_Scope,
+        stun_signal:   Signal,
+        boss_hp:       f32,
+        boss_phase:    int,
+        boss_alive:    bool,
+        boss_stunned:  bool,
+        shield_alpha:  f32,
+        player_speed:  f32,
+        is_dashing:    bool,
+        can_dash:      bool,
+        shake_handle:  Fiber_Handle,
+        shake_power:   f32,
+        camera_offset: f32,
+    }
+
+    sim: Sim
+    for _ in 0 ..< 3 {
+        scheduler_init(&sim.sched)
+        sim.boss_scope = {}
+        sim.player_scope = {}
+        sim.vfx_scope = {}
+        signal_init(&sim.stun_signal)
+        sim.boss_hp = 1000.0
+        sim.boss_phase = 1
+        sim.boss_alive = true
+        sim.boss_stunned = false
+        sim.shield_alpha = 0.0
+        sim.player_speed = 320.0
+        sim.is_dashing = false
+        sim.can_dash = true
+        sim.shake_handle = 0
+        sim.shake_power = 0.0
+        sim.camera_offset = 0.0
+
+        spawn_ptr(&sim.sched, proc(f: ^Fiber, s: ^Sim) {
+            s.boss_phase = 1
+            race_with(f, s,
+                proc(cf: ^Fiber, s: ^Sim) {
+                    for s.boss_hp > 700.0 && s.boss_alive {
+                        yield(cf)
+                    }
+                },
+                proc(cf: ^Fiber, s: ^Sim) {
+                    for s.boss_hp > 700.0 && s.boss_alive {
+                        out := with_signal(cf, &s.stun_signal, proc(af: ^Fiber, s: ^Sim) {
+                            sync_with(af, s,
+                                proc(bf: ^Fiber, s: ^Sim) {
+                                    for s.boss_alive { wait(bf, 0.25) }
+                                },
+                                proc(bf: ^Fiber, s: ^Sim) {
+                                    for s.boss_alive { wait(bf, 0.4) }
+                                },
+                            )
+                        }, s)
+                        if out == .Interrupted && s.boss_hp > 700.0 && s.boss_alive {
+                            s.boss_stunned = true
+                            fiber_defer(cf, proc(s: ^Sim) { s.boss_stunned = false }, s)
+                            wait(cf, 1.5)
+                            fiber_defer_run_top(cf)
+                        }
+                    }
+                },
+            )
+            if !s.boss_alive do return
+
+            s.boss_phase = 2
+            fiber_defer(f, proc(s: ^Sim) { s.shield_alpha = 0.0 }, s)
+            s.shield_alpha = 0.85
+            wait(f, 0.5)
+            fiber_defer_run_top(f)
+            if !s.boss_alive do return
+
+            if s.boss_hp > 350.0 && s.boss_alive {
+                race_with(f, s,
+                    proc(cf: ^Fiber, s: ^Sim) {
+                        for s.boss_hp > 350.0 && s.boss_alive { yield(cf) }
+                    },
+                    proc(cf: ^Fiber, s: ^Sim) {
+                        for s.boss_alive { wait(cf, 0.2) }
+                    },
+                )
+            }
+            if !s.boss_alive do return
+
+            s.boss_phase = 3
+            for s.boss_alive {
+                yield(f)
+            }
+        }, &sim, scope = &sim.boss_scope, clock = CLOCK_SIM)
+
+        spawn_ptr(&sim.sched, proc(f: ^Fiber, s: ^Sim) {
+            s.can_dash = false
+            s.is_dashing = true
+            s.player_speed = 320.0 * 3.2
+            fiber_defer(f, proc(s: ^Sim) {
+                s.player_speed = 320.0
+                s.is_dashing = false
+                s.can_dash = true
+            }, s)
+            wait(f, 0.18)
+            s.player_speed = 320.0
+            s.is_dashing = false
+            wait(f, 0.8)
+            fiber_defer_run_top(f)
+        }, &sim, scope = &sim.player_scope, clock = CLOCK_PLAYER)
+
+        clock_advance(&sim.sched, CLOCK_PLAYER, 1.0 / 60.0)
+        clock_advance(&sim.sched, CLOCK_SIM, 1.0 / 60.0)
+        scheduler_run(&sim.sched)
+        testing.expect_value(t, sim.is_dashing, true)
+        testing.expect(t, signal_has_waiters(&sim.stun_signal), "Phase 1 must listen for EMP stun")
+
+        clock_set_paused(&sim.sched, CLOCK_SIM, true)
+        clock_set_paused(&sim.sched, CLOCK_PLAYER, true)
+        for _ in 0 ..< 5 {
+            clock_advance(&sim.sched, CLOCK_REAL, 0.1)
+            scheduler_run(&sim.sched)
+        }
+        testing.expect_value(t, sim.is_dashing, true)
+        clock_set_paused(&sim.sched, CLOCK_SIM, false)
+        clock_set_paused(&sim.sched, CLOCK_PLAYER, false)
+
+        signal_emit(&sim.sched, &sim.stun_signal)
+        clock_advance(&sim.sched, CLOCK_PLAYER, 1.0 / 60.0)
+        clock_advance(&sim.sched, CLOCK_SIM, 1.0 / 60.0)
+        scheduler_run(&sim.sched)
+        testing.expect_value(t, sim.boss_stunned, true)
+
+        sim.boss_hp = 300.0
+        for _ in 0 ..< 40 {
+            clock_advance(&sim.sched, CLOCK_PLAYER, 1.0 / 60.0)
+            clock_advance(&sim.sched, CLOCK_SIM, 1.0 / 60.0)
+            scheduler_run(&sim.sched)
+        }
+        testing.expect_value(t, sim.boss_stunned, false)
+        testing.expect_value(t, sim.boss_phase, 3)
+        testing.expect_value(t, sim.shield_alpha, f32(0.0))
+
+        sim.boss_alive = false
+        scope_cancel(&sim.sched, &sim.player_scope)
+        scope_cancel(&sim.sched, &sim.boss_scope)
+        scope_cancel(&sim.sched, &sim.vfx_scope)
+        testing.expect_value(t, sim.player_speed, f32(320.0))
+        testing.expect_value(t, sim.is_dashing, false)
+        testing.expect_value(t, sim.can_dash, true)
+        testing.expect_value(t, scheduler_has_active(&sim.sched), false)
+
+        signal_destroy(&sim.stun_signal)
+        scope_destroy(&sim.sched, &sim.vfx_scope)
+        scope_destroy(&sim.sched, &sim.player_scope)
+        scope_destroy(&sim.sched, &sim.boss_scope)
+        scheduler_destroy(&sim.sched)
+    }
+}

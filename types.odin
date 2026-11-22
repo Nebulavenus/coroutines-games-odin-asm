@@ -59,6 +59,7 @@ Clock_Domain :: struct {
     time:         f64,            // Accumulated seconds on this clock domain
     delta:        f32,            // Last step delta (seconds) on this clock domain
     steps:        u64,            // Total discrete steps/frames advanced on this clock domain
+    paused:       bool,
     timer_heap:   [dynamic]^Fiber,// Min-Heap sorted by wake_time
     step_waiters: [dynamic]^Fiber,// Fibers waiting on wake_step
 }
@@ -330,6 +331,7 @@ Scheduler :: struct {
     // Execution Context
     scheduler_sp:          rawptr, // Saved %rsp of the scheduler main thread
     current_fiber:         ^Fiber, // Currently executing fiber
+    pending_abort_root:    ^Fiber,
 
     // Concurrency Coordinator Generation Counter & Fair Select Cursor
     next_coord_id:         u64,

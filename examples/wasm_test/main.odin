@@ -816,6 +816,83 @@ test_wasm_hardened_sync_and_outcomes :: proc() {
     fmt.println("OK")
 }
 
+test_wasm_pause_self_cancel_and_asyncify_usage :: proc() {
+    fmt.print("  [Test 19] Clock Pause, Self/Ancestor Cancel & Asyncify Stack Usage... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    State :: struct {
+        sim_ran:      bool,
+        real_ran:     bool,
+        self_defer:   bool,
+        self_after:   bool,
+        parent_defer: bool,
+        child_defer:  bool,
+        child_after:  bool,
+        scope:        coroutine.Fiber_Scope,
+    }
+    st: State
+
+    coroutine.clock_set_paused(&sched, coroutine.CLOCK_SIM, true)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        s.sim_ran = true
+    }, &st, clock = coroutine.CLOCK_SIM)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        s.real_ran = true
+    }, &st, clock = coroutine.CLOCK_REAL)
+
+    coroutine.clock_advance(&sched, coroutine.CLOCK_REAL, 0.016)
+    coroutine.scheduler_run(&sched)
+    assert(st.real_ran && !st.sim_ran, "Paused CLOCK_SIM must not run while CLOCK_REAL runs")
+
+    coroutine.clock_set_paused(&sched, coroutine.CLOCK_SIM, false)
+    coroutine.scheduler_step(&sched, 0.016, coroutine.CLOCK_SIM)
+    assert(st.sim_ran, "Unpaused CLOCK_SIM fiber must resume cleanly")
+
+    h_self := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        coroutine.fiber_defer(f, proc(s: ^State) { s.self_defer = true }, s)
+        coroutine.fiber_cancel(f, f.handle)
+        s.self_after = true
+    }, &st)
+
+    h_usage := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber) {
+        coroutine.wait(f, 5.0)
+    })
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        coroutine.fiber_defer(f, proc(s: ^State) { s.parent_defer = true }, s)
+        coroutine.sync_with(f, s,
+            proc(cf: ^coroutine.Fiber, s: ^State) {
+                coroutine.fiber_defer(cf, proc(s: ^State) { s.child_defer = true }, s)
+                coroutine.yield(cf)
+                coroutine.scope_cancel(cf, &s.scope)
+                s.child_after = true
+            },
+            proc(cf: ^coroutine.Fiber, s: ^State) {
+                coroutine.wait(cf, 5.0)
+            },
+        )
+    }, &st, scope = &st.scope)
+
+    coroutine.scheduler_step(&sched, 0.016)
+    f_usage := coroutine.fiber_find_by_handle(&sched, h_usage)
+    assert(f_usage != nil, "Sleeping fiber must be alive")
+    used, total := coroutine.fiber_calc_stack_usage(f_usage)
+    assert(total == coroutine.WASM_ASYNCIFY_STORAGE_SIZE, "Wasm stack total must match WASM_ASYNCIFY_STORAGE_SIZE")
+    assert(used > 0 && used <= total, "Suspended Wasm fiber must report non-zero Asyncify stack usage")
+
+    coroutine.scheduler_step(&sched, 0.016)
+    assert(!coroutine.fiber_is_alive(&sched, h_self), "Self-cancelled fiber must not be alive")
+    assert(st.self_defer && !st.self_after, "Self-cancel must run defer and stop execution")
+    assert(st.parent_defer && st.child_defer && !st.child_after, "Ancestor scope_cancel must abort full tree cleanly")
+    assert(coroutine.scope_is_empty(&st.scope), "Scope must be empty after ancestor cancel")
+
+    coroutine.fiber_cancel(&sched, h_usage)
+    coroutine.scope_destroy(&sched, &st.scope)
+    fmt.println("OK")
+}
+
 // ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
@@ -843,9 +920,10 @@ main :: proc() {
     test_yield_now_same_tick()
     test_task_futures_and_combinator_helpers()
     test_wasm_hardened_sync_and_outcomes()
+    test_wasm_pause_self_cancel_and_asyncify_usage()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 18 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 19 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

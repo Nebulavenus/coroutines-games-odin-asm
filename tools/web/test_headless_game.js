@@ -32,6 +32,9 @@ async function run() {
     let lastFillStyle = '';
     let lastStrokeStyle = '';
 
+    let nanTextDetected = null;
+    let debuggerTextSeen = false;
+
     const mockCtx = {
         get fillStyle() { return lastFillStyle; },
         set fillStyle(val) {
@@ -58,7 +61,17 @@ async function run() {
         stroke: () => { drawCalls++; },
         moveTo: () => {},
         lineTo: () => { drawCalls++; },
-        fillText: () => { drawCalls++; },
+        fillText: (text) => {
+            drawCalls++;
+            if (typeof text === 'string') {
+                if (text.includes('NaN') || text.includes('Inf')) {
+                    nanTextDetected = text;
+                }
+                if (text.includes('COROUTINE HIERARCHY DEBUGGER')) {
+                    debuggerTextSeen = true;
+                }
+            }
+        },
         measureText: (text) => ({ width: text.length * 10 }),
         save: () => {},
         restore: () => {},
@@ -149,13 +162,29 @@ async function run() {
     console.log(`[Headless Test] Stepping simulation for ${targetFrames} frames (${(targetFrames / 60.0).toFixed(1)}s @ 60 FPS)...`);
     const dt = 1.0 / 60.0;
     for (let frame = 1; frame <= targetFrames; frame++) {
+        if (frame === 10) raylib.injectKeyPress(72); // H: open coroutine debugger
+        if (frame === 20) raylib.injectKeyPress(32); // SPACE: player dash
+        if (frame === 30) raylib.injectKeyPress(69); // E: EMP parry stun
+        if (frame === 40) raylib.setKeyDown(81, true); // Q: hold slowmo
+        if (frame === 90) raylib.setKeyDown(81, false);
+        if (frame === 100) raylib.injectKeyPress(80); // P: pause
+        if (frame === 110) raylib.injectKeyPress(78); // N: 1-frame step
+        if (frame === 115) raylib.injectKeyPress(77); // M: 10-frame step
+        if (frame === 120) raylib.injectKeyPress(80); // P: resume
+        if (frame === 500) raylib.injectKeyPress(82); // R: full restart
         game_wasm_step(dt);
     }
     console.log(`[Headless Test] Successfully stepped ${targetFrames} frames. Recorded ${drawCalls} mock draw calls.`);
     if (nonZeroAlphaCount === 0) {
         throw new Error("Render assertion failed: all draw calls rendered with zero alpha (transparent)!");
     }
-    console.log(`[Headless Test] Verified ${nonZeroAlphaCount} opaque/colored drawing operations with visible alpha.`);
+    if (nanTextDetected !== null) {
+        throw new Error(`Render assertion failed: NaN/Inf detected in rendered text: "${nanTextDetected}"`);
+    }
+    if (targetFrames >= 10 && !debuggerTextSeen) {
+        throw new Error("Render assertion failed: Coroutine Hierarchy Debugger overlay did not render on H press!");
+    }
+    console.log(`[Headless Test] Verified ${nonZeroAlphaCount} opaque/colored drawing operations with visible alpha (0 NaN/Inf).`);
 
     console.log("[Headless Test] Calling game_wasm_destroy()...");
     game_wasm_destroy();

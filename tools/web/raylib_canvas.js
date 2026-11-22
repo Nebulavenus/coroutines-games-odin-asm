@@ -234,6 +234,19 @@ export function createRaylibWeb(canvas, memoryGetter) {
         setFrameDt: (dt) => {
             lastFrameTime = dt;
             if (dt > 0) fps = Math.round(1.0 / dt);
+        },
+        injectKeyPress: (code) => {
+            keysPressed.add(code);
+        },
+        setKeyDown: (code, isDown) => {
+            if (isDown) {
+                if (!keysDown.has(code)) {
+                    keysPressed.add(code);
+                }
+                keysDown.add(code);
+            } else {
+                keysDown.delete(code);
+            }
         }
     };
 }

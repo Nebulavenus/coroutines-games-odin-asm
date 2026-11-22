@@ -31,6 +31,7 @@ scheduler_init :: proc(
 
     sched.scheduler_sp = nil
     sched.current_fiber = nil
+    sched.pending_abort_root = nil
     sched.watchdog_enabled = WATCHDOG_ENABLED
     sched.watchdog_max_slice_ms = WATCHDOG_MAX_SLICE_MS
 }
@@ -225,11 +226,26 @@ fiber_unlink_child :: proc(parent: ^Fiber, child: ^Fiber) {
 // Multi-Domain Dispatch Loop & Pluggable Drivers
 // ============================================================================
 
+clock_set_paused :: proc(sched: ^Scheduler, clock_id: Clock_ID, paused: bool) {
+    if sched == nil do return
+    cid := int(clock_id)
+    if cid < 0 || cid >= MAX_CLOCKS do cid = 0
+    sched.clocks[cid].paused = paused
+}
+
+clock_is_paused :: #force_inline proc "contextless" (sched: ^Scheduler, clock_id: Clock_ID) -> bool {
+    if sched == nil do return false
+    cid := int(clock_id)
+    if cid < 0 || cid >= MAX_CLOCKS do cid = 0
+    return sched.clocks[cid].paused
+}
+
 clock_advance :: proc(sched: ^Scheduler, clock_id: Clock_ID, dt: f32, steps: u64 = 1) {
     if sched == nil do return
     cid := int(clock_id)
     if cid < 0 || cid >= MAX_CLOCKS do cid = 0
     c := &sched.clocks[cid]
+    if c.paused do return
 
     safe_dt := dt
     if safe_dt != safe_dt || safe_dt < 0.0 {
@@ -301,10 +317,19 @@ scheduler_run :: proc(sched: ^Scheduler) {
         resize(&sched.async_waiters, write_idx)
     }
 
+    write_idx := 0
     for i := 0; i < len(sched.ready_queue); i += 1 {
         h := sched.ready_queue[i]
         f := fiber_find_by_handle(sched, h)
         if f == nil || f.status != .Ready do continue
+
+        cid := int(f.clock_id)
+        if cid < 0 || cid >= MAX_CLOCKS do cid = 0
+        if sched.clocks[cid].paused {
+            sched.ready_queue[write_idx] = h
+            write_idx += 1
+            continue
+        }
 
         f.status = .Running
         sched.current_fiber = f
@@ -323,13 +348,20 @@ scheduler_run :: proc(sched: ^Scheduler) {
 
         sched.current_fiber = nil
 
+        if sched.pending_abort_root != nil {
+            abort_root := sched.pending_abort_root
+            sched.pending_abort_root = nil
+            fiber_abort_tree(sched, abort_root)
+            continue
+        }
+
         // Reload status with volatile semantics to prevent compiler SSA caching across ASM switch
         status := intrinsics.volatile_load(&f.status)
         if status == .Completed || status == .Failed || status == .Aborted {
             fiber_cleanup_and_recycle(sched, f)
         }
     }
-    clear(&sched.ready_queue)
+    resize(&sched.ready_queue, write_idx)
 }
 
 scheduler_has_active :: #force_inline proc "contextless" (sched: ^Scheduler) -> bool {
@@ -347,6 +379,34 @@ scheduler_step :: proc(sched: ^Scheduler, dt: f32, clock_id: Clock_ID = CLOCK_SI
 // Completion & Cancellation
 // ============================================================================
 
+@(private="file")
+abort_coord_siblings :: proc(sched: ^Scheduler, parent: ^Fiber, winner: ^Fiber, coord: ^Join_Coordinator) {
+    if parent == nil do return
+    for {
+        victim: ^Fiber = nil
+        child := parent.first_child
+        for child != nil {
+            if child != winner && child.join_coord == coord && child.join_coord_id == coord.id {
+                victim = child
+                break
+            }
+            child = child.next_sibling
+        }
+        if victim == nil do break
+        fiber_abort_tree(sched, victim)
+    }
+}
+
+@(private="file")
+fiber_is_ancestor_or_self :: proc "contextless" (ancestor: ^Fiber, node: ^Fiber) -> bool {
+    cur := node
+    for cur != nil {
+        if cur == ancestor do return true
+        cur = cur.parent
+    }
+    return false
+}
+
 fiber_on_finish :: proc(fiber: ^Fiber) {
     if fiber.join_coord != nil {
         coord := fiber.join_coord
@@ -361,14 +421,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 
                     parent := coord.parent
                     if parent != nil {
-                        child := parent.first_child
-                        for child != nil {
-                            next := child.next_sibling
-                            if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
-                                fiber_abort_tree(fiber.sched, child)
-                            }
-                            child = next
-                        }
+                        abort_coord_siblings(fiber.sched, parent, fiber, coord)
 
                         if parent.status == .Suspended_Join {
                             parent.status = .Ready
@@ -439,14 +492,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 
                         parent := coord.parent
                         if parent != nil {
-                            child := parent.first_child
-                            for child != nil {
-                                next := child.next_sibling
-                                if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
-                                    fiber_abort_tree(fiber.sched, child)
-                                }
-                                child = next
-                            }
+                            abort_coord_siblings(fiber.sched, parent, fiber, coord)
 
                             if parent.status == .Suspended_Join {
                                 parent.status = .Ready
@@ -460,14 +506,7 @@ fiber_on_finish :: proc(fiber: ^Fiber) {
 
                         parent := coord.parent
                         if parent != nil {
-                            child := parent.first_child
-                            for child != nil {
-                                next := child.next_sibling
-                                if child != fiber && child.join_coord == coord && child.join_coord_id == coord.id {
-                                    fiber_abort_tree(fiber.sched, child)
-                                }
-                                child = next
-                            }
+                            abort_coord_siblings(fiber.sched, parent, fiber, coord)
 
                             if parent.status == .Suspended_Join {
                                 parent.status = .Ready
@@ -546,6 +585,15 @@ fiber_cleanup_and_recycle :: proc(sched: ^Scheduler, fiber: ^Fiber) {
 
 fiber_abort_tree :: proc(sched: ^Scheduler, root: ^Fiber) {
     if root == nil || root.status == .Unused || root.status == .Aborted do return
+
+    if sched.current_fiber != nil && fiber_is_ancestor_or_self(root, sched.current_fiber) {
+        cur := sched.current_fiber
+        sched.pending_abort_root = root
+        cur.stored_context = context
+        fiber_context_switch(&cur.saved_sp, sched.scheduler_sp)
+        context = cur.stored_context
+        return
+    }
 
     prev_status := root.status
     root.status = .Aborted
@@ -677,13 +725,31 @@ scope_wake_waiters :: proc(scope: ^Fiber_Scope) {
 
 scope_cancel_sched :: proc(sched: ^Scheduler, scope: ^Fiber_Scope) -> (cancelled_count: int) {
     if scope == nil || sched == nil do return 0
-    for scope.head != nil {
-        fiber := scope.head
-        if fiber_cancel_sched(sched, fiber.handle) {
+    deferred_self: ^Fiber = nil
+    for {
+        target: ^Fiber = nil
+        cur := scope.head
+        for cur != nil {
+            if sched.current_fiber != nil && fiber_is_ancestor_or_self(cur, sched.current_fiber) {
+                if deferred_self == nil || fiber_is_ancestor_or_self(cur, deferred_self) {
+                    deferred_self = cur
+                }
+                cur = cur.next_in_scope
+                continue
+            }
+            target = cur
+            break
+        }
+        if target == nil do break
+        if fiber_cancel_sched(sched, target.handle) {
             cancelled_count += 1
         } else {
-            // Fallback: if fiber_cancel did not detach, detach manually to prevent infinite loop
-            fiber_scope_detach(fiber)
+            fiber_scope_detach(target)
+        }
+    }
+    if deferred_self != nil && deferred_self.scope == scope {
+        if fiber_cancel_sched(sched, deferred_self.handle) {
+            cancelled_count += 1
         }
     }
     scope_wake_waiters(scope)

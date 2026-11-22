@@ -82,23 +82,35 @@ fiber_watermark_stack :: proc(fiber: ^Fiber) {
 }
 
 fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes: uint) {
-    if fiber == nil || fiber.stack_base == nil do return 0, 0
-    total_bytes = fiber.stack_size
-
-    if !fiber_check_canary(fiber) {
-        return total_bytes, total_bytes
-    }
-
-    bytes := ([^]u8)(fiber.stack_base)
-    start_offset := CANARY_SIZE
-
-    for i in start_offset ..< int(fiber.stack_size) {
-        if bytes[i] != STACK_WATERMARK {
-            used_bytes = fiber.stack_size - uint(i)
-            return used_bytes, total_bytes
+    if fiber == nil do return 0, 0
+    when ODIN_ARCH == .wasm32 {
+        total_bytes = ASYNCIFY_STORAGE_SIZE
+        base := uintptr(&fiber.asyncify_buf.storage[0])
+        top := uintptr(fiber.asyncify_buf.top)
+        if fiber.wasm_started && top >= base {
+            used := uint(top - base)
+            used_bytes = min(used, total_bytes)
         }
+        return used_bytes, total_bytes
+    } else {
+        if fiber.stack_base == nil do return 0, 0
+        total_bytes = fiber.stack_size
+
+        if !fiber_check_canary(fiber) {
+            return total_bytes, total_bytes
+        }
+
+        bytes := ([^]u8)(fiber.stack_base)
+        start_offset := CANARY_SIZE
+
+        for i in start_offset ..< int(fiber.stack_size) {
+            if bytes[i] != STACK_WATERMARK {
+                used_bytes = fiber.stack_size - uint(i)
+                return used_bytes, total_bytes
+            }
+        }
+        return 0, total_bytes
     }
-    return 0, total_bytes
 }
 
 @(private="file")
