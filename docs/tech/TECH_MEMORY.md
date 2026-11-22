@@ -35,8 +35,8 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 ┌─────────────────────────────────────────────────────────────┐
 │                        Fiber Struct                         │
 ├────────────────────────────────┬────────────────────────────┤
-│ handle: Fiber_Handle (u32)     │ Packed index (16) | gen (16│
-│ pool_index: u16, gen: u16      │ Fixed array slot & cycle   │
+│ handle: Fiber_Handle (u64)     │ Packed index (32) | gen (32│
+│ pool_index: u32, gen: u32      │ Fixed array slot & cycle   │
 │ status: Fiber_Status           │ Running, Ready, Sleeping...│
 │ saved_sp: rawptr               │ CPU stack pointer at yield │
 │ entry_proc: proc(f, data)      │ Entry procedure pointer    │
@@ -63,7 +63,7 @@ Each `Fiber` struct is a self-contained descriptor containing execution state, c
 ```
 
 > [!NOTE]
-> For a full breakdown of the 32-bit bitwise handle layout and intrusive doubly-linked wait queue mechanics, see [`docs/tech/TECH_SDS_AND_HANDLES.md`](TECH_SDS_AND_HANDLES.md).
+> For a full breakdown of the 64-bit bitwise handle layout and intrusive doubly-linked wait queue mechanics, see [`docs/tech/TECH_SDS_AND_HANDLES.md`](TECH_SDS_AND_HANDLES.md).
 
 ---
 
@@ -185,7 +185,7 @@ Pool_Stats :: struct {
     free_fibers:      int,  // Idle stacks in free-list
     slabs_count:      int,  // Number of 1MB slabs committed
     stack_size_bytes: uint, // Configured size per stack (e.g. 32768)
-    total_memory_kb:  uint, // Total committed memory in KB
+    total_memory_kb:  uint, // Total committed memory (stacks + Fiber structs) in KB
 }
 
 stats := coroutine.scheduler_pool_stats(&sched)

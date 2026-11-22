@@ -23,6 +23,9 @@ NATIVE_SOURCE_FILES = [
     "asm_amd64.odin",
     "asm_arm64.odin",
     "asm_riscv64.odin",
+    "pool_vmem_windows.odin",
+    "pool_vmem_posix.odin",
+    "pool_vmem_other.odin",
     "pool.odin",
     "scheduler.odin",
     "api.odin",
@@ -32,6 +35,7 @@ WASM_SOURCE_FILES = [
     "config.odin",
     "types.odin",
     "asm_wasm32.odin",
+    "pool_vmem_other.odin",
     "pool.odin",
     "scheduler.odin",
     "api.odin",
@@ -42,10 +46,17 @@ UNIFIED_IMPORTS = [
     'import "base:intrinsics"',
     'import "core:fmt"',
     'import "core:time"',
-    'import "core:math"',
     'import "core:mem"',
     'import win32 "core:sys/windows"',
     'import "core:sys/posix"',
+]
+
+WASM_IMPORTS = [
+    'import "base:runtime"',
+    'import "base:intrinsics"',
+    'import "core:fmt"',
+    'import "core:time"',
+    'import "core:mem"',
 ]
 
 HEADER_TEMPLATE_NATIVE = """#+build !js
@@ -116,13 +127,13 @@ def clean_file_content(content: str) -> str:
     return result
 
 
-def build_amalgamation(root_dir: Path, source_files: list[str], header_template: str, output_path: Path) -> int:
+def build_amalgamation(root_dir: Path, source_files: list[str], header_template: str, imports: list[str], output_path: Path) -> int:
     """Helper to assemble a set of source files into a target destination."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     header = header_template.format(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        imports="\n".join(UNIFIED_IMPORTS),
+        imports="\n".join(imports),
     )
 
     sections = [header]
@@ -167,11 +178,11 @@ def amalgamate(root_dir: Path, target: Path) -> int:
     native_out = dist_dir / "coroutine.odin"
     wasm_out = dist_dir / "coroutine_wasm32.odin"
 
-    ret = build_amalgamation(root_dir, NATIVE_SOURCE_FILES, HEADER_TEMPLATE_NATIVE, native_out)
+    ret = build_amalgamation(root_dir, NATIVE_SOURCE_FILES, HEADER_TEMPLATE_NATIVE, UNIFIED_IMPORTS, native_out)
     if ret != 0:
         return ret
 
-    ret = build_amalgamation(root_dir, WASM_SOURCE_FILES, HEADER_TEMPLATE_WASM, w_out := wasm_out)
+    ret = build_amalgamation(root_dir, WASM_SOURCE_FILES, HEADER_TEMPLATE_WASM, WASM_IMPORTS, wasm_out)
     if ret != 0:
         return ret
 

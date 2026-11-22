@@ -1,7 +1,5 @@
 package coroutine
 
-import "base:runtime"
-
 // ============================================================================
 // Low-Level ASM Context Switch Implementation (ARM64 / AArch64)
 // ============================================================================

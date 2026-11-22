@@ -25,8 +25,8 @@ In real-time game engines, physics simulators, and high-frequency network server
 │    & Presets System                  │ buffers, and tick frequencies in one │
 │                                      │ config module with -define overrides │
 ├──────────────────────────────────────┼──────────────────────────────────────┤
-│ 2. Packed Generational Handles       │ 32-bit packed integer (16-bit slot,  │
-│    (16-bit Index | 16-bit Gen)       │ 16-bit gen) delivering O(1) single-  │
+│ 2. Packed Generational Handles       │ 64-bit packed integer (32-bit slot,  │
+│    (32-bit Index | 32-bit Gen)       │ 32-bit gen) delivering O(1) single-  │
 │                                      │ instruction lookups with ABA safety. │
 ├──────────────────────────────────────┼──────────────────────────────────────┤
 │ 3. Intrusive Waiter Queues           │ Doubly-linked intrusive pointers     │
@@ -45,15 +45,15 @@ In real-time game engines, physics simulators, and high-frequency network server
 ### 2.1 The Problem with Linear Scans & Bare Pointers
 Using raw pointers (`^Fiber`) across long-lived systems or asynchronous jobs risks **use-after-free** crashes if a fiber finishes and its slab memory is reused. Conversely, traditional generational handle tables often required linear searches ($O(N)$) or auxiliary sparse lookup maps.
 
-### 2.2 32-Bit Bitwise Packed Layout
-The engine packs both the pool slot index and the generational lifecycle counter into a compact, distinct 32-bit integer:
+### 2.2 64-Bit Bitwise Packed Layout
+The engine packs both the pool slot index and the generational lifecycle counter into a distinct 64-bit integer:
 
 ```
- 31                          16 15                           0
+ 63                          32 31                           0
 ┌──────────────────────────────┬──────────────────────────────┐
 │     Generation Counter       │       Pool Slot Index        │
-│          (16 bits)           │          (16 bits)           │
-│   Range: 1 .. 65,535         │    Range: 0 .. 65,535 slots  │
+│          (32 bits)           │          (32 bits)           │
+│   Range: 1 .. 4,294,967,295  │  Range: 0 .. 4,294,967,295   │
 └──────────────────────────────┴──────────────────────────────┘
 ```
 
@@ -61,24 +61,24 @@ The engine packs both the pool slot index and the generational lifecycle counter
 All packing and unpacking procedures are declared `#force_inline proc "contextless"` with zero function call overhead:
 
 ```odin
-Fiber_Handle :: distinct u32
+Fiber_Handle :: distinct u64
 
-fiber_handle_pack :: #force_inline proc "contextless" (index: u16, gen: u16) -> Fiber_Handle {
-    return Fiber_Handle(u32(index) | (u32(gen) << 16))
+fiber_handle_pack :: #force_inline proc "contextless" (index: u32, gen: u32) -> Fiber_Handle {
+    return Fiber_Handle(u64(index) | (u64(gen) << 32))
 }
 
-fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
-    return u16(u32(h) & 0xFFFF)
+fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
+    return u32(u64(h) & 0xFFFF_FFFF)
 }
 
-fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
-    return u16((u32(h) >> 16) & 0xFFFF)
+fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
+    return u32((u64(h) >> 32) & 0xFFFF_FFFF)
 }
 ```
 
 ### 2.4 $O(1)$ Single-Instruction Slot Lookup
 To look up, validate, or cancel a fiber by its handle:
-1. Extract the 16-bit slot index: `idx := int(fiber_handle_index(handle))`.
+1. Extract the 32-bit slot index: `idx := int(fiber_handle_index(handle))`.
 2. Perform direct bounds-checked array indexing into the pool: `f := pool.all_fibers[idx]`.
 3. Verify that `f.handle == handle && f.status != .Unused`.
 
@@ -100,7 +100,7 @@ fiber_find_by_handle :: proc(sched: ^Scheduler, handle: Fiber_Handle) -> ^Fiber 
 ### 2.5 ABA Safety & Lifecycle Wraparound
 - **Allocation**: When a fiber is preallocated, it is assigned its permanent array index (`fiber.pool_index`) and initialized with `generation = 1`.
 - **Acquisition**: `fiber.handle = fiber_handle_pack(fiber.pool_index, fiber.generation)`.
-- **Recycling**: When a fiber completes, `fiber_pool_recycle` increments `fiber.generation += 1`. If `generation == 0` (overflow at $2^{16}$ recycles), it wraps to `1` (keeping `0` as an invalid sentinel).
+- **Recycling**: When a fiber completes, `fiber_pool_recycle` increments `fiber.generation += 1`. If `generation == 0` (overflow at $2^{32}$ recycles), it wraps to `1` (keeping `0` as an invalid sentinel).
 - **Result**: Any old handle held by gameplay scripts or timers immediately fails handle validation in $O(1)$ time, guaranteeing absolute use-after-free and ABA safety.
 
 ---
@@ -203,7 +203,7 @@ sync.mutex_lock(f, &m)
 | :--- | :--- | :---: | :---: | :---: |
 | `Signal` / `Event(T)` | `waiters: Wait_Queue` | **16 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Scope` | `head: ^Fiber, tail: ^Fiber, count: int` | **24 bytes** | **Yes (100%)** | **Yes** |
-| `Fiber_Mutex` (`sync/`) | `locked: bool, owner: Fiber_Handle, waiters: Wait_Queue` | **24 bytes** | **Yes (100%)** | **Yes** |
+| `Fiber_Mutex` (`sync/`) | `locked: bool, owner: Fiber_Handle, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
 | `Fiber_Semaphore` (`sync/`)| `permits: int, max_permits: int, waiters: Wait_Queue` | **32 bytes** | **Yes (100%)** | **Yes** |
 
 ### 4.1 Intrusive `Fiber_Scope` Doubly-Linked List (Zero-Allocation Scopes)
@@ -287,6 +287,6 @@ ALL 6 BENCHMARKS COMPLETED WITH ZERO RUNTIME ALLOCATIONS IN STEADY-STATE.
 ## 7. Summary of Key Developer Guidelines
 
 1. **Rely on ZII**: Declare synchronization primitives directly in your gameplay structs without boilerplate init procedures.
-2. **Pass Handles Across Systems**: Use `Fiber_Handle` (32-bit value) instead of raw `^Fiber` pointers for persistent task references.
+2. **Pass Handles Across Systems**: Use `Fiber_Handle` (64-bit value) instead of raw `^Fiber` pointers for persistent task references.
 3. **Customize Tunables via `-define`**: Override stack and payload sizes in your build script (`build.ps1` or `build.bat`) rather than modifying engine source files.
 4. **Leverage Zero-Allocation CSP**: Use `Channel(T)` and `chan_select_recv` for high-throughput messaging without garbage collection overhead.

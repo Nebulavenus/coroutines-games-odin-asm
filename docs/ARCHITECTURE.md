@@ -565,7 +565,7 @@ Fiber_Status :: enum u8 {
 
 ### B. The `Fiber` Structure
 ```odin
-Fiber_Handle :: distinct u32
+Fiber_Handle :: distinct u64
 
 Fiber :: struct {
     // --- Execution Context & Stack ---
@@ -1267,6 +1267,6 @@ Instead of baking hardcoded simulation, real-time, and tick clocks with duplicat
 
 ### J. Centralized Configuration, Packed Generational Handles & Intrusive Futex Queues ([`docs/tech/TECH_SDS_AND_HANDLES.md`](tech/TECH_SDS_AND_HANDLES.md))
 - **Centralized Compile-Time Configuration (`config.odin`)**: All engine tunables (stack sizes, slab counts, payload capacities, temporary arenas, canaries, and `MAX_CLOCKS`) are unified using Odin's `#config` directive.
-- **Packed Generational Handles ($O(1)$ Direct Slot Resolution)**: `Fiber_Handle` packs `u16 slot_index | u16 generation` into a 32-bit integer for $O(1)$ direct array index lookups with 100% ABA and use-after-free protection.
+- **Packed Generational Handles ($O(1)$ Direct Slot Resolution)**: `Fiber_Handle` packs `u32 slot_index | u32 generation` into a 64-bit integer for $O(1)$ direct array index lookups with 100% ABA and use-after-free protection.
 - **Intrusive Waiter Queues (OS Kernel / Futex Pattern)**: Synchronization primitives (`Event(T)`/`Signal` in core, plus `Fiber_Mutex`, `Fiber_Semaphore`, `Channel(T)` in `sync/`) embed doubly-linked intrusive links inside `Fiber` (`next_waiter`, `prev_waiter`). Delivers 100% zero heap allocations, unbounded waiter capacity, true Zero Is Initialization (ZII), and $O(1)$ in-place node removals (`wait_queue_remove`).
 

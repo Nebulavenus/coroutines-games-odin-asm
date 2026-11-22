@@ -26,24 +26,24 @@ Fiber_Status :: enum u8 {
     Aborted,           // Cancelled by parent or sibling race winner
 }
 
-// 32-bit Packed Generational Handle (16-bit Pool Index | 16-bit Generation Counter)
-Fiber_Handle :: distinct u32
+// 64-bit Packed Generational Handle (32-bit Pool Index | 32-bit Generation Counter)
+Fiber_Handle :: distinct u64
 
-fiber_handle_pack :: #force_inline proc "contextless" (index: u16, gen: u16) -> Fiber_Handle {
-    return Fiber_Handle(u32(index) | (u32(gen) << 16))
+fiber_handle_pack :: #force_inline proc "contextless" (index: u32, gen: u32) -> Fiber_Handle {
+    return Fiber_Handle(u64(index) | (u64(gen) << 32))
 }
 
-fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
-    return u16(u32(h) & 0xFFFF)
+fiber_handle_index :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
+    return u32(u64(h) & 0xFFFF_FFFF)
 }
 
-fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u16 {
-    return u16((u32(h) >> 16) & 0xFFFF)
+fiber_handle_gen :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
+    return u32((u64(h) >> 32) & 0xFFFF_FFFF)
 }
 
 fiber_handle_history_slot :: #force_inline proc "contextless" (h: Fiber_Handle) -> u32 {
-    idx := u32(fiber_handle_index(h))
-    gen := u32(fiber_handle_gen(h))
+    idx := fiber_handle_index(h)
+    gen := fiber_handle_gen(h)
     return (idx + gen * 257) % FIBER_HANDLE_HISTORY_CAPACITY
 }
 
@@ -150,8 +150,8 @@ Asyncify_Buffer :: struct {
 Fiber :: struct {
     // --- Execution Context & Stack ---
     handle:           Fiber_Handle,
-    pool_index:       u16,             // Direct index in Fiber_Pool.all_fibers
-    generation:       u16,             // Incremented upon each recycle / reuse
+    pool_index:       u32,             // Direct index in Fiber_Pool.all_fibers
+    generation:       u32,             // Incremented upon each recycle / reuse
     saved_sp:         rawptr,          // Saved stack pointer (%rsp)
     stack_base:       rawptr,          // Lowest memory address of stack
     stack_size:       uint,            // Allocated stack size (e.g. 32KB)

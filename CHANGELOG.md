@@ -37,6 +37,11 @@ All notable changes to this project will be documented in this file.
   - Added deterministic round-robin `Scheduler.select_cursor` in `chan_select_recv` so constantly ready channels at index `0` never starve later channels while preserving lockstep replay determinism.
   - Fixed redundant `stored_context = context` overwrites in `spawn_*` / `branch_scoped_desc` that were clobbering per-fiber `temp_allocator` bindings set by `fiber_pool_acquire`.
   - Enabled full `-define:CORO_TEMP_ARENA_SIZE=0` support (reducing `size_of(Fiber)` by 4 KB) with live arena capacity checks and abort-safe `fiber_defer` heap fallback across `event_wait`, `chan_recv_timeout`, `chan_send_timeout`, and `chan_select_recv`.
+- **64-Bit Generational Handles, OS-Split VMem Helpers & `-vet-unused -vet-shadowing` Cleanliness (`types.odin`, `pool.odin`, `pool_vmem_*.odin`, `api.odin`, `asm_*.odin`, `sync/sync.odin`, `tools/amalgamate.py`)**:
+  - Widened `Fiber_Handle` from `u32` (`u16 index | u16 gen`, 65,535 cap) to `u64` (`u32 index | u32 gen`), eliminating 16-bit slot and generation wraparound limits for long-running servers and 100k+ fiber simulations.
+  - Split platform virtual memory slab allocation into `pool_vmem_windows.odin`, `pool_vmem_posix.odin`, and `pool_vmem_other.odin`, unifying the 3 duplicated slab-init loops in `fiber_pool_grow`, fixing `Pool_Stats.total_memory_kb` to include `Fiber` struct slabs alongside stacks, and making core, `sync/`, tests, and examples pass `-vet-unused -vet-shadowing` cleanly across all 7 targets.
+  - Changed `fiber_spawn_join_child` to take `^Branch_Desc` and eliminated `[2]Branch_Desc` stack copies in `with_timeout`, `with_signal`, and `with_sticky_signal`.
+  - Updated `tools/amalgamate.py` to include `pool_vmem_*.odin`, remove unused `core:math`, and emit clean target-specific imports for `dist/coroutine_wasm32.odin`.
 - **Tests, Distributions & Docs**:
   - Expanded native unit tests to `197` (`146` core + `51` sync, passing both at default 4 KB arena and `-define:CORO_TEMP_ARENA_SIZE=0` with 0 leaks) and WebAssembly suites to `18`; verified all 146 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU).
 

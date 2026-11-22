@@ -623,7 +623,7 @@ test_timer_heap_random_cancellations :: proc(t: ^testing.T) {
     woke: [TOTAL]bool
 
     for i in 0 ..< TOTAL {
-        dur := rand.float32_range(0.1, 2.0)
+        _ = rand.float32_range(0.1, 2.0)
         handles[i] = spawn(&sched, proc(f: ^Fiber, w: ^bool) {
             wait(f, f32(f.start_time) + 0.5)
             w^ = true
@@ -691,7 +691,7 @@ test_fiber_lifecycle_generation_reuse :: proc(t: ^testing.T) {
 
     for cycle := 0; cycle < CYCLES; cycle += 1 {
         count := 0
-        for i in 0 ..< BATCH_SIZE {
+        for _ in 0 ..< BATCH_SIZE {
             spawn(&sched, proc(f: ^Fiber, c: ^int) {
                 local_var := 42
                 yield(f)
@@ -754,7 +754,6 @@ test_10k_yield_loop :: proc(t: ^testing.T) {
 
     ITERATIONS :: 10000
     loop_count := 0
-    canary_intact := false
 
     spawn(&sched, proc(f: ^Fiber, c: ^int) {
         for i in 0 ..< ITERATIONS {
@@ -1253,7 +1252,6 @@ test_with_timeout_proc_overloads :: proc(t: ^testing.T) {
         })
     }, &results)
 
-    speed: f32 = 100.0
     spawn(&sched, proc(f: ^Fiber, res: ^[3]Timeout_Outcome) {
         spd := f32(100.0)
         res[1] = with_timeout(f, 0.5, proc(f: ^Fiber, s: ^f32) {
@@ -1293,7 +1291,7 @@ test_scope_query_helpers :: proc(t: ^testing.T) {
         wait(f, 1.0)
     }, scope = &scope)
 
-    h2 := spawn(&sched, proc(f: ^Fiber) {
+    spawn(&sched, proc(f: ^Fiber) {
         wait(f, 1.0)
     }, scope = &scope)
 
@@ -1360,7 +1358,6 @@ test_scope_wait :: proc(t: ^testing.T) {
     boss_started := false
 
     for i in 0 ..< 3 {
-        idx := i
         spawn(&sched, proc(f: ^Fiber, flag: ^bool) {
             wait(f, f32(1 + f.branch_index) * 0.05)
             flag^ = true
@@ -1492,9 +1489,6 @@ test_fallback_all_failing_and_by_value :: proc(t: ^testing.T) {
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
 
-    all_failed_res: bool = true
-    all_failed_idx: int = 99
-
     spawn(&sched, proc(f: ^Fiber, out: ^[2]int) {
         ok, idx := fallback(f,
             branch(proc(f: ^Fiber) { fail(f) }),
@@ -1511,7 +1505,7 @@ test_fallback_all_failing_and_by_value :: proc(t: ^testing.T) {
     }
     val_res: int = 0
     spawn(&sched, proc(f: ^Fiber, out: ^int) {
-        ok, idx := fallback(f,
+        ok, _ := fallback(f,
             branch(proc(f: ^Fiber, a: Arg) {
                 if a.val < 10 do fail(f)
             }, Arg{val = 5, out = out}),
@@ -2205,7 +2199,7 @@ test_fallback_resilience_after_scope_cancellation :: proc(t: ^testing.T) {
     runs := 0
     fb_proc :: proc(f: ^Fiber, r: ^int) {
         for {
-            succeeded, idx := fallback(f,
+            _, _ = fallback(f,
                 branch(proc(f: ^Fiber) {
                     fail(f)
                 }, name = "Option A"),
@@ -2218,7 +2212,7 @@ test_fallback_resilience_after_scope_cancellation :: proc(t: ^testing.T) {
         }
     }
 
-    h := spawn_ptr(&sched, fb_proc, &runs, scope = &fb_scope)
+    spawn_ptr(&sched, fb_proc, &runs, scope = &fb_scope)
     scheduler_step(&sched, 0.06)
     testing.expect(t, runs >= 1)
 
@@ -2448,7 +2442,7 @@ test_rush_and_fallback_with_signal_interruption :: proc(t: ^testing.T) {
     ctx := Interrupt_Ctx{sig = &interrupt_sig, out = &outcome}
 
     spawn_ptr(&sched, proc(f: ^Fiber, c: ^Interrupt_Ctx) {
-        succeeded, fb_idx := fallback(f,
+        _, _ = fallback(f,
             branch(proc(f: ^Fiber, c: ^Interrupt_Ctx) {
                 winner := race(f,
                     branch(proc(f: ^Fiber) {
@@ -2627,7 +2621,7 @@ test_generational_handle_history_capacity :: proc(t: ^testing.T) {
 
     scheduler_step(&sched, 0.01)
 
-    for h, i in handles {
+    for h in handles {
         status, found := fiber_status(&sched, h)
         testing.expect(t, found, "Handle must be found in extended history")
         testing.expect_value(t, status, Fiber_Status.Completed)
@@ -2756,10 +2750,14 @@ test_plan5_packed_generational_handles_bitwise :: proc(t: ^testing.T) {
     testing.expect_value(t, fiber_handle_index(h2), 512)
     testing.expect_value(t, fiber_handle_gen(h2), 42)
 
-    h_max := fiber_handle_pack(65535, 65535)
-    testing.expect_value(t, fiber_handle_index(h_max), 65535)
-    testing.expect_value(t, fiber_handle_gen(h_max), 65535)
-    testing.expect_value(t, u32(h_max), 0xFFFF_FFFF)
+    h_large := fiber_handle_pack(100_000, 70_000)
+    testing.expect_value(t, fiber_handle_index(h_large), u32(100_000))
+    testing.expect_value(t, fiber_handle_gen(h_large), u32(70_000))
+
+    h_max := fiber_handle_pack(0xFFFF_FFFF, 0xFFFF_FFFF)
+    testing.expect_value(t, fiber_handle_index(h_max), u32(0xFFFF_FFFF))
+    testing.expect_value(t, fiber_handle_gen(h_max), u32(0xFFFF_FFFF))
+    testing.expect_value(t, u64(h_max), u64(0xFFFF_FFFF_FFFF_FFFF))
 }
 
 @(test)
@@ -2809,7 +2807,7 @@ test_plan5_intrusive_wait_queue_operations :: proc(t: ^testing.T) {
 
     dummy_fibers: [10]Fiber
     for i in 0 ..< 10 {
-        dummy_fibers[i].handle = fiber_handle_pack(u16(i), 1)
+        dummy_fibers[i].handle = fiber_handle_pack(u32(i), 1)
     }
 
     for i in 0 ..< 10 {
@@ -3267,7 +3265,7 @@ test_ready_queue_generational_aba_guard :: proc(t: ^testing.T) {
         counts = &exec_counts,
     }
 
-    h1 := spawn_ptr(&sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
+    spawn_ptr(&sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
         c.counts[0] += 1
         fiber_cancel(c.sched, c.target_h)
         spawn_ptr(c.sched, proc(f: ^Fiber, c: ^Spawn_Ctx) {
@@ -4201,8 +4199,6 @@ test_fuzz_deep_cancel_and_pool_exhaustion :: proc(t: ^testing.T) {
 // ============================================================================
 
 run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: int, failed: int) {
-    runner_t: testing.T
-    active_t := t != nil ? t : &runner_t
     tests := []struct{ name: string, fn: proc(^testing.T) } {
         { "test_basic_spawn_and_run", test_basic_spawn_and_run },
         { "test_stack_local_variables_across_yields", test_stack_local_variables_across_yields },

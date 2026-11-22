@@ -297,7 +297,7 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
   - **WebAssembly (`js_wasm32`)**: Native browser and Node.js execution via Binaryen Asyncify with shadow-stack protection.
 - **100% Zero Allocations During Gameplay (True ZII)**:
   - Primitives (`Signal`, `Event(T)`, `Wait_Queue`) use doubly-linked intrusive pointers embedded in `Fiber` (`next_waiter`, `prev_waiter`). Zero heap allocations, unbounded waiter capacity, $O(1)$ in-place node removals, and 100% Zero Is Initialization.
-  - Generational 32-bit handles (`Fiber_Handle`) ensure $O(1)$ lookups with ABA safety.
+  - Generational 64-bit handles (`Fiber_Handle`) ensure $O(1)$ lookups with ABA safety.
   - 128-byte inline value payloads (`spawn_val` / `branch_val`) allow passing values without heap allocation.
 - **Indexed Multi-Domain Engine Clocks (`Clock_Domain`)**:
   - `Scheduler` holds an indexed array of timeline domains (`clocks: [MAX_CLOCKS]Clock_Domain`).

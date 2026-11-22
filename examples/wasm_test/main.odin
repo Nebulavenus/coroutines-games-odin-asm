@@ -411,7 +411,7 @@ test_ticker_zero_drift_and_abort :: proc() {
     scope: coroutine.Fiber_Scope
 
     ticks := 0
-    h := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t_count: ^int) {
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, t_count: ^int) {
         for {
             coroutine.ticker_wait(f, 0.02)
             t_count^ += 1

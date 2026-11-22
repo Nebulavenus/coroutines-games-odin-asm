@@ -152,7 +152,7 @@ When planning fiber density for your game:
 
 ### A. $O(1)$ Direct Array Slot Resolution
 - Traditional handle tables perform $O(N)$ linear scans across the active pool to locate a fiber by handle.
-- The engine's **Packed Generational Handle** (`u16 slot_index | u16 generation`) directly indexes `pool.all_fibers[idx]` in a single instruction, verifying `f.handle == handle && f.status != .Unused`.
+- The engine's **Packed Generational Handle** (`u32 slot_index | u32 generation`) directly indexes `pool.all_fibers[idx]` in a single instruction, verifying `f.handle == handle && f.status != .Unused`.
 - **Result:** $O(1)$ instant lookups for `fiber_is_alive`, `fiber_status`, and `fiber_cancel` with zero search overhead regardless of pool size.
 
 ### B. Doubly-Linked Intrusive Futex Wait Queues

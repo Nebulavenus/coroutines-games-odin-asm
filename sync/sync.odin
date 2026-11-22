@@ -755,7 +755,7 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
                 orig_idx = i,
                 state    = state,
             }
-            coro.fiber_spawn_join_child(f, b_idx, coro.branch_val(proc(child: ^coro.Fiber, e: Select_Entry) {
+            desc := coro.branch_val(proc(child: ^coro.Fiber, e: Select_Entry) {
                 v, recv_ok := chan_recv(child, e.ch)
                 if !recv_ok {
                     coro.fail(child)
@@ -764,7 +764,8 @@ chan_select_recv :: proc(f: ^coro.Fiber, channels: []^Channel($T)) -> (ready_ind
                 e.state.ready_index = e.orig_idx
                 e.state.value = v
                 e.state.ok = true
-            }, entry, name = "Chan Select Watcher"))
+            }, entry, name = "Chan Select Watcher")
+            coro.fiber_spawn_join_child(f, b_idx, &desc)
             b_idx += 1
         }
     }

@@ -393,9 +393,6 @@ boss_attack_loop_phase3 :: proc(f: ^coroutine.Fiber, b: ^Boss) {
 }
 
 boss_master_ai :: proc(f: ^coroutine.Fiber, b: ^Boss) {
-    center_x := f32(SCREEN_WIDTH) / 2.0
-    center_y := f32(180.0)
-
     // ========================================================================
     // PHASE 1: Patrol + Spiral Bullet Barrage (Runs until HP < 700)
     // ========================================================================

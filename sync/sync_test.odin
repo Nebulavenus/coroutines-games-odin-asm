@@ -597,7 +597,6 @@ test_cancel_fiber_waiting_on_semaphore :: proc(t: ^testing.T) {
     semaphore_init(&sem, initial_permits = 0, max_permits = 2)
     defer semaphore_destroy(&sem)
 
-    acquired := false
     h := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, sem: ^Fiber_Semaphore) {
         semaphore_acquire(f, sem)
     }, &sem)
@@ -649,7 +648,7 @@ test_cancel_fiber_waiting_on_mutex :: proc(t: ^testing.T) {
     mutex_init(&m)
     defer mutex_destroy(&m)
 
-    holder := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
+    coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, m: ^Fiber_Mutex) {
         mutex_lock(f, m)
         coro.wait(f, 1.0)
         mutex_unlock(f.sched, m)
@@ -718,7 +717,7 @@ test_multi_channel_select_stress_with_producer_cancellation :: proc(t: ^testing.
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Select_Consumer_Ctx) {
         for {
-            idx, val, ok := chan_select_recv(f, c.chans)
+            _, val, ok := chan_select_recv(f, c.chans)
             if ok {
                 c.items_recv += 1
                 c.last_val = val
@@ -864,7 +863,7 @@ test_chan_destroy_auto_wakes_blocked_receivers :: proc(t: ^testing.T) {
 
     for _ in 0 ..< 4 {
         coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Chan_Unblock_Ctx) {
-            val, ok := chan_recv(f, c.ch)
+            _, ok := chan_recv(f, c.ch)
             c.woken^ += 1
             if ok do c.ok_c^ += 1
         }, &ctx)
@@ -1690,7 +1689,7 @@ test_with_mutex_automatic_abort_cleanup :: proc(t: ^testing.T) {
         }, c)
     }, &ctx, name = "Lock Holder")
 
-    h2 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
+    coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
         with_mutex(f, c.m, proc(f: ^coro.Fiber, c: ^Worker_Ctx) {
             c.comp^ = true
         }, c)
@@ -1733,7 +1732,7 @@ test_with_semaphore_automatic_abort_cleanup :: proc(t: ^testing.T) {
         }, c)
     }, &ctx, name = "Permit Holder")
 
-    h2 := coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
+    coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
         with_semaphore(f, c.sem, proc(f: ^coro.Fiber, c: ^Sem_Ctx) {
             c.comp^ = true
         }, c)
@@ -1784,7 +1783,7 @@ test_chan_select_recv_buffered_priority_over_closed :: proc(t: ^testing.T) {
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Select_Ctx) {
         for {
-            idx, val, ok := chan_select_recv(f, c.chans[:])
+            _, val, ok := chan_select_recv(f, c.chans[:])
             if !ok {
                 break
             }
@@ -1921,7 +1920,7 @@ test_semaphore_true_zii_unbounded_permits :: proc(t: ^testing.T) {
     }
     ctx := Acquire_Ctx{sem = &sem, count = &acquired_count}
 
-    for i in 0 ..< 5 {
+    for _ in 0 ..< 5 {
         coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Acquire_Ctx) {
             semaphore_acquire(f, c.sem)
             c.count^ += 1

@@ -1,9 +1,6 @@
 package coroutine
 
-import "base:runtime"
 import "core:mem"
-import win32 "core:sys/windows"
-import "core:sys/posix"
 
 // ============================================================================
 // Stack & Fiber Pool Implementation
@@ -60,19 +57,9 @@ fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     pool.free_fibers = nil
 
     if pool.alloc_mode == .Virtual_Memory_OS {
-        when ODIN_OS == .Windows {
-            for slab in pool.slabs {
-                win32.VirtualFree(slab, 0, win32.MEM_RELEASE)
-            }
-        } else when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .FreeBSD {
-            slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
-            for slab in pool.slabs {
-                posix.munmap(slab, slab_size)
-            }
-        } else {
-            for slab in pool.slabs {
-                mem.free(slab, alloc)
-            }
+        slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
+        for slab in pool.slabs {
+            pool_vmem_free_slab(slab, slab_size, alloc)
         }
     } else {
         for slab in pool.slabs {
@@ -87,7 +74,6 @@ STACK_WATERMARK :: 0xAA
 
 fiber_watermark_stack :: proc(fiber: ^Fiber) {
     if fiber.stack_base == nil do return
-    bytes := ([^]u8)(fiber.stack_base)
     start_offset := CANARY_SIZE
     end_offset := int(fiber.stack_size)
     if end_offset > start_offset {
@@ -118,88 +104,31 @@ fiber_calc_stack_usage :: proc(fiber: ^Fiber) -> (used_bytes: uint, total_bytes:
 @(private="file")
 fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
     alloc := pool.allocator.procedure != nil ? pool.allocator : (allocator.procedure != nil ? allocator : context.allocator)
-    slab_size := int(pool.stack_size) * pool.stacks_per_slab
+    slab_size := uint(int(pool.stack_size) * pool.stacks_per_slab)
 
+    slab: rawptr
+    has_guard := false
     if pool.alloc_mode == .Virtual_Memory_OS {
-        when ODIN_OS == .Windows {
-            slab := win32.VirtualAlloc(nil, uint(slab_size), win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
-            if slab == nil {
-                panic("Failed to allocate virtual memory slab for fiber pool")
-            }
-            append(&pool.slabs, slab)
-            fibers := make([]Fiber, pool.stacks_per_slab, alloc)
-            append(&pool.fiber_slabs, fibers)
-
-            for i in 0 ..< pool.stacks_per_slab {
-                raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-                // Protect lowest 4KB page as PAGE_NOACCESS (Guard Page)
-                old_protect: win32.DWORD
-                win32.VirtualProtect(raw_base, 4096, win32.PAGE_NOACCESS, &old_protect)
-
-                fiber := &fibers[i]
-                fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
-                fiber.stack_size = pool.stack_size - 4096
-                fiber.pool_index = u16(len(pool.all_fibers))
-                fiber.generation = 1
-                fiber.status = .Unused
-                fiber.heap_index = -1
-                fiber.step_index = -1
-                fiber.async_index = -1
-                fiber_watermark_stack(fiber)
-                fiber_init_canary(fiber)
-
-                append(&pool.all_fibers, fiber)
-                append(&pool.free_fibers, fiber)
-            }
-            return
-        } else when ODIN_OS == .Linux || ODIN_OS == .Darwin || ODIN_OS == .FreeBSD {
-            slab_addr := posix.mmap(nil, uint(slab_size), {.READ, .WRITE}, {.PRIVATE, .ANONYMOUS}, -1, 0)
-            if slab_addr == posix.MAP_FAILED {
-                panic("Failed to allocate mmap virtual memory slab for fiber pool")
-            }
-            slab := rawptr(slab_addr)
-            append(&pool.slabs, slab)
-            fibers := make([]Fiber, pool.stacks_per_slab, alloc)
-            append(&pool.fiber_slabs, fibers)
-
-            for i in 0 ..< pool.stacks_per_slab {
-                raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-                // Protect lowest 4KB page as PROT_NONE (Guard Page)
-                posix.mprotect(raw_base, 4096, {})
-
-                fiber := &fibers[i]
-                fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
-                fiber.stack_size = pool.stack_size - 4096
-                fiber.pool_index = u16(len(pool.all_fibers))
-                fiber.generation = 1
-                fiber.status = .Unused
-                fiber.heap_index = -1
-                fiber.step_index = -1
-                fiber.async_index = -1
-                fiber_watermark_stack(fiber)
-                fiber_init_canary(fiber)
-
-                append(&pool.all_fibers, fiber)
-                append(&pool.free_fibers, fiber)
-            }
-            return
+        slab, has_guard = pool_vmem_alloc_slab(slab_size, pool.stack_size, pool.stacks_per_slab, alloc)
+    } else {
+        err: mem.Allocator_Error
+        slab, err = mem.alloc(int(slab_size), 16, alloc)
+        if err != nil || slab == nil {
+            panic("Failed to allocate memory slab for fiber pool")
         }
     }
 
-    slab, err := mem.alloc(slab_size, 16, alloc)
-    if err != nil || slab == nil {
-        panic("Failed to allocate memory slab for fiber pool")
-    }
     append(&pool.slabs, slab)
     fibers := make([]Fiber, pool.stacks_per_slab, alloc)
     append(&pool.fiber_slabs, fibers)
 
+    guard_offset: uint = has_guard ? 4096 : 0
     for i in 0 ..< pool.stacks_per_slab {
-        stack_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
+        raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
         fiber := &fibers[i]
-        fiber.stack_base = stack_base
-        fiber.stack_size = pool.stack_size
-        fiber.pool_index = u16(len(pool.all_fibers))
+        fiber.stack_base = rawptr(uintptr(raw_base) + uintptr(guard_offset))
+        fiber.stack_size = pool.stack_size - guard_offset
+        fiber.pool_index = u32(len(pool.all_fibers))
         fiber.generation = 1
         fiber.status = .Unused
         fiber.heap_index = -1
@@ -371,6 +300,7 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
     active := total - free_count
     slabs := len(pool.slabs)
     slab_bytes := uint(pool.stack_size) * uint(pool.stacks_per_slab) * uint(slabs)
+    fiber_bytes := uint(total) * size_of(Fiber)
 
     return Pool_Stats{
         total_stacks     = total,
@@ -378,7 +308,7 @@ fiber_pool_stats :: proc(pool: ^Fiber_Pool) -> Pool_Stats {
         free_fibers      = free_count,
         slabs_count      = slabs,
         stack_size_bytes = pool.stack_size,
-        total_memory_kb  = slab_bytes / 1024,
+        total_memory_kb  = (slab_bytes + fiber_bytes) / 1024,
     }
 }
 

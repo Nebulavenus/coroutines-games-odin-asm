@@ -176,7 +176,7 @@ bench_channel_throughput :: proc() {
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, c: ^Chan_Ctx) {
         for c.rec^ < MSG_COUNT {
-            val, ok := sync.chan_recv(f, c.ch)
+            _, ok := sync.chan_recv(f, c.ch)
             if !ok do break
             c.rec^ += 1
         }

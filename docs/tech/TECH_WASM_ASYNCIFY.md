@@ -230,8 +230,8 @@ On `js_wasm32`, `Fiber` contains embedded fields specifically for Asyncify state
 Fiber :: struct {
     // Standard Header & Context (Common across all 7 ISAs)
     handle:           Fiber_Handle,
-    pool_index:       u16,
-    generation:       u16,
+    pool_index:       u32,
+    generation:       u32,
     saved_sp:         rawptr,          // On wasm32: points to fiber self (^Fiber)
     status:           Fiber_Status,
     scope:            ^Fiber_Scope,

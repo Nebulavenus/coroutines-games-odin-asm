@@ -536,7 +536,7 @@ fiber_begin_join :: proc(f: ^Fiber, kind: Join_Kind, branch_count: int) {
     }
 }
 
-fiber_spawn_join_child :: proc(f: ^Fiber, index: int, b: Branch_Desc) {
+fiber_spawn_join_child :: proc(f: ^Fiber, index: int, b: ^Branch_Desc) {
     child_clock := b.clock_id == CLOCK_INHERIT ? f.clock_id : b.clock_id
     cid := clamp_clock_id(child_clock)
 
@@ -571,8 +571,8 @@ fiber_wait_join :: proc(f: ^Fiber) {
 @(private="file")
 fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
     fiber_begin_join(f, kind, len(branches))
-    for b, i in branches {
-        fiber_spawn_join_child(f, i, b)
+    for &b, i in branches {
+        fiber_spawn_join_child(f, i, &b)
     }
     fiber_wait_join(f)
 }
@@ -587,7 +587,8 @@ sync_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (all_succeeded: bool)
     if f == nil || f.sched == nil || len(procs) == 0 do return true
     fiber_begin_join(f, .Sync, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_nil(p))
+        desc := branch_nil(p)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return !f.active_coord.has_failed
@@ -602,7 +603,8 @@ sync_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (al
     if f == nil || f.sched == nil || len(procs) == 0 do return true
     fiber_begin_join(f, .Sync, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
+        desc := branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return !f.active_coord.has_failed
@@ -618,7 +620,8 @@ race_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
     fiber_begin_join(f, .Race, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_nil(p))
+        desc := branch_nil(p)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return f.active_coord.winner_index
@@ -633,7 +636,8 @@ race_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (wi
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
     fiber_begin_join(f, .Race, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
+        desc := branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return f.active_coord.winner_index
@@ -649,7 +653,8 @@ rush_procs :: proc(f: ^Fiber, procs: ..proc(f: ^Fiber)) -> (winner_index: int) {
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
     fiber_begin_join(f, .Rush, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_nil(p))
+        desc := branch_nil(p)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return f.active_coord.winner_index
@@ -664,7 +669,8 @@ rush_with :: proc(f: ^Fiber, ctx: ^$T, procs: ..proc(f: ^Fiber, ctx: ^T)) -> (wi
     if f == nil || f.sched == nil || len(procs) == 0 do return -1
     fiber_begin_join(f, .Rush, len(procs))
     for p, i in procs {
-        fiber_spawn_join_child(f, i, branch_ptr(p, ctx))
+        desc := branch_ptr(p, ctx)
+        fiber_spawn_join_child(f, i, &desc)
     }
     fiber_wait_join(f)
     return f.active_coord.winner_index
@@ -723,11 +729,12 @@ with_timeout_branch :: proc(
 ) -> (outcome: Timeout_Outcome) {
     if f == nil || f.sched == nil do return .Failed
 
-    branches := [2]Branch_Desc{
-        task,
-        branch_wait(seconds, "with_timeout_timer", timeout_clock),
-    }
-    fiber_setup_branches(f, .Guard, branches[:])
+    t_desc := task
+    w_desc := branch_wait(seconds, "with_timeout_timer", timeout_clock)
+    fiber_begin_join(f, .Guard, 2)
+    fiber_spawn_join_child(f, 0, &t_desc)
+    fiber_spawn_join_child(f, 1, &w_desc)
+    fiber_wait_join(f)
 
     if f.active_coord.winner_index == 1 {
         return .Timed_Out
@@ -779,11 +786,12 @@ with_timeout :: proc{with_timeout_branch, with_timeout_ptr, with_timeout_val, wi
 with_signal_branch :: proc(f: ^Fiber, sig: ^Signal, task: Branch_Desc) -> (outcome: Signal_Outcome) {
     if f == nil || f.sched == nil || sig == nil do return .Failed
 
-    branches := [2]Branch_Desc{
-        task,
-        branch_signal(sig, "with_signal_watcher"),
-    }
-    fiber_setup_branches(f, .Guard, branches[:])
+    t_desc := task
+    s_desc := branch_signal(sig, "with_signal_watcher")
+    fiber_begin_join(f, .Guard, 2)
+    fiber_spawn_join_child(f, 0, &t_desc)
+    fiber_spawn_join_child(f, 1, &s_desc)
+    fiber_wait_join(f)
 
     if f.active_coord.winner_index == 1 {
         return .Interrupted
@@ -836,11 +844,12 @@ with_signal :: proc{
 with_sticky_signal_branch :: proc(f: ^Fiber, sig: ^Sticky_Signal, task: Branch_Desc) -> (outcome: Signal_Outcome) {
     if f == nil || f.sched == nil || sig == nil do return .Failed
 
-    branches := [2]Branch_Desc{
-        task,
-        branch_sticky_signal(sig, "with_sticky_signal_watcher"),
-    }
-    fiber_setup_branches(f, .Guard, branches[:])
+    t_desc := task
+    s_desc := branch_sticky_signal(sig, "with_sticky_signal_watcher")
+    fiber_begin_join(f, .Guard, 2)
+    fiber_spawn_join_child(f, 0, &t_desc)
+    fiber_spawn_join_child(f, 1, &s_desc)
+    fiber_wait_join(f)
 
     if f.active_coord.winner_index == 1 {
         return .Interrupted

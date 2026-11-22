@@ -330,7 +330,7 @@ if stored_fiber.status == .Running { // CRASH or corrupted state!
 ```
 
 ### How the Engine Mitigates It
-1. **Packed Generational Handles (`Fiber_Handle`)**: A 32-bit packed integer (`u16 slot | u16 generation`).
+1. **Packed Generational Handles (`Fiber_Handle`)**: A 64-bit packed integer (`u32 slot | u32 generation`).
 2. When a fiber slot is recycled, its generation counter is automatically incremented.
 3. Checking `coroutine.fiber_is_alive(&sched, handle)` or `coroutine.fiber_find_by_handle(&sched, handle)` performs a single-instruction direct array lookup in $O(1)$ time, instantly detecting stale handles with **100% ABA safety**.
 
@@ -508,7 +508,7 @@ dash_ability_coroutine :: proc(f: ^coroutine.Fiber, p: ^Player) {
 │ 8. Save game state, not stacks: Re-spawn coroutines from phase checkpoints. │
 │ 9. Use ticker_wait for periodic loops: Zero-drift timestamp anchor.         │
 │ 10. Embrace Structured Concurrency: Use sync/race to prevent orphan tasks.  │
-│ 11. Pass Fiber_Handle, not raw ^Fiber: 32-bit handles are 100% ABA safe.    │
+│ 11. Pass Fiber_Handle, not raw ^Fiber: 64-bit handles are 100% ABA safe.    │
 │ 12. Never #force_inline yield points: Keep ABI boundaries & FP clobbers.    │
 │ 13. On Wasm, avoid &local_struct across yields: Use entities or temp_arena. │
 │ 14. Don't spin yield_now in state loops: Use yield() for next frame bounds. │
