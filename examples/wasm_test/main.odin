@@ -731,6 +731,91 @@ test_task_futures_and_combinator_helpers :: proc() {
     fmt.println("OK")
 }
 
+test_wasm_hardened_sync_and_outcomes :: proc() {
+    fmt.print("  [Test 18] Wasm-Hardened Outcomes, Select, Mutex Abort & Large Event... ")
+    sched: coroutine.Scheduler
+    coroutine.scheduler_init(&sched)
+    defer coroutine.scheduler_destroy(&sched)
+
+    ch1: sync.Channel(int)
+    ch2: sync.Channel(int)
+    sync.chan_init(&ch1, 2)
+    sync.chan_init(&ch2, 2)
+    defer {
+        sync.chan_destroy(&ch1)
+        sync.chan_destroy(&ch2)
+    }
+
+    State :: struct {
+        ch1:           ^sync.Channel(int),
+        ch2:           ^sync.Channel(int),
+        recv_outcome:  sync.Chan_Outcome,
+        select_val:    int,
+        select_idx:    int,
+        mutex:         sync.Fiber_Mutex,
+        mutex_cleaned: bool,
+        task:          coroutine.Task(int),
+        task_ok:       bool,
+        task_done:     bool,
+        ev:            coroutine.Event([64]u64),
+        ev_last:       u64,
+    }
+    st := State{ch1 = &ch1, ch2 = &ch2, task_ok = true}
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        _, s.recv_outcome = sync.chan_recv_timeout(f, s.ch1, 0.03)
+        arr := [2]^sync.Channel(int){s.ch1, s.ch2}
+        idx, val, ok := sync.chan_select_recv(f, arr[:])
+        if ok {
+            s.select_idx = idx
+            s.select_val = val
+        }
+    }, &st)
+
+    h_mtx := coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        sync.with_mutex(f, &s.mutex, proc(f: ^coroutine.Fiber, s: ^State) {
+            coroutine.wait(f, 5.0)
+        }, s)
+    }, &st)
+
+    h_task := coroutine.spawn_task(&sched, &st.task, proc(f: ^coroutine.Fiber) -> int {
+        coroutine.wait(f, 5.0)
+        return 99
+    })
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        _, ok := coroutine.task_await(f, &s.task)
+        s.task_ok = ok
+        s.task_done = true
+    }, &st)
+
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        p, ok := coroutine.event_wait(f, &s.ev)
+        if ok do s.ev_last = p[63]
+    }, &st)
+
+    coroutine.scheduler_step(&sched, 0.016)
+    coroutine.fiber_cancel(&sched, h_mtx)
+    st.mutex_cleaned = !sync.mutex_is_locked(&st.mutex)
+    coroutine.fiber_cancel(&sched, h_task)
+
+    big: [64]u64
+    big[63] = 123456
+    coroutine.event_emit(&sched, &st.ev, big)
+
+    coroutine.scheduler_step(&sched, 0.05)
+    sync.chan_close(&ch1)
+    coroutine.scheduler_run(&sched)
+    sync.chan_try_send(&ch2, 321)
+    coroutine.scheduler_run(&sched)
+
+    assert(st.recv_outcome == .Timed_Out, "chan_recv_timeout must return .Timed_Out under Wasm")
+    assert(st.select_idx == 1 && st.select_val == 321, "chan_select_recv must ignore closed ch1 and receive from ch2")
+    assert(st.mutex_cleaned, "with_mutex abort must unlock mutex cleanly under Wasm")
+    assert(st.task_done && !st.task_ok && coroutine.task_state(&st.task) == .Failed, "cancelled Task must wake awaiter with ok=false")
+    assert(st.ev_last == 123456, "Large 512B Event(T) must deliver cleanly under Wasm")
+    fmt.println("OK")
+}
+
 // ----------------------------------------------------------------------------
 // Main Headless Test Runner
 // ----------------------------------------------------------------------------
@@ -757,9 +842,10 @@ main :: proc() {
     test_sticky_event_and_signal()
     test_yield_now_same_tick()
     test_task_futures_and_combinator_helpers()
+    test_wasm_hardened_sync_and_outcomes()
 
     fmt.println()
     fmt.println("=================================================================================")
-    fmt.println("ALL 17 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
+    fmt.println("ALL 18 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)")
     fmt.println("=================================================================================")
 }

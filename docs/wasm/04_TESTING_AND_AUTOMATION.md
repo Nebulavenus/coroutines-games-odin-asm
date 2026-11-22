@@ -1,12 +1,12 @@
 # WebAssembly Testing & CI Automation
 
-This document catalogs the 17 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
+This document catalogs the 18 automated WebAssembly test suites in `examples/wasm_test/main.odin`, details the headless Node.js verification harnesses, and outlines continuous integration practices for WebAssembly coroutines.
 
 ---
 
 ## 1. Automated Test Suite Catalog (`examples/wasm_test/main.odin`)
 
-The WebAssembly test runner validates every core engine primitive across 17 automated suites under `.\build.ps1 test-wasm`:
+The WebAssembly test runner validates every core engine primitive across 18 automated suites under `.\build.ps1 test-wasm`:
 
 | Suite # | Test Name | Target Subsystem | Key Verification |
 | :--- | :--- | :--- | :--- |
@@ -27,6 +27,7 @@ The WebAssembly test runner validates every core engine primitive across 17 auto
 | **Test 15** | **Latched State (`Sticky_Event`)** | `Sticky_Event`, `Sticky_Signal` | Emits before await; late-joining fiber receives cached state immediately in $O(1)$. |
 | **Test 16** | **In-Frame Timeslice (`yield_now`)** | `yield_now` | Multiple fibers interleave cooperative timeslices in the same frame without advancing clock. |
 | **Test 17** | **Task Futures & Helpers** | `spawn_task`, `sync_with`, `with_signal` | Validates typed `Task(T)` future computation, shared context combinators, and signal interruption under Asyncify. |
+| **Test 18** | **Wasm-Hardened Sync & Outcomes** | `Chan_Outcome`, `chan_select_recv`, `with_mutex`, `Event(T)` | Validates `chan_recv_timeout`, event-driven select with partial close, mutex abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)`. |
 
 ---
 
@@ -64,7 +65,7 @@ Runs the complete Boss Battle game engine for **1000 frames** (16.7 seconds @ 60
 ## 3. Running Automated Tests
 
 ```powershell
-# Run the complete 17-suite Wasm test runner:
+# Run the complete 18-suite Wasm test runner:
 .\build.ps1 test-wasm
 
 # Run the 1000-frame headless game simulation test:
@@ -99,8 +100,9 @@ Post-processing with Binaryen Asyncify...
   [Test 15] Latched State: Sticky_Event & Sticky_Signal... OK
   [Test 16] In-Frame Timeslice: yield_now() Same-Tick Interleave... OK
   [Test 17] Task Futures & Combinator Helpers... OK
+  [Test 18] Wasm-Hardened Outcomes, Select, Mutex Abort & Large Event... OK
 
 =================================================================================
-ALL 17 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
+ALL 18 WEBASSEMBLY COROUTINE TEST SUITES PASSED (0 FAILURES)
 =================================================================================
 ```

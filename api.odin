@@ -523,8 +523,6 @@ branch_scoped :: proc{
     branch_scoped_nil,
 }
 
-MAX_STACK_BRANCHES :: 16
-
 @(private="file")
 fiber_setup_branches :: proc(f: ^Fiber, kind: Join_Kind, branches: []Branch_Desc) {
     f.sched.next_coord_id += 1

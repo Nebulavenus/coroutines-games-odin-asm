@@ -98,8 +98,6 @@ Join_Coordinator :: struct {
     completed:       bool,
 }
 
-MAX_FIBER_CLEANUPS :: 8
-
 Fiber_Cleanup :: struct {
     proc_ptr:  proc(user_data: rawptr),
     user_data: rawptr,
@@ -307,6 +305,7 @@ Fiber_Pool :: struct {
     alloc_mode:      Stack_Allocation_Mode,
     allocator:       mem.Allocator,
     slabs:           [dynamic]rawptr,
+    fiber_slabs:     [dynamic][]Fiber,
     free_fibers:     [dynamic]^Fiber,
     all_fibers:      [dynamic]^Fiber,
     handle_history:  [FIBER_HANDLE_HISTORY_CAPACITY]Handle_Entry,

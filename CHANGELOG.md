@@ -27,8 +27,13 @@ All notable changes to this project will be documented in this file.
   - Decoupled `Event(T)` and `Sticky_Event(T)` from `Fiber.payload_storage` (eliminating the 128B `#assert` cap and `spawn_val` aliasing hazard) using `Fiber.event_dest` + scoped `temp_arena`/heap delivery for `Event(T)` and direct `ev.value` reads for `Sticky_Event(T)`.
   - Added `Task_State` (`.Pending`, `.Completed`, `.Failed`), `task_fail`, and `task_state`; `spawn_task` now registers a `fiber_defer` hook so worker `fail(f)` or external cancellation immediately wakes `task_await` callers with `ok == false` instead of deadlocking.
   - Centralized `WASM_ASYNCIFY_STORAGE_SIZE :: #config(CORO_ASYNCIFY_STORAGE_SIZE, 4096)` in `config.odin`, added runtime `Asyncify_Buffer` overflow detection in `asm_wasm32.odin`, and replaced hardcoded `32` slab defaults in `pool.odin` with `STACKS_PER_SLAB`.
+- **Contiguous Fiber Slabs, `Chan_Outcome` Enum & Centralized Config (`config.odin`, `types.odin`, `pool.odin`, `api.odin`, `sync/sync.odin`, `examples/wasm_test/main.odin`)**:
+  - Replaced per-fiber `new(Fiber)` allocations in `fiber_pool_grow` with contiguous `Fiber_Pool.fiber_slabs: [dynamic][]Fiber` slices (2 heap allocations per slab instead of 33).
+  - Centralized `MAX_FIBER_CLEANUPS :: #config(CORO_MAX_FIBER_CLEANUPS, 8)` and `MAX_STACK_BRANCHES :: #config(CORO_MAX_STACK_BRANCHES, 16)` in `config.odin`.
+  - Replaced `(value, ok, timed_out)` / `(ok, timed_out)` on `chan_recv_timeout` and `chan_send_timeout` with `Chan_Outcome :: enum u8 { Ok, Closed, Timed_Out }`, and removed unused `FIBER_PAYLOAD_SIZE` `#assert` caps on `with_mutex_val` / `with_semaphore_val`.
+  - Added WebAssembly Suite 18 in `examples/wasm_test/main.odin` covering `Chan_Outcome`, event-driven `chan_select_recv`, `with_mutex` abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)` under Binaryen Asyncify.
 - **Tests, Distributions & Docs**:
-  - Expanded native unit tests from `187` to `195` (`145` core + `50` sync), verified all 145 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
+  - Expanded native unit tests from `187` to `195` (`145` core + `50` sync) and WebAssembly suites from `17` to `18`, verified all 145 core tests on Linux AMD64 (WSL2), ARM64 (QEMU), and RISC-V 64 (QEMU), regenerated `dist/coroutine.odin` and `dist/coroutine_wasm32.odin`, and synced all examples and documentation.
 
 ## [Odin `dev-2026-11:89246b0ad` Inline ASM Upgrade & Caller-Saved FP/SIMD Hardening] - 2026-11-21
 

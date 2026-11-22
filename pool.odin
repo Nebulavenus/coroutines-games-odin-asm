@@ -27,6 +27,7 @@ fiber_pool_init :: proc(
     pool.alloc_mode = alloc_mode
     pool.allocator = allocator.procedure != nil ? allocator : context.allocator
     pool.slabs = make([dynamic]rawptr, pool.allocator)
+    pool.fiber_slabs = make([dynamic][]Fiber, pool.allocator)
     pool.free_fibers = make([dynamic]^Fiber, pool.allocator)
     pool.all_fibers = make([dynamic]^Fiber, pool.allocator)
 }
@@ -48,9 +49,11 @@ fiber_pool_init_config :: proc(pool: ^Fiber_Pool, config: Fiber_Pool_Config) {
 fiber_pool_destroy :: proc(pool: ^Fiber_Pool) {
     if pool == nil do return
     alloc := pool.allocator.procedure != nil ? pool.allocator : context.allocator
-    for fiber in pool.all_fibers {
-        free(fiber, alloc)
+    for fslab in pool.fiber_slabs {
+        delete(fslab, alloc)
     }
+    delete(pool.fiber_slabs)
+    pool.fiber_slabs = nil
     delete(pool.all_fibers)
     delete(pool.free_fibers)
     pool.all_fibers = nil
@@ -124,6 +127,8 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 panic("Failed to allocate virtual memory slab for fiber pool")
             }
             append(&pool.slabs, slab)
+            fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+            append(&pool.fiber_slabs, fibers)
 
             for i in 0 ..< pool.stacks_per_slab {
                 raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
@@ -131,7 +136,7 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
                 old_protect: win32.DWORD
                 win32.VirtualProtect(raw_base, 4096, win32.PAGE_NOACCESS, &old_protect)
 
-                fiber := new(Fiber, alloc)
+                fiber := &fibers[i]
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
                 fiber.pool_index = u16(len(pool.all_fibers))
@@ -154,13 +159,15 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
             }
             slab := rawptr(slab_addr)
             append(&pool.slabs, slab)
+            fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+            append(&pool.fiber_slabs, fibers)
 
             for i in 0 ..< pool.stacks_per_slab {
                 raw_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
                 // Protect lowest 4KB page as PROT_NONE (Guard Page)
                 posix.mprotect(raw_base, 4096, {})
 
-                fiber := new(Fiber, alloc)
+                fiber := &fibers[i]
                 fiber.stack_base = rawptr(uintptr(raw_base) + 4096)
                 fiber.stack_size = pool.stack_size - 4096
                 fiber.pool_index = u16(len(pool.all_fibers))
@@ -184,10 +191,12 @@ fiber_pool_grow :: proc(pool: ^Fiber_Pool, allocator := context.allocator) {
         panic("Failed to allocate memory slab for fiber pool")
     }
     append(&pool.slabs, slab)
+    fibers := make([]Fiber, pool.stacks_per_slab, alloc)
+    append(&pool.fiber_slabs, fibers)
 
     for i in 0 ..< pool.stacks_per_slab {
         stack_base := rawptr(uintptr(slab) + uintptr(i * int(pool.stack_size)))
-        fiber := new(Fiber, alloc)
+        fiber := &fibers[i]
         fiber.stack_base = stack_base
         fiber.stack_size = pool.stack_size
         fiber.pool_index = u16(len(pool.all_fibers))

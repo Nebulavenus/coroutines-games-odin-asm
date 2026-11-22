@@ -136,7 +136,7 @@ Modern games often offload heavy compute (A* pathfinding, mesh generation, asset
 
 ### Lock-Free Memory Contract:
 - `Async_Token` contains an atomic `state: Async_State` (`Pending`, `Completed`, `Failed`).
-- `await_async(f, &token)` yields cooperatively while atomic load reports `.Pending`, consuming 0 heap allocations and introducing zero locks or scheduler condition queues.
+- `await_async(f, &token)` suspends via `fiber_suspend` and registers in `Scheduler.async_waiters` (checked once per `scheduler_run` via a single atomic load — zero context switches while pending, wakes across paused clocks, $O(1)$ abort removal, and zero locks on background worker threads).
 
 ---
 

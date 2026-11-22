@@ -201,8 +201,8 @@ producer_fiber :: proc(f: ^coroutine.Fiber, ch: ^sync.Channel(int)) {
 1. **Auto-Wake on Destruction (`chan_destroy`)**: Calling `sync.chan_destroy` automatically triggers `sync.chan_close`, unblocking all waiting senders and receivers with `ok = false` before deleting memory.
 2. **Channel Deadline Reception (`chan_recv_timeout`)**:
    ```odin
-   val, ok, timed_out := sync.chan_recv_timeout(f, &g_channel, timeout_seconds = 2.0)
-   if timed_out {
+   val, outcome := sync.chan_recv_timeout(f, &g_channel, timeout_seconds = 2.0)
+   if outcome == .Timed_Out {
        log_warn("Producer hung or disappeared!")
    }
    ```

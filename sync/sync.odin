@@ -20,6 +20,12 @@ Fiber_Semaphore :: struct {
     waiters:     coro.Wait_Queue,
 }
 
+Chan_Outcome :: enum u8 {
+    Ok,
+    Closed,
+    Timed_Out,
+}
+
 Channel :: struct($T: typeid) {
     buffer:       []T,              // Fixed circular ring buffer slice
     head:         int,              // Pop/read index
@@ -143,7 +149,6 @@ with_mutex_val :: proc(
     body: proc(f: ^coro.Fiber, data: $T),
     data: T,
 ) where !intrinsics.type_is_pointer(T) {
-    #assert(size_of(T) <= coro.FIBER_PAYLOAD_SIZE, "with_mutex_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || m == nil || f.sched == nil || body == nil do return
     mutex_lock(f, m)
     coro.fiber_defer(f, cleanup_mutex_hook, rawptr(m))
@@ -275,7 +280,6 @@ with_semaphore_val :: proc(
     body: proc(f: ^coro.Fiber, data: $T),
     data: T,
 ) where !intrinsics.type_is_pointer(T) {
-    #assert(size_of(T) <= coro.FIBER_PAYLOAD_SIZE, "with_semaphore_val: payload exceeds FIBER_PAYLOAD_SIZE (128 bytes)")
     if f == nil || sem == nil || f.sched == nil || body == nil do return
     semaphore_acquire(f, sem)
     coro.fiber_defer(f, cleanup_sem_hook, rawptr(sem))
@@ -543,21 +547,21 @@ chan_recv :: proc(f: ^coro.Fiber, ch: ^Channel($T)) -> (value: T, ok: bool) {
     }
 }
 
-chan_recv_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), timeout_seconds: f32) -> (value: T, ok: bool, timed_out: bool) {
-    if f == nil || ch == nil || f.sched == nil do return {}, false, false
+chan_recv_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), timeout_seconds: f32) -> (value: T, outcome: Chan_Outcome) {
+    if f == nil || ch == nil || f.sched == nil do return {}, .Closed
 
     if ch.count > 0 {
         val, ok_recv := chan_try_recv(ch)
-        if ok_recv do return val, true, false
+        if ok_recv do return val, .Ok
     }
 
     if ch.is_closed {
-        return {}, false, false
+        return {}, .Closed
     }
 
     if timeout_seconds <= 0.0 {
         val, ok_recv := chan_try_recv(ch)
-        return val, ok_recv, !ok_recv
+        return val, ok_recv ? .Ok : .Timed_Out
     }
 
     Recv_State :: struct {
@@ -586,24 +590,24 @@ chan_recv_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), timeout_seconds: f32
     )
 
     if winner == 1 {
-        return {}, false, true
+        return {}, .Timed_Out
     }
-    return state.val, state.ok, false
+    return state.val, state.ok ? .Ok : .Closed
 }
 
-chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_seconds: f32) -> (ok: bool, timed_out: bool) {
-    if f == nil || ch == nil || f.sched == nil do return false, false
+chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_seconds: f32) -> (outcome: Chan_Outcome) {
+    if f == nil || ch == nil || f.sched == nil do return .Closed
 
     if chan_try_send(ch, value) {
-        return true, false
+        return .Ok
     }
 
     if ch.is_closed {
-        return false, false
+        return .Closed
     }
 
     if timeout_seconds <= 0.0 {
-        return false, true
+        return .Timed_Out
     }
 
     Send_State :: struct {
@@ -631,9 +635,9 @@ chan_send_timeout :: proc(f: ^coro.Fiber, ch: ^Channel($T), value: T, timeout_se
     )
 
     if winner == 1 {
-        return false, true
+        return .Timed_Out
     }
-    return state.ok, false
+    return state.ok ? .Ok : .Closed
 }
 
 // --- Multi-Channel Select (CSP Multiplexer) ---

@@ -1,6 +1,6 @@
 # Verification & Architecture Compliance Report
 
-This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 195-test coverage (145 core + 50 sync) plus 17 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
+This document records the comprehensive verification matrix, architectural analysis, compiler hardening, benchmark metrics, and exhaustive 195-test coverage (145 core + 50 sync) plus 18 WebAssembly test suites for the Verse/SkookumScript-inspired stackful coroutine engine implemented in Odin using native inline assembly (`asm`).
 
 ---
 
@@ -32,7 +32,7 @@ This document records the comprehensive verification matrix, architectural analy
 
 ---
 
-## 2. Test Suite Execution Results (195 Native Tests + 17 WebAssembly Suites)
+## 2. Test Suite Execution Results (195 Native Tests + 18 WebAssembly Suites)
 
 All **195 native unit tests** execute cleanly via `build.ps1 test`:
 
@@ -46,7 +46,7 @@ Finished 50 tests in ~19ms. All tests were successful.
 0 memory leaks detected (tracked with Odin core:mem tracking allocator).
 ```
 
-And all **17 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
+And all **18 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm` in Node.js with Binaryen Asyncify.
 
 ### Coverage Overview across 195 Native Tests (`coroutine_test.odin` & `sync/sync_test.odin`):
 

@@ -673,19 +673,18 @@ Telemetry_Packet :: struct {
 
 telemetry_monitor_fiber :: proc(f: ^coroutine.Fiber, ch: ^sync.Channel(Telemetry_Packet)) {
     for {
-        packet, ok, timed_out := sync.chan_recv_timeout(f, ch, timeout_seconds = 1.5)
+        packet, outcome := sync.chan_recv_timeout(f, ch, timeout_seconds = 1.5)
 
-        if timed_out {
+        switch outcome {
+        case .Timed_Out:
             fmt.println("[WARN] Remote sensor heartbeat lost! Falling back to autonomous navigation.")
-            break
-        }
-
-        if !ok {
+            return
+        case .Closed:
             fmt.println("[INFO] Telemetry channel closed cleanly.")
-            break
+            return
+        case .Ok:
+            fmt.printf("[TELEMETRY] Node #%d ping: %.1f ms\n", packet.sender_id, packet.ping_ms)
         }
-
-        fmt.printf("[TELEMETRY] Node #%d ping: %.1f ms\n", packet.sender_id, packet.ping_ms)
     }
 }
 ```

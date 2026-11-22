@@ -347,7 +347,7 @@ Underneath the high-level Verse/SkookumScript API sits a zero-overhead systems k
 | **Linux RISC-V 64 (RV64GC)** | LP64D | 208 bytes | `ra`, `s0`..`s11`, `fs0`..`fs11` | `%s2` | **145 / 145 Core Tests PASS (WSL2 QEMU)** |
 | **macOS Apple Silicon (ARM64)** | AAPCS64 | 160 bytes | `x29` (FP), `x30` (LR), `x19`..`x28`, `d8`..`d15` | `%x19` | **Cross-Check PASS (AAPCS64 ABI Verified)** |
 | **macOS x86-64 (AMD64)** | System V AMD64 | 64 bytes | `rbp`, `rbx`, `rsi`, `rdi`, `r12`..`r15` | `%r12` | **Cross-Check PASS (SysV AMD64 ABI Verified)** |
-| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **17 / 17 Test Suites + 1,000-Frame Headless Game PASS** |
+| **WebAssembly (`js_wasm32`)** | Wasm + Asyncify | Linear Memory | Shadow Stack Unwind/Rewind | N/A | **18 / 18 Test Suites + 1,000-Frame Headless Game PASS** |
 
 ---
 

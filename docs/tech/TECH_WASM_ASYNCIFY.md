@@ -392,6 +392,7 @@ The WebAssembly backend is verified by [`examples/wasm_test/main.odin`](../../ex
 | **Test 15** | Latched `Sticky_Event` & `Sticky_Signal` | Late awaiters resume immediately in $O(1)$ without suspending on already-emitted events. | **PASS** |
 | **Test 16** | In-Frame Timeslice (`yield_now`) | Cooperative timeslice sharing within a single simulation tick. | **PASS** |
 | **Test 17** | `Task(T)` Futures & Combinator Helpers | `spawn_task`, `task_await`, `sync_with`, and `with_signal` under Binaryen Asyncify. | **PASS** |
+| **Test 18** | Wasm-Hardened Sync & Outcomes | `Chan_Outcome` timeouts, event-driven `chan_select_recv`, `with_mutex` abort cleanup, cancelled `Task(T)` wakeup, and large 512B `Event(T)`. | **PASS** |
 
 ### 8.2 Automation Commands ([`build.ps1`](../../build.ps1))
 

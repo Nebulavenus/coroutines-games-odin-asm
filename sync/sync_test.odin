@@ -210,8 +210,8 @@ test_channel_timeouts_and_select :: proc(t: ^testing.T) {
     state := Pair{ch1 = &ch1, ch2 = &ch2, to = &timed_out_flag}
 
     coro.spawn(&sched, proc(f: ^coro.Fiber, s: ^Pair) {
-        _, _, to := chan_recv_timeout(f, s.ch1, 0.03)
-        s.to^ = to
+        _, outcome := chan_recv_timeout(f, s.ch1, 0.03)
+        s.to^ = (outcome == .Timed_Out)
 
         chs := [2]^Channel(int){s.ch1, s.ch2}
         idx, val, ok := chan_select_recv(f, chs[:])
@@ -933,19 +933,17 @@ test_chan_recv_timeout_success :: proc(t: ^testing.T) {
     defer chan_destroy(&ch)
 
     Recv_Timeout_Test_Ctx :: struct {
-        ch:        ^Channel(int),
-        val:       int,
-        ok:        bool,
-        timed_out: bool,
+        ch:      ^Channel(int),
+        val:     int,
+        outcome: Chan_Outcome,
     }
 
     ctx := Recv_Timeout_Test_Ctx{ch = &ch}
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Timeout_Test_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
+        val, outcome := chan_recv_timeout(f, c.ch, 0.5)
         c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
+        c.outcome = outcome
     }, &ctx)
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
@@ -958,8 +956,7 @@ test_chan_recv_timeout_success :: proc(t: ^testing.T) {
     }
 
     testing.expect_value(t, ctx.val, 777)
-    testing.expect(t, ctx.ok)
-    testing.expect(t, !ctx.timed_out)
+    testing.expect_value(t, ctx.outcome, Chan_Outcome.Ok)
 }
 
 @(test)
@@ -973,20 +970,18 @@ test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
     defer chan_destroy(&ch)
 
     Recv_Timeout_Expire_Ctx :: struct {
-        ch:        ^Channel(int),
-        val:       int,
-        ok:        bool,
-        timed_out: bool,
-        finished:  bool,
+        ch:       ^Channel(int),
+        val:      int,
+        outcome:  Chan_Outcome,
+        finished: bool,
     }
 
     ctx := Recv_Timeout_Expire_Ctx{ch = &ch}
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Timeout_Expire_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 0.05)
+        val, outcome := chan_recv_timeout(f, c.ch, 0.05)
         c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
+        c.outcome = outcome
         c.finished = true
     }, &ctx)
 
@@ -995,8 +990,7 @@ test_chan_recv_timeout_expires :: proc(t: ^testing.T) {
     }
 
     testing.expect(t, ctx.finished)
-    testing.expect(t, !ctx.ok)
-    testing.expect(t, ctx.timed_out)
+    testing.expect_value(t, ctx.outcome, Chan_Outcome.Timed_Out)
 }
 
 @(test)
@@ -1010,19 +1004,17 @@ test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
     defer chan_destroy(&ch)
 
     Recv_Closed_Ctx :: struct {
-        ch:        ^Channel(string),
-        val:       string,
-        ok:        bool,
-        timed_out: bool,
+        ch:      ^Channel(string),
+        val:     string,
+        outcome: Chan_Outcome,
     }
 
     ctx := Recv_Closed_Ctx{ch = &ch}
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Closed_Ctx) {
-        val, ok, timed_out := chan_recv_timeout(f, c.ch, 1.0)
+        val, outcome := chan_recv_timeout(f, c.ch, 1.0)
         c.val = val
-        c.ok = ok
-        c.timed_out = timed_out
+        c.outcome = outcome
     }, &ctx)
 
     coro.scheduler_step(&sched, 0.01)
@@ -1030,8 +1022,7 @@ test_chan_recv_timeout_closed_channel :: proc(t: ^testing.T) {
     chan_close(&ch)
     coro.scheduler_step(&sched, 0.01)
 
-    testing.expect(t, !ctx.ok)
-    testing.expect(t, !ctx.timed_out)
+    testing.expect_value(t, ctx.outcome, Chan_Outcome.Closed)
 }
 
 @(test)
@@ -1088,8 +1079,8 @@ test_chan_recv_timeout_concurrent_producers :: proc(t: ^testing.T) {
     ctx := Chan_Recv_Val_Ctx{ch = &ch, val = &received_val}
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Chan_Recv_Val_Ctx) {
-        v, ok, timed_out := chan_recv_timeout(f, c.ch, 0.5)
-        if ok do c.val^ = v
+        v, outcome := chan_recv_timeout(f, c.ch, 0.5)
+        if outcome == .Ok do c.val^ = v
     }, &ctx)
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, ch: ^Channel(int)) {
@@ -1451,9 +1442,9 @@ test_chan_recv_timeout_unbuffered_safety :: proc(t: ^testing.T) {
     ctx := Recv_Ctx{ch = &ch, timed_out = &timed_out, val_received = &val_received}
 
     coro.spawn_ptr(&sched, proc(f: ^coro.Fiber, c: ^Recv_Ctx) {
-        val, ok, to := chan_recv_timeout(f, c.ch, 0.05)
-        c.timed_out^ = to
-        if ok do c.val_received^ = val
+        val, outcome := chan_recv_timeout(f, c.ch, 0.05)
+        c.timed_out^ = (outcome == .Timed_Out)
+        if outcome == .Ok do c.val_received^ = val
     }, &ctx)
 
     for _ in 0 ..< 5 {
@@ -2021,28 +2012,23 @@ test_chan_send_timeout_success_and_expiry :: proc(t: ^testing.T) {
     chan_init(&ch, 0)
     defer chan_destroy(&ch)
 
-    timed_out_flag := false
-    send_ok_flag := true
+    outcome_res := Chan_Outcome.Ok
 
     Send_Ctx :: struct {
-        ch:        ^Channel(int),
-        timed_out: ^bool,
-        send_ok:   ^bool,
+        ch:      ^Channel(int),
+        outcome: ^Chan_Outcome,
     }
-    ctx := Send_Ctx{ch = &ch, timed_out = &timed_out_flag, send_ok = &send_ok_flag}
+    ctx := Send_Ctx{ch = &ch, outcome = &outcome_res}
 
     coro.spawn(&sched, proc(f: ^coro.Fiber, c: ^Send_Ctx) {
-        ok, timed_out := chan_send_timeout(f, c.ch, 42, 0.05)
-        c.send_ok^ = ok
-        c.timed_out^ = timed_out
+        c.outcome^ = chan_send_timeout(f, c.ch, 42, 0.05)
     }, &ctx, name = "Timeout Sender")
 
     for _ in 0 ..< 10 {
         coro.scheduler_step(&sched, 0.01)
     }
 
-    testing.expect_value(t, timed_out_flag, true)
-    testing.expect_value(t, send_ok_flag, false)
+    testing.expect_value(t, outcome_res, Chan_Outcome.Timed_Out)
 }
 
 @(test)

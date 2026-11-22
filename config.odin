@@ -48,3 +48,9 @@ MAX_CLOCKS :: #config(CORO_MAX_CLOCKS, 8)
 // --- 4. Static Capacity Bounds ---
 // Capacity of the historical generational handle ring buffer for completed fibers.
 HANDLE_HISTORY_CAPACITY :: #config(CORO_HANDLE_HISTORY_CAPACITY, 2048)
+
+// Inline LIFO fiber_defer cleanup slot capacity per fiber.
+MAX_FIBER_CLEANUPS :: #config(CORO_MAX_FIBER_CLEANUPS, 8)
+
+// Inline stack-allocated branch descriptor fast-path capacity for combinators.
+MAX_STACK_BRANCHES :: #config(CORO_MAX_STACK_BRANCHES, 16)
