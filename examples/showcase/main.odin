@@ -490,17 +490,17 @@ research_worker_thread :: proc(data: rawptr) {
 
 lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     s.is_working = true
-    s.status_text = fixed_text_make("Worker Thread Computing (await_async)...")
+    s.status_text = fixed_text_make("Worker computing (await_async)...")
     s.status_color = rl.YELLOW
 
     coroutine.fiber_defer(f, proc(s: ^Lab_Station) {
         s.is_working = false
         s.drone_active = false
-        s.status_text = fixed_text_make("Press [6] or [E] to launch background worker")
+        s.status_text = fixed_text_make("Press [6] or [E] to start")
         s.status_color = rl.RAYWHITE
     }, s)
 
-    showcase_emit_event(f.sched, &g_world.event_hub, "Async Job Dispatched", "Background OS thread spawned (await_async)", rl.YELLOW)
+    showcase_emit_event(f.sched, &g_world.event_hub, "Async Job Dispatched", "OS worker thread started (await_async)", rl.YELLOW)
 
     coroutine.async_token_init(&s.job.token)
     s.job.complexity = 10
@@ -511,7 +511,7 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
     ok := coroutine.await_async(f, &s.job.token)
 
     if ok {
-        s.status_text = fixed_text_make(fmt.tprintf("Done in %.2fs! Spawning Analysis Drone (spawn_task)...", s.job.elapsed_worker))
+        s.status_text = fixed_text_make(fmt.tprintf("Done in %.2fs! Running Drone Task...", s.job.elapsed_worker))
         s.status_color = rl.SKYBLUE
 
         s.drone_active = true
@@ -524,13 +524,13 @@ lab_research_fiber :: proc(f: ^coroutine.Fiber, s: ^Lab_Station) {
             }
             s.drone_active = false
             return s.job.result_nodes
-        }, s, name = "Analysis Drone (Task Future)")
+        }, s, name = "Analysis Drone (Task)")
 
         found_nodes, _ := coroutine.task_await(f, &s.drone_task)
 
-        s.status_text = fixed_text_make(fmt.tprintf("Research & Drone Complete! Found %d nodes", found_nodes))
+        s.status_text = fixed_text_make(fmt.tprintf("Complete! Found %d nodes", found_nodes))
         s.status_color = rl.GREEN
-        showcase_emit_event(f.sched, &g_world.event_hub, "Analysis Complete", "Async job & Analysis Drone joined successfully!", rl.GREEN)
+        showcase_emit_event(f.sched, &g_world.event_hub, "Analysis Complete", "Async job & Drone Task finished!", rl.GREEN)
     } else {
         s.status_text = fixed_text_make("Async Compute Failed")
         s.status_color = rl.RED
@@ -577,7 +577,7 @@ system_heartbeat_fiber :: proc(f: ^coroutine.Fiber, s: ^Channel_Station) {
     }
 }
 
-// --- 8. Gate Construction Rendezvous (Fiber_Latch) ---
+// --- 8. Gate Construction Rendezvous (Structured sync) ---
 
 builder_subtask_fiber :: proc(f: ^coroutine.Fiber, task: ^Gate_Task) {
     task.progress = 0.0
@@ -713,7 +713,7 @@ showcase_init :: proc(w: ^Showcase_World) {
     w.station_forge.loot_idx = 0
 
     w.station_lab.pos = {760, 440}
-    w.station_lab.status_text = fixed_text_make("Press [6] or [E] to launch worker")
+    w.station_lab.status_text = fixed_text_make("Press [6] or [E] to start")
     w.station_lab.status_color = rl.RAYWHITE
 
     w.station_channel.pos = {1060, 160}
@@ -1002,9 +1002,9 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawLine(0, y, SCREEN_WIDTH, y, {24, 30, 42, 255})
     }
 
-    rl.DrawText("STACKFUL COROUTINE ENGINE — ADVANCED FEATURE SHOWCASE", 25, 14, 20, rl.RAYWHITE)
+    rl.DrawText("STACKFUL COROUTINE ENGINE - ADVANCED FEATURE SHOWCASE", 25, 14, 20, rl.RAYWHITE)
     stats := coroutine.scheduler_pool_stats(&w.sched)
-    header_stats := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Mem: %d KB | Defense Sem: %d", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb, sync.semaphore_available_permits(&w.station_defense.sem))
+    header_stats := fmt.ctprintf("Active: %d/%d | Slabs: %d | Mem: %d KB | Defense Sem: %d/2", stats.active_fibers, stats.total_stacks, stats.slabs_count, stats.total_memory_kb, sync.semaphore_available_permits(&w.station_defense.sem))
     rl.DrawText(header_stats, 25, 38, 12, rl.SKYBLUE)
 
     // --- Station 1: Ritual Circle (sync & branch_scoped) ---
@@ -1055,8 +1055,8 @@ showcase_render :: proc(w: ^Showcase_World) {
     beacon_color := is_locked_down ? rl.RED : rl.ORANGE
     rl.DrawCircleLines(i32(w.station_beacon.pos.x), i32(w.station_beacon.pos.y), 28.0, beacon_color)
     rl.DrawText("4. ALERT BEACON", i32(w.station_beacon.pos.x) - 52, i32(w.station_beacon.pos.y) - 60, 13, beacon_color)
-    subtext := is_locked_down ? "[LOCKDOWN: Sticky_Signal Latched]" : "[Signal & Sticky_Signal: K]"
-    rl.DrawText(fmt.ctprintf(subtext), i32(w.station_beacon.pos.x) - 75, i32(w.station_beacon.pos.y) - 48, 10, is_locked_down ? rl.RED : rl.GRAY)
+    subtext := is_locked_down ? "[LOCKDOWN: Sticky_Signal]" : "[Signal & Sticky: K]"
+    rl.DrawText(fmt.ctprintf("%s", subtext), i32(w.station_beacon.pos.x) - 65, i32(w.station_beacon.pos.y) - 46, 10, is_locked_down ? rl.RED : rl.GRAY)
 
     if is_locked_down {
         pulse_r := 65.0 + 8.0 * math.sin(w.global_time * 8.0)
@@ -1087,11 +1087,11 @@ showcase_render :: proc(w: ^Showcase_World) {
         rl.DrawText("Press [5]/[E]", i32(w.station_forge.pos.x) - 35, i32(w.station_forge.pos.y) - 4, 10, rl.GRAY)
     }
 
-    // --- Station 6: Async Research Lab (Async_Token & fiber_join) ---
+    // --- Station 6: Async Research Lab (Async_Token & Task(T)) ---
     rl.DrawRectangleLines(i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 45, 110, 90, rl.LIME)
-    rl.DrawText("6. ASYNC LAB", i32(w.station_lab.pos.x) - 40, i32(w.station_lab.pos.y) - 68, 13, rl.LIME)
-    rl.DrawText("[await_async & join]", i32(w.station_lab.pos.x) - 55, i32(w.station_lab.pos.y) - 55, 10, rl.GRAY)
-    rl.DrawText(fmt.ctprintf("%s", fixed_text_str(&w.station_lab.status_text)), i32(w.station_lab.pos.x) - 75, i32(w.station_lab.pos.y) + 52, 9, w.station_lab.status_color)
+    rl.DrawText("6. ASYNC LAB", i32(w.station_lab.pos.x) - 42, i32(w.station_lab.pos.y) - 68, 13, rl.LIME)
+    rl.DrawText("[await_async & Task]", i32(w.station_lab.pos.x) - 54, i32(w.station_lab.pos.y) - 54, 10, rl.GRAY)
+    rl.DrawText(fmt.ctprintf("%s", fixed_text_str(&w.station_lab.status_text)), i32(w.station_lab.pos.x) - 75, i32(w.station_lab.pos.y) + 52, 10, w.station_lab.status_color)
 
     if w.station_lab.drone_active {
         rl.DrawCircleV(w.station_lab.drone_pos, 8.0, rl.PINK)
@@ -1099,13 +1099,13 @@ showcase_render :: proc(w: ^Showcase_World) {
     }
 
     // --- Station 7: Telemetry Log Feed (Channel(T) & Multi-Channel Select) ---
-    panel_x: i32 = 980
+    panel_x: i32 = 935
     panel_y: i32 = 60
-    panel_w: i32 = 280
-    panel_h: i32 = 170
+    panel_w: i32 = 325
+    panel_h: i32 = 186
     rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 16, 24, 220})
     rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {60, 100, 150, 255})
-    rl.DrawText(fmt.ctprintf("7. MULTI-CHANNEL SELECT (Cap: %d)", sync.chan_cap(&w.station_channel.user_channel)), panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
+    rl.DrawText(fmt.ctprintf("7. CHANNEL SELECT (Cap: %d)", sync.chan_cap(&w.station_channel.user_channel)), panel_x + 10, panel_y + 8, 12, rl.SKYBLUE)
     rl.DrawLine(panel_x + 10, panel_y + 24, panel_x + panel_w - 10, panel_y + 24, {50, 70, 100, 255})
 
     log_y := panel_y + 30
@@ -1113,14 +1113,18 @@ showcase_render :: proc(w: ^Showcase_World) {
         msg_slot := &w.station_channel.recent_logs[(w.station_channel.log_head + i) % MAX_RECENT_LOGS]
         msg := fixed_text_str(msg_slot)
         color := strings.has_prefix(msg, "[SYS]") ? rl.GOLD : rl.LIGHTGRAY
-        rl.DrawText(fmt.ctprintf("> %s", msg), panel_x + 12, log_y, 10, color)
+        line := fmt.tprintf("> %s", msg)
+        if len(line) > 44 {
+            line = fmt.tprintf("%s..", line[:42])
+        }
+        rl.DrawText(fmt.ctprintf("%s", line), panel_x + 10, log_y, 10, color)
         log_y += 18
     }
 
     // --- Station 8: Gate Construction Rendezvous (sync) ---
     rl.DrawRectangleLines(i32(w.station_gate.pos.x) - 60, i32(w.station_gate.pos.y) - 50, 120, 100, rl.VIOLET)
-    rl.DrawText("8. GATE RENDEZVOUS", i32(w.station_gate.pos.x) - 62, i32(w.station_gate.pos.y) - 72, 13, rl.VIOLET)
-    rl.DrawText("[Structured sync 3-Way]", i32(w.station_gate.pos.x) - 55, i32(w.station_gate.pos.y) - 58, 10, rl.GRAY)
+    rl.DrawText("8. GATE [7]", i32(w.station_gate.pos.x) - 40, i32(w.station_gate.pos.y) - 72, 13, rl.VIOLET)
+    rl.DrawText("[Structured 3-Way sync]", i32(w.station_gate.pos.x) - 58, i32(w.station_gate.pos.y) - 58, 10, rl.GRAY)
 
     for i in 0 ..< 3 {
         task := w.station_gate.tasks[i]
@@ -1131,11 +1135,11 @@ showcase_render :: proc(w: ^Showcase_World) {
     }
 
     if w.station_gate.portal_open {
-        rl.DrawCircleV(w.station_gate.pos + {0, 60}, 24.0, rl.Fade(rl.VIOLET, w.station_gate.portal_alpha))
-        rl.DrawCircleLines(i32(w.station_gate.pos.x), i32(w.station_gate.pos.y) + 60, 24.0, rl.WHITE)
-        rl.DrawText("PORTAL OPEN", i32(w.station_gate.pos.x) - 35, i32(w.station_gate.pos.y) + 55, 9, rl.WHITE)
+        rl.DrawCircleV(w.station_gate.pos + {0, 74}, 20.0, rl.Fade(rl.VIOLET, w.station_gate.portal_alpha))
+        rl.DrawCircleLines(i32(w.station_gate.pos.x), i32(w.station_gate.pos.y) + 74, 20.0, rl.WHITE)
+        rl.DrawText("PORTAL", i32(w.station_gate.pos.x) - 20, i32(w.station_gate.pos.y) + 70, 9, rl.WHITE)
     }
-    rl.DrawText(fmt.ctprintf("%s", w.station_gate.status_text), i32(w.station_gate.pos.x) - 80, i32(w.station_gate.pos.y) + 58, 9, rl.YELLOW)
+    rl.DrawText(fmt.ctprintf("%s", w.station_gate.status_text), i32(w.station_gate.pos.x) - 90, i32(w.station_gate.pos.y) + 100, 10, rl.YELLOW)
 
     // --- Station 9: Laser Defense Turrets (Fiber_Semaphore) ---
     rl.DrawRectangleLines(460, 565, 360, 95, {160, 60, 60, 255})
@@ -1151,9 +1155,13 @@ showcase_render :: proc(w: ^Showcase_World) {
 
     // --- Multicast Event(T) Toast Banner ---
     if w.toast_timer > 0.0 {
-        rl.DrawRectangle(25, SCREEN_HEIGHT - 65, 450, 24, {20, 30, 45, 235})
-        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 65, 450, 24, w.toast_color)
-        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s — %s", fixed_text_str(&w.toast_title), fixed_text_str(&w.toast_desc)), 35, SCREEN_HEIGHT - 60, 11, w.toast_color)
+        toast_line := fmt.tprintf("Event: %s - %s", fixed_text_str(&w.toast_title), fixed_text_str(&w.toast_desc))
+        if len(toast_line) > 76 {
+            toast_line = fmt.tprintf("%s..", toast_line[:74])
+        }
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 65, 580, 24, {20, 30, 45, 235})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 65, 580, 24, w.toast_color)
+        rl.DrawText(fmt.ctprintf("%s", toast_line), 35, SCREEN_HEIGHT - 59, 11, w.toast_color)
     }
 
     // --- Player Character ---
@@ -1163,93 +1171,110 @@ showcase_render :: proc(w: ^Showcase_World) {
     // --- Instructions Header & Pause Banner ---
     if w.is_paused {
         flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
-        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | F4: 1F | F5: 10F | Hold F4: Slow-Mo | F3: Resume", w.step_count, w.last_step_dt, w.global_time)
         rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {15, 18, 30, 230})
         rl.DrawRectangleLines(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, flash_col)
-        rl.DrawText(step_text, 30, SCREEN_HEIGHT - 30, 14, flash_col)
+        rl.DrawText(step_text, 30, SCREEN_HEIGHT - 29, 13, flash_col)
     } else {
         rl.DrawRectangle(20, SCREEN_HEIGHT - 35, SCREEN_WIDTH - 40, 25, {12, 14, 20, 220})
-        rl.DrawText("WASD: Move | [1-7]/[E]: Trigger | K: Lockdown Tag | F1: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
+        rl.DrawText("WASD: Move | [1-7]/[E]: Trigger | K: Lockdown | F1/Tab: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 28, 12, rl.RAYWHITE)
     }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
     if w.show_coroutine_debugger {
-        overlay_x: i32 = 30
-        overlay_y: i32 = 40
-        overlay_w: i32 = 640
-        overlay_h: i32 = 620
+        overlay_x: i32 = 25
+        overlay_y: i32 = 60
+        overlay_w: i32 = 690
+        overlay_h: i32 = 610
 
         rl.DrawRectangle(overlay_x, overlay_y, overlay_w, overlay_h, {10, 12, 18, 245})
         rl.DrawRectangleLines(overlay_x, overlay_y, overlay_w, overlay_h, {0, 200, 255, 220})
 
-        pause_header := ""
-        if w.is_paused {
-            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
-        }
-        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY & STACK PROFILER (F1) %s", pause_header), overlay_x + 15, overlay_y + 12, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
+        rl.DrawText("COROUTINE TREE (F1)", overlay_x + 12, overlay_y + 10, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
+        rl.DrawText(fmt.ctprintf("Active %d/%d | %d KB", stats.active_fibers, stats.total_stacks, stats.total_memory_kb), overlay_x + overlay_w - 190, overlay_y + 12, 11, rl.SKYBLUE)
 
-        stats_line := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
-        rl.DrawText(stats_line, overlay_x + 15, overlay_y + 28, 11, rl.SKYBLUE)
-
-        rl.DrawLine(overlay_x + 10, overlay_y + 44, overlay_x + overlay_w - 10, overlay_y + 44, {60, 80, 120, 255})
+        rl.DrawLine(overlay_x + 10, overlay_y + 30, overlay_x + overlay_w - 10, overlay_y + 30, {60, 80, 120, 255})
 
         Tree_Draw_Ctx :: struct {
-            cur_y: i32,
-            max_y: i32,
+            cur_y:   i32,
+            max_y:   i32,
+            panel_x: i32,
+            col_r:   i32,
         }
         draw_ctx := Tree_Draw_Ctx{
-            cur_y = overlay_y + 54,
-            max_y = overlay_y + overlay_h - 25,
+            cur_y   = overlay_y + 38,
+            max_y   = overlay_y + overlay_h - 18,
+            panel_x = overlay_x,
+            col_r   = overlay_x + 410,
         }
 
         coroutine.scheduler_walk_tree(&w.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
             ctx := cast(^Tree_Draw_Ctx)user_data
             if f == nil || ctx.cur_y > ctx.max_y do return
 
-            indent := i32(depth * 18)
+            indent := i32(min(depth, 6) * 14)
+            row_x := ctx.panel_x + 12 + indent
             name := f.debug_name != "" ? f.debug_name : "Fiber"
-            clk := &f.sched.clocks[f.clock_id]
+            cid := f.clock_id >= 0 && int(f.clock_id) < coroutine.MAX_CLOCKS ? f.clock_id : coroutine.CLOCK_SIM
+            clk := &f.sched.clocks[cid]
+            clock_tag := cid == coroutine.CLOCK_SIM ? "" : (cid == coroutine.CLOCK_REAL ? " [REAL]" : fmt.tprintf(" [C%d]", cid))
 
             status_str := ""
             status_col := rl.RAYWHITE
             #partial switch f.status {
             case .Running:
-                status_str = "Running"
+                status_str = "Run"
                 status_col = rl.GREEN
             case .Ready:
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
                 left := max(0.0, f.wake_time - clk.time)
-                status_str = fmt.tprintf("Sleeping_Time [C%d] (%.2fs left)", f.clock_id, left)
-                status_col = f.clock_id == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
+                status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
+                status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
             case .Sleeping_Steps:
                 left := f.wake_step > clk.steps ? f.wake_step - clk.steps : 0
-                status_str = fmt.tprintf("Sleeping_Steps [C%d] (%d left)", f.clock_id, left)
+                status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = rl.SKYBLUE
             case .Suspended_Join:
-                kind := "Sync"
-                switch f.active_coord.kind {
-                case .Sync: kind = "Sync"
-                case .Race: kind = "Race"
-                case .Rush: kind = "Rush"
-                case .Guard: kind = "Guard"
+                if f.active_coord.active_branches > 0 {
+                    kind := "Sync"
+                    switch f.active_coord.kind {
+                    case .Sync:  kind = "Sync"
+                    case .Race:  kind = "Race"
+                    case .Rush:  kind = "Rush"
+                    case .Guard: kind = "Guard"
+                    }
+                    status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
+                    status_col = rl.PURPLE
+                } else if f.async_token != nil {
+                    status_str = "Async"
+                    status_col = rl.ORANGE
+                } else {
+                    status_str = "Wait"
+                    status_col = rl.LIGHTGRAY
                 }
-                status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
-                status_col = rl.PURPLE
             case:
                 status_str = fmt.tprintf("%v", f.status)
                 status_col = rl.GRAY
             }
 
             used, total := coroutine.fiber_calc_stack_usage(f)
-            pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
             resumes := coroutine.fiber_resume_count(f)
 
-            prefix := depth > 0 ? "├─ " : "▼ "
-            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, resumes)
-            rl.DrawText(fmt.ctprintf("%s", row_text), 45 + indent, ctx.cur_y, 11, status_col)
-            ctx.cur_y += 18
+            prefix := depth > 0 ? "+- " : "> "
+            slot := coroutine.fiber_handle_index(f.handle)
+            gen := coroutine.fiber_handle_gen(f.handle)
+            left_text := fmt.tprintf("%s#%d:%d %s", prefix, slot, gen, name)
+            max_chars := max(8, int(ctx.col_r - row_x - 10) / 7)
+            if len(left_text) > max_chars {
+                left_text = fmt.tprintf("%s..", left_text[:max_chars - 2])
+            }
+            right_text := fmt.tprintf("%-10s | %.1fK/%.0fK | r:%d", status_str, f32(used)/1024.0, f32(total)/1024.0, resumes)
+
+            rl.DrawText(fmt.ctprintf("%s", left_text), row_x, ctx.cur_y, 11, status_col)
+            rl.DrawText(fmt.ctprintf("%s", right_text), ctx.col_r, ctx.cur_y, 11, rl.LIGHTGRAY)
+            ctx.cur_y += 16
         }, &draw_ctx)
     }
 

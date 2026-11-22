@@ -96,7 +96,7 @@ test_wait_seconds_timer_heap :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_wait_frames :: proc(t: ^testing.T) {
+test_wait_steps :: proc(t: ^testing.T) {
     sched: Scheduler
     scheduler_init(&sched)
     defer scheduler_destroy(&sched)
@@ -1621,12 +1621,14 @@ test_fiber_join_normal_completion :: proc(t: ^testing.T) {
         done^ = true
     }, &target_done)
 
-    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
-        h := (cast(^Fiber_Handle)args[0])^
-        s := cast(^bool)args[1]
-        ok := fiber_join(f, h)
-        if ok do s^ = true
-    }, &[2]rawptr{&target_handle, &joiner_success})
+    Join_Args :: struct {
+        target: Fiber_Handle,
+        out:    ^bool,
+    }
+    args := Join_Args{target = target_handle, out = &joiner_success}
+    spawn(&sched, proc(f: ^Fiber, a: ^Join_Args) {
+        if fiber_join(f, a.target) do a.out^ = true
+    }, &args)
 
     for _ in 0 ..< 10 {
         scheduler_step(&sched, 0.01)
@@ -1650,11 +1652,14 @@ test_fiber_join_cancelled_target :: proc(t: ^testing.T) {
         }
     })
 
-    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
-        h := (cast(^Fiber_Handle)args[0])^
-        res := cast(^bool)args[1]
-        res^ = fiber_join(f, h)
-    }, &[2]rawptr{&target_handle, &join_result})
+    Join_Args :: struct {
+        target: Fiber_Handle,
+        res:    ^bool,
+    }
+    args := Join_Args{target = target_handle, res = &join_result}
+    spawn(&sched, proc(f: ^Fiber, a: ^Join_Args) {
+        a.res^ = fiber_join(f, a.target)
+    }, &args)
 
     scheduler_step(&sched, 0.01)
     testing.expect(t, fiber_is_alive(&sched, target_handle))
@@ -1682,12 +1687,14 @@ test_fiber_join_already_finished :: proc(t: ^testing.T) {
     testing.expect(t, !fiber_is_alive(&sched, target_handle))
 
     joiner_done := false
-    spawn(&sched, proc(f: ^Fiber, args: ^[2]rawptr) {
-        h := (cast(^Fiber_Handle)args[0])^
-        done := cast(^bool)args[1]
-        ok := fiber_join(f, h)
-        if ok do done^ = true
-    }, &[2]rawptr{&target_handle, &joiner_done})
+    Join_Args :: struct {
+        target: Fiber_Handle,
+        done:   ^bool,
+    }
+    args := Join_Args{target = target_handle, done = &joiner_done}
+    spawn(&sched, proc(f: ^Fiber, a: ^Join_Args) {
+        if fiber_join(f, a.target) do a.done^ = true
+    }, &args)
 
     scheduler_step(&sched, 0.01)
     testing.expect(t, joiner_done)
@@ -1954,9 +1961,7 @@ test_race_stun_interruption_and_recovery :: proc(t: ^testing.T) {
                     }
                 }, a, name = "Attack Loop"),
 
-                branch(proc(f: ^Fiber, sig: ^Signal) {
-                    signal_wait(f, sig)
-                }, a.stun_sig, name = "Stun Watcher"),
+                branch_signal(a.stun_sig, "Stun Watcher"),
             )
 
             if winner == 1 {
@@ -2452,9 +2457,7 @@ test_rush_and_fallback_with_signal_interruption :: proc(t: ^testing.T) {
                         )
                         if winner_rush < 0 do fail(f)
                     }, name = "Inner Rush"),
-                    branch(proc(f: ^Fiber, sig: ^Signal) {
-                        signal_wait(f, sig)
-                    }, c.sig, name = "Interrupt Watcher"),
+                    branch_signal(c.sig, "Interrupt Watcher"),
                 )
                 if winner == 1 {
                     fail(f)
@@ -2691,9 +2694,7 @@ test_structured_task_preemption_via_race_and_signal :: proc(t: ^testing.T) {
                 comp^ = true
             }, c.completed, name = "Long Task"),
 
-            branch(proc(f: ^Fiber, sig: ^Signal) {
-                signal_wait(f, sig)
-            }, c.sig, name = "Signal Watcher"),
+            branch_signal(c.sig, "Signal Watcher"),
         )
 
         c.cancelled^ = (winner == 1)
@@ -3016,9 +3017,7 @@ test_interruption_race_attack_recovery_loop :: proc(t: ^testing.T) {
                     }
                 }, e, name = "Shot Loop"),
 
-                branch(proc(f: ^Fiber, sig: ^Signal) {
-                    signal_wait(f, sig)
-                }, e.stun_sig, name = "Stun Watcher"),
+                branch_signal(e.stun_sig, "Stun Watcher"),
             )
 
             if winner == 1 && e.running {
@@ -4203,7 +4202,7 @@ run_all_coroutine_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passe
         { "test_basic_spawn_and_run", test_basic_spawn_and_run },
         { "test_stack_local_variables_across_yields", test_stack_local_variables_across_yields },
         { "test_wait_seconds_timer_heap", test_wait_seconds_timer_heap },
-        { "test_wait_frames", test_wait_frames },
+        { "test_wait_steps", test_wait_steps },
         { "test_structured_sync", test_structured_sync },
         { "test_structured_race", test_structured_race },
         { "test_scope_cancellation", test_scope_cancellation },
@@ -4696,9 +4695,7 @@ test_headless_boss_ai_fuzzing_simulation :: proc(t: ^testing.T) {
                         branch(fuzz_targeted_burst, b, "Burst"),
                     )
                 }, b, "P1 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P1 Stun Watcher"),
+                branch_signal(&b.stun_signal, "P1 Stun Watcher"),
             )
             if winner == 1 && b.hp > 700.0 && b.alive {
                 b.stuns += 1
@@ -4716,9 +4713,7 @@ test_headless_boss_ai_fuzzing_simulation :: proc(t: ^testing.T) {
                         branch(fuzz_targeted_burst, b, "Enraged Burst"),
                     )
                 }, b, "P2 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P2 Stun Watcher"),
+                branch_signal(&b.stun_signal, "P2 Stun Watcher"),
             )
             if winner == 1 && b.hp > 350.0 && b.alive {
                 b.stuns += 1
@@ -4736,9 +4731,7 @@ test_headless_boss_ai_fuzzing_simulation :: proc(t: ^testing.T) {
                         branch(fuzz_targeted_burst, b, "Berserk Burst"),
                     )
                 }, b, "P3 Attack Subtree"),
-                branch(proc(f: ^Fiber, b: ^Fuzz_Boss) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P3 Stun Watcher"),
+                branch_signal(&b.stun_signal, "P3 Stun Watcher"),
             )
             if winner == 1 && b.alive {
                 b.stuns += 1
@@ -4877,9 +4870,7 @@ test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
                         branch(p1_attack_proc, b, "P1 Attack B"),
                     )
                 }, b, "P1 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P1 Stun"),
+                branch_signal(&b.stun_signal, "P1 Stun"),
             )
             if winner == 1 && b.hp > 700.0 && b.alive && b.phase == 1 {
                 wait(f, 0.2)
@@ -4896,9 +4887,7 @@ test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
                         branch(p2_attack_proc, b, "P2 Attack B"),
                     )
                 }, b, "P2 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P2 Stun"),
+                branch_signal(&b.stun_signal, "P2 Stun"),
             )
             if winner == 1 && b.hp > 350.0 && b.alive && b.phase == 2 {
                 wait(f, 0.2)
@@ -4915,9 +4904,7 @@ test_phase_transition_emp_coincidence_fuzzing :: proc(t: ^testing.T) {
                         branch(p3_attack_proc, b, "P3 Attack B"),
                     )
                 }, b, "P3 Attacks"),
-                branch(proc(f: ^Fiber, b: ^Boss_State) {
-                    signal_wait(f, &b.stun_signal)
-                }, b, "P3 Stun"),
+                branch_signal(&b.stun_signal, "P3 Stun"),
             )
             if winner == 1 && b.alive && b.phase == 3 {
                 wait(f, 0.1)

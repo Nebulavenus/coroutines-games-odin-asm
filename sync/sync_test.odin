@@ -1545,7 +1545,7 @@ test_chan_select_unbuffered_with_sender :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_defensive_semaphore_and_latch_non_positive :: proc(t: ^testing.T) {
+test_defensive_semaphore_non_positive :: proc(t: ^testing.T) {
     sched: coro.Scheduler
     coro.scheduler_init(&sched)
     defer coro.scheduler_destroy(&sched)
@@ -2430,7 +2430,7 @@ run_all_sync_tests :: proc(t: ^testing.T = nil, verbose := false) -> (passed: in
         { "test_chan_recv_timeout_unbuffered_safety", test_chan_recv_timeout_unbuffered_safety },
         { "test_chan_unbuffered_sender_before_receiver", test_chan_unbuffered_sender_before_receiver },
         { "test_chan_select_unbuffered_with_sender", test_chan_select_unbuffered_with_sender },
-        { "test_defensive_semaphore_and_latch_non_positive", test_defensive_semaphore_and_latch_non_positive },
+        { "test_defensive_semaphore_non_positive", test_defensive_semaphore_non_positive },
         { "test_chan_unbuffered_multi_sender_rendezvous", test_chan_unbuffered_multi_sender_rendezvous },
         { "test_chan_unbuffered_sender_abort_cleanup", test_chan_unbuffered_sender_abort_cleanup },
         { "test_with_mutex_automatic_abort_cleanup", test_with_mutex_automatic_abort_cleanup },

@@ -34,6 +34,7 @@ async function run() {
 
     let nanTextDetected = null;
     let debuggerTextSeen = false;
+    let treeOverflowDetected = null;
 
     const mockCtx = {
         get fillStyle() { return lastFillStyle; },
@@ -61,14 +62,20 @@ async function run() {
         stroke: () => { drawCalls++; },
         moveTo: () => {},
         lineTo: () => { drawCalls++; },
-        fillText: (text) => {
+        fillText: (text, x, y) => {
             drawCalls++;
             if (typeof text === 'string') {
                 if (text.includes('NaN') || text.includes('Inf')) {
                     nanTextDetected = text;
                 }
-                if (text.includes('COROUTINE HIERARCHY DEBUGGER')) {
+                if (text.includes('COROUTINE TREE')) {
                     debuggerTextSeen = true;
+                }
+                if (debuggerTextSeen && y >= 100 && y <= 600 && (text.startsWith('> #') || text.startsWith('+- #') || x === 410)) {
+                    const estRight = x + text.length * 6.6;
+                    if (estRight > 700) {
+                        treeOverflowDetected = `${text} (x=${x}, estRight=${estRight.toFixed(0)} > 700)`;
+                    }
                 }
             }
         },
@@ -182,7 +189,10 @@ async function run() {
         throw new Error(`Render assertion failed: NaN/Inf detected in rendered text: "${nanTextDetected}"`);
     }
     if (targetFrames >= 10 && !debuggerTextSeen) {
-        throw new Error("Render assertion failed: Coroutine Hierarchy Debugger overlay did not render on H press!");
+        throw new Error("Render assertion failed: Coroutine Tree overlay did not render on H press!");
+    }
+    if (treeOverflowDetected !== null) {
+        throw new Error(`Render assertion failed: Coroutine Tree text overflowed panel: ${treeOverflowDetected}`);
     }
     console.log(`[Headless Test] Verified ${nonZeroAlphaCount} opaque/colored drawing operations with visible alpha (0 NaN/Inf).`);
 

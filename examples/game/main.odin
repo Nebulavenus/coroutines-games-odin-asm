@@ -1077,18 +1077,15 @@ game_render :: proc(g: ^Game) {
 
     dash_text := g.player.can_dash ? "DASH: READY [SPACE]" : (g.player.is_dashing ? "DASH: ACTIVE" : fmt.tprintf("DASH: %.1fs", g.player.dash_cooldown))
     dash_color := g.player.can_dash ? rl.SKYBLUE : (g.player.is_dashing ? rl.LIME : rl.GRAY)
-    rl.DrawText(fmt.ctprintf("%s", dash_text), i32(player_bar_x), i32(base_y) - 20, 15, dash_color)
-    rl.DrawText("SLOWMO: [HOLD RMB]", i32(player_bar_x) + 170, i32(base_y) - 20, 13, g.player.is_slowmo ? rl.LIME : rl.DARKGREEN)
+    rl.DrawText(fmt.ctprintf("%s", dash_text), i32(player_bar_x), i32(base_y) - 20, 13, dash_color)
+    rl.DrawText("SLOWMO: [RMB]", i32(player_bar_x) + 175, i32(base_y) - 20, 13, g.player.is_slowmo ? rl.LIME : rl.DARKGREEN)
 
-    active_fibers := 0
-    for f in g.sched.fiber_pool.all_fibers {
-        if f.status != .Unused do active_fibers += 1
-    }
+    stats := coroutine.scheduler_pool_stats(&g.sched)
 
     emp_label := "EMP [E/B/X]: READY"
     emp_col := rl.ORANGE
     if g.boss.is_stunned {
-        emp_label = "EMP [E/B/X]: BOSS STUNNED"
+        emp_label = "EMP [E/B/X]: STUNNED"
         emp_col = rl.YELLOW
     } else if g.player.emp_cooldown > 0.0 {
         emp_label = fmt.tprintf("EMP [E/B/X]: %.1fs", g.player.emp_cooldown)
@@ -1096,116 +1093,130 @@ game_render :: proc(g: ^Game) {
     }
 
     diag_y: i32 = 20
-    rl.DrawText(fmt.ctprintf("FPS: %d", rl.GetFPS()), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
-    rl.DrawText(fmt.ctprintf("Active Fibers (Coroutines): %d", active_fibers), SCREEN_WIDTH - 280, diag_y, 16, rl.YELLOW); diag_y += 22
-    rl.DrawText(fmt.ctprintf("%s", emp_label), SCREEN_WIDTH - 280, diag_y, 16, emp_col); diag_y += 22
-    rl.DrawText(fmt.ctprintf("Timer Min-Heap: %d items", len(g.sched.clocks[coroutine.CLOCK_SIM].timer_heap)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
-    rl.DrawText(fmt.ctprintf("World Speed: %.0f%%", speed_pct), SCREEN_WIDTH - 280, diag_y, 16, g.player.is_slowmo ? rl.LIME : rl.RAYWHITE); diag_y += 22
-    rl.DrawText(fmt.ctprintf("Ready Queue: %d", len(g.sched.ready_queue)), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
-    rl.DrawText(fmt.ctprintf("Projectiles: %d", g.projectile_count), SCREEN_WIDTH - 280, diag_y, 16, rl.RAYWHITE); diag_y += 22
+    rl.DrawText(fmt.ctprintf("FPS: %d", rl.GetFPS()), SCREEN_WIDTH - 220, diag_y, 14, rl.RAYWHITE); diag_y += 20
+    rl.DrawText(fmt.ctprintf("Fibers: %d/%d", stats.active_fibers, stats.total_stacks), SCREEN_WIDTH - 220, diag_y, 14, rl.YELLOW); diag_y += 20
+    rl.DrawText(fmt.ctprintf("%s", emp_label), SCREEN_WIDTH - 220, diag_y, 14, emp_col); diag_y += 20
+    rl.DrawText(fmt.ctprintf("Timers: %d | Ready: %d", len(g.sched.clocks[coroutine.CLOCK_SIM].timer_heap), len(g.sched.ready_queue)), SCREEN_WIDTH - 220, diag_y, 14, rl.RAYWHITE); diag_y += 20
+    rl.DrawText(fmt.ctprintf("Projectiles: %d", g.projectile_count), SCREEN_WIDTH - 220, diag_y, 14, rl.RAYWHITE)
 
     if g.is_paused {
         flash_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
-        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | N / .: 1-Frame | M: 10-Frames | Hold N: Slow-Mo | P: Resume", g.step_count, g.last_step_dt, g.game_time)
-        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 900, 24, {15, 18, 30, 220})
-        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 900, 24, flash_col)
-        rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | N/.: 1F | M: 10F | Hold N: Slow-Mo | P: Resume", g.step_count, g.last_step_dt, g.game_time)
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, SCREEN_WIDTH - 50, 24, {15, 18, 30, 230})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, SCREEN_WIDTH - 50, 24, flash_col)
+        rl.DrawText(step_text, 35, SCREEN_HEIGHT - 27, 13, flash_col)
     } else {
-        rl.DrawText("WASD: Move | LMB/J: Shoot | Space: Dash | RMB: Matrix Slowmo | E/B: EMP | H/Tab: Hierarchy | P: Pause | R: Restart", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+        rl.DrawText("WASD: Move | LMB/J: Shoot | Space: Dash | RMB: Slowmo | E/B: EMP | H/Tab: Tree | P: Pause | R: Restart", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
     }
 
     // --- Live Coroutine Hierarchy Visualizer Overlay (H / TAB / F1) ---
     if g.show_coroutine_debugger {
-        panel_x: i32 = 25
-        panel_y: i32 = 140
-        panel_w: i32 = 620
-        panel_h: i32 = 520
+        panel_x: i32 = 20
+        panel_y: i32 = 72
+        panel_w: i32 = 680
+        panel_h: i32 = 528
 
         rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 14, 22, 235})
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
-        pause_header := ""
-        if g.is_paused {
-            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | N: 1F, M: 10F]", g.step_count, g.game_time)
-        }
-        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY DEBUGGER (H / TAB) %s", pause_header), panel_x + 15, panel_y + 12, 15, g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
+        header_col := g.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
+        rl.DrawText("COROUTINE TREE (H)", panel_x + 12, panel_y + 10, 14, header_col)
+        rl.DrawText(fmt.ctprintf("Active %d/%d | %d KB", stats.active_fibers, stats.total_stacks, stats.total_memory_kb), panel_x + panel_w - 190, panel_y + 12, 11, rl.SKYBLUE)
 
-        stats := coroutine.scheduler_pool_stats(&g.sched)
-        stats_text := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
-        rl.DrawText(stats_text, panel_x + 15, panel_y + 32, 11, rl.SKYBLUE)
-
-        rl.DrawLine(panel_x + 10, panel_y + 48, panel_x + panel_w - 10, panel_y + 48, {60, 80, 120, 255})
+        rl.DrawLine(panel_x + 10, panel_y + 30, panel_x + panel_w - 10, panel_y + 30, {60, 80, 120, 255})
 
         Tree_Draw_Ctx :: struct {
-            cur_y: i32,
-            max_y: i32,
+            cur_y:   i32,
+            max_y:   i32,
+            panel_x: i32,
+            col_r:   i32,
         }
         draw_ctx := Tree_Draw_Ctx{
-            cur_y = panel_y + 58,
-            max_y = panel_y + panel_h - 25,
+            cur_y   = panel_y + 38,
+            max_y   = panel_y + panel_h - 18,
+            panel_x = panel_x,
+            col_r   = panel_x + 390,
         }
 
         coroutine.scheduler_walk_tree(&g.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
             ctx := cast(^Tree_Draw_Ctx)user_data
             if f == nil || ctx.cur_y > ctx.max_y do return
 
-            indent := i32(depth * 18)
+            indent := i32(min(depth, 6) * 14)
+            row_x := ctx.panel_x + 12 + indent
             name := f.debug_name != "" ? f.debug_name : "Fiber"
 
             status_str := ""
             status_col := rl.RAYWHITE
             cid := f.clock_id >= 0 && int(f.clock_id) < coroutine.MAX_CLOCKS ? f.clock_id : coroutine.CLOCK_SIM
-            clock_label := "SIM"
+            clock_tag := ""
             switch cid {
-            case coroutine.CLOCK_SIM:  clock_label = "SIM"
-            case coroutine.CLOCK_REAL: clock_label = "REAL"
-            case CLOCK_PLAYER:         clock_label = "PLYR"
-            case:                      clock_label = fmt.tprintf("C%d", cid)
+            case coroutine.CLOCK_SIM:  clock_tag = ""
+            case coroutine.CLOCK_REAL: clock_tag = " [REAL]"
+            case CLOCK_PLAYER:         clock_tag = " [PLYR]"
+            case:                      clock_tag = fmt.tprintf(" [C%d]", cid)
             }
             #partial switch f.status {
             case .Running:
-                status_str = "Running"
+                status_str = "Run"
                 status_col = rl.GREEN
             case .Ready:
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
                 left := max(0.0, f.wake_time - f.sched.clocks[cid].time)
-                status_str = fmt.tprintf("Sleeping_Time [%s] (%.2fs left)", clock_label, left)
+                status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
                 status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : (cid == CLOCK_PLAYER ? rl.LIME : rl.SKYBLUE)
             case .Sleeping_Steps:
                 cur_s := f.sched.clocks[cid].steps
                 left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
-                status_str = fmt.tprintf("Sleeping_Steps [%s] (%d steps)", clock_label, left)
+                status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = cid == CLOCK_PLAYER ? rl.LIME : rl.SKYBLUE
             case .Suspended_Join:
-                kind := "Sync"
-                switch f.active_coord.kind {
-                case .Sync: kind = "Sync"
-                case .Race: kind = "Race"
-                case .Rush: kind = "Rush"
-                case .Guard: kind = "Guard"
+                if f.active_coord.active_branches > 0 {
+                    kind := "Sync"
+                    switch f.active_coord.kind {
+                    case .Sync:  kind = "Sync"
+                    case .Race:  kind = "Race"
+                    case .Rush:  kind = "Rush"
+                    case .Guard: kind = "Guard"
+                    }
+                    status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
+                    status_col = rl.PURPLE
+                } else if f.async_token != nil {
+                    status_str = "Async"
+                    status_col = rl.ORANGE
+                } else {
+                    status_str = "Wait"
+                    status_col = rl.LIGHTGRAY
                 }
-                status_str = fmt.tprintf("Suspended_Join (%s, %d branches)", kind, f.active_coord.active_branches)
-                status_col = rl.PURPLE
             case:
                 status_str = fmt.tprintf("%v", f.status)
                 status_col = rl.GRAY
             }
 
-            used, total := coroutine.fiber_calc_stack_usage(f)
-            pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
             resumes := coroutine.fiber_resume_count(f)
 
-            prefix := depth > 0 ? "├─ " : "▼ "
-            when ODIN_ARCH == .wasm32 {
-                a_used, a_total := coroutine.fiber_calc_asyncify_usage(f)
-                row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Asyncify: %.1fKB/%.0fKB | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, f32(a_used)/1024.0, f32(a_total)/1024.0, resumes)
-            } else {
-                row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB/%.0fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, f32(total)/1024.0, pct, resumes)
+            prefix := depth > 0 ? "+- " : "> "
+            slot := coroutine.fiber_handle_index(f.handle)
+            gen := coroutine.fiber_handle_gen(f.handle)
+            left_text := fmt.tprintf("%s#%d:%d %s", prefix, slot, gen, name)
+            max_chars := max(8, int(ctx.col_r - row_x - 10) / 7)
+            if len(left_text) > max_chars {
+                left_text = fmt.tprintf("%s..", left_text[:max_chars - 2])
             }
-            rl.DrawText(fmt.ctprintf("%s", row_text), 40 + indent, ctx.cur_y, 12, status_col)
-            ctx.cur_y += 18
+
+            when ODIN_ARCH == .wasm32 {
+                used, _ := coroutine.fiber_calc_stack_usage(f)
+                a_used, _ := coroutine.fiber_calc_asyncify_usage(f)
+                right_text := fmt.tprintf("%-12s | S:%.1fK A:%.1fK | r:%d", status_str, f32(used)/1024.0, f32(a_used)/1024.0, resumes)
+            } else {
+                used, total := coroutine.fiber_calc_stack_usage(f)
+                right_text := fmt.tprintf("%-12s | %.1fK/%.0fK | r:%d", status_str, f32(used)/1024.0, f32(total)/1024.0, resumes)
+            }
+            rl.DrawText(fmt.ctprintf("%s", left_text), row_x, ctx.cur_y, 11, status_col)
+            rl.DrawText(fmt.ctprintf("%s", right_text), ctx.col_r, ctx.cur_y, 11, rl.LIGHTGRAY)
+            ctx.cur_y += 16
         }, &draw_ctx)
     }
 

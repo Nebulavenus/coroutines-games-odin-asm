@@ -58,7 +58,7 @@ And all **22 WebAssembly test suites** execute cleanly via `build.ps1 test-wasm`
 
 #### Suite 2: Timer Heaps & Delays (Tests 5–9)
 5. `test_wait_seconds_timer_heap`: Simulation time sleeping and waking.
-6. `test_wait_frames`: Exact frame-count pauses.
+6. `test_wait_steps`: Exact step-count pauses.
 7. `test_zero_and_negative_waits`: Clamping of 0.0, -5.0, and negative frame counts.
 8. `test_timer_heap_1000_random_sort`: 1,000 random timers verifying strictly monotonic wake order.
 9. `test_timer_heap_random_cancellations`: 200 sleeping timers with 100 random mid-sleep cancellations.

@@ -203,15 +203,18 @@ test_csp_channels :: proc() {
     defer sync.chan_destroy(&chan)
 
     received_val := -1
+    Recv_Args :: struct {
+        ch:  ^sync.Channel(int),
+        out: ^int,
+    }
+    recv_args := Recv_Args{ch = &chan, out = &received_val}
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, pair: ^[2]rawptr) {
-        ch := (cast(^sync.Channel(int))pair[0])
-        val_ptr := (cast(^int)pair[1])
-        v, ok := sync.chan_recv(f, ch)
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, a: ^Recv_Args) {
+        v, ok := sync.chan_recv(f, a.ch)
         if ok {
-            val_ptr^ = v
+            a.out^ = v
         }
-    }, &[2]rawptr{&chan, &received_val})
+    }, &recv_args)
 
     coroutine.scheduler_step(&sched, 0.016)
     assert(received_val == -1, "Receiver should be blocked waiting for sender")
@@ -303,20 +306,20 @@ test_signal_primitives :: proc() {
 
     w1_done := false
     w2_done := false
+    Waiter_Args :: struct {
+        sig:  ^coroutine.Signal,
+        done: ^bool,
+    }
+    w1_args := Waiter_Args{sig = &sig, done = &w1_done}
+    w2_args := Waiter_Args{sig = &sig, done = &w2_done}
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, env: ^[2]rawptr) {
-        sig_ptr := cast(^coroutine.Signal)env[0]
-        p_done := cast(^bool)env[1]
-        coroutine.signal_wait(f, sig_ptr)
-        p_done^ = true
-    }, &[2]rawptr{&sig, &w1_done})
+    waiter_proc :: proc(f: ^coroutine.Fiber, a: ^Waiter_Args) {
+        coroutine.signal_wait(f, a.sig)
+        a.done^ = true
+    }
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, env: ^[2]rawptr) {
-        sig_ptr := cast(^coroutine.Signal)env[0]
-        p_done := cast(^bool)env[1]
-        coroutine.signal_wait(f, sig_ptr)
-        p_done^ = true
-    }, &[2]rawptr{&sig, &w2_done})
+    coroutine.spawn(&sched, waiter_proc, &w1_args)
+    coroutine.spawn(&sched, waiter_proc, &w2_args)
 
     coroutine.scheduler_step(&sched, 0.016)
     assert(!w1_done && !w2_done, "Waiters must remain suspended before signal is emitted")
@@ -598,21 +601,23 @@ test_sticky_event_and_signal :: proc() {
 
     sig_received := false
     ev_val := 0
+    Sticky_Args :: struct {
+        sig:     ^coroutine.Sticky_Signal,
+        ev:      ^coroutine.Sticky_Event(int),
+        sig_rcv: ^bool,
+        out_v:   ^int,
+    }
+    s_args := Sticky_Args{sig = &ready_sig, ev = &val_ev, sig_rcv = &sig_received, out_v = &ev_val}
 
-    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, data: ^[4]rawptr) {
-        sig := cast(^coroutine.Sticky_Signal)data[0]
-        ev := cast(^coroutine.Sticky_Event(int))data[1]
-        sig_rcv := cast(^bool)data[2]
-        out_v := cast(^int)data[3]
+    coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, a: ^Sticky_Args) {
+        coroutine.sticky_signal_wait(f, a.sig)
+        a.sig_rcv^ = true
 
-        coroutine.sticky_signal_wait(f, sig)
-        sig_rcv^ = true
-
-        val, ok := coroutine.sticky_event_wait(f, ev)
+        val, ok := coroutine.sticky_event_wait(f, a.ev)
         if ok {
-            out_v^ = val
+            a.out_v^ = val
         }
-    }, &[4]rawptr{&ready_sig, &val_ev, &sig_received, &ev_val})
+    }, &s_args)
 
     coroutine.scheduler_step(&sched, 0.016)
 
@@ -920,7 +925,6 @@ test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select :: proc() {
     State :: struct {
         ch_int:  ^sync.Channel(int),
         ch_str:  ^sync.Channel(string),
-        got_int: int,
         got_str: string,
         winner:  int,
         relay_v: int,
@@ -928,11 +932,14 @@ test_wasm_shadow_stack_slabs_and_heterogeneous_branch_select :: proc() {
     st := State{ch_int = &ch_int, ch_str = &ch_str, winner = -1}
 
     coroutine.spawn(&sched, proc(f: ^coroutine.Fiber, s: ^State) {
+        local_int := 0
+        local_str := ""
         s.winner = coroutine.race(f,
-            sync.branch_chan_recv(s.ch_int, &s.got_int),
-            sync.branch_chan_recv(s.ch_str, &s.got_str),
+            sync.branch_chan_recv(s.ch_int, &local_int),
+            sync.branch_chan_recv(s.ch_str, &local_str),
             coroutine.branch_wait(1.0),
         )
+        s.got_str = local_str
     }, &st)
 
     coroutine.scheduler_step(&sched, 0.016)

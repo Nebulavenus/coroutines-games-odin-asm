@@ -83,6 +83,7 @@ Outpost_Quest :: struct {
 // --- Zone 3: Void Sentinel (Fiber_Scope Phase Switching & fiber_join) ---
 Void_Sentinel :: struct {
     pos:          rl.Vector2,
+    home_pos:     rl.Vector2,
     radius:       f32,
     hp:           f32,
     max_hp:       f32,
@@ -279,17 +280,17 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
         quest_obj_retrieve_keycard,
     )
 
-    names := [?]string{"Terminal Hacked!", "Sentries Destroyed!", "Keycard Retrieved!"}
+    names := [?]string{"Terminal Hacked", "Sentries Cleared", "Keycard Found"}
     if winner >= 0 && winner < 3 {
         q.winner_name = names[winner]
-        q.status_text = fixed_text_make(fmt.tprintf("PRIMARY GOAL: %s! Secondary tasks active in background...", q.winner_name))
+        q.status_text = fixed_text_make(fmt.tprintf("PRIMARY: %s (bonus window...)", q.winner_name))
         q.status_color = rl.GREEN
-        coroutine.fiber_set_name(f, "Quest Director (rush background window)")
-        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make(fmt.tprintf("PRIMARY GOAL MET: %s", q.winner_name)), rl.GREEN})
+        coroutine.fiber_set_name(f, "Quest Director (bonus window)")
+        coroutine.event_emit(&g_world.sched, &g_world.quest_event, Quest_Milestone{fixed_text_make(fmt.tprintf("Primary met: %s", q.winner_name)), rl.GREEN})
 
         coroutine.wait(f, 4.0)
 
-        q.status_text = fixed_text_make(fmt.tprintf("QUEST CONCLUDED: %s (Bonus window finished)", q.winner_name))
+        q.status_text = fixed_text_make(fmt.tprintf("DONE: %s", q.winner_name))
         coroutine.fiber_set_name(f, "Quest Director: Completed")
     } else {
         q.status_text = fixed_text_make("QUEST FAILED")
@@ -306,9 +307,10 @@ outpost_quest_fiber :: proc(f: ^coroutine.Fiber, q: ^Outpost_Quest) {
 // ============================================================================
 
 sentinel_phase1_fiber :: proc(f: ^coroutine.Fiber, s: ^Void_Sentinel) {
-    coroutine.fiber_set_name(f, "Sentinel: Phase 1 (Laser Patrol)")
+    coroutine.fiber_set_name(f, "Sentinel: Phase 1 (Patrol)")
     s.color = rl.GOLD
-    center := s.pos
+    center := s.home_pos
+    tween_vec2(f, &s.pos, s.pos, center, 0.4, ease_in_out_quad)
     for {
         tween_vec2(f, &s.pos, center, center + {60, 0}, 0.8, ease_in_out_quad)
         tween_vec2(f, &s.pos, center + {60, 0}, center - {60, 0}, 1.6, ease_in_out_quad)
@@ -381,8 +383,11 @@ run_simulation_benchmark :: proc(w: ^World) {
 
     t0 := time.now()
 
+    coroutine.scheduler_run(&bench_sched)
     for counter < 6000 && coroutine.scheduler_time(&bench_sched) < 70.0 {
-        coroutine.scheduler_step(&bench_sched, 0.016)
+        next_dt, has_next := coroutine.scheduler_next_wake_time(&bench_sched)
+        if !has_next do break
+        coroutine.scheduler_step(&bench_sched, max(f32(next_dt), f32(0.0001)))
     }
     ok := counter >= 6000
     sim_time := coroutine.scheduler_time(&bench_sched)
@@ -435,6 +440,7 @@ world_init :: proc(w: ^World) {
 
     w.sentinel = Void_Sentinel{
         pos          = {1020, 260},
+        home_pos     = {1020, 260},
         radius       = 32.0,
         hp           = 1000.0,
         max_hp       = 1000.0,
@@ -623,25 +629,25 @@ world_render :: proc(w: ^World) {
     rl.DrawText("ADVANCED CONTROL FLOW & QUEST AI SHOWCASE", 30, 16, 22, rl.RAYWHITE)
 
     stats := coroutine.scheduler_pool_stats(&w.sched)
-    header_stats := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Mem: %d KB | Sem Permits: %d", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb, sync.semaphore_available_permits(&w.combat_sem))
-    rl.DrawText(header_stats, 30, 42, 13, rl.SKYBLUE)
+    header_stats := fmt.ctprintf("Active: %d/%d | Slabs: %d | Mem: %d KB | Combat Sem: %d/1", stats.active_fibers, stats.total_stacks, stats.slabs_count, stats.total_memory_kb, sync.semaphore_available_permits(&w.combat_sem))
+    rl.DrawText(header_stats, 30, 42, 12, rl.SKYBLUE)
 
     // --- Zone 1: Knight AI (fallback & semaphore) ---
     rl.DrawRectangleLines(30, 75, 360, 300, {60, 80, 120, 255})
-    rl.DrawText("ZONE 1: AI Behavior (fallback + Semaphore)", 45, 90, 15, rl.GOLD)
-    rl.DrawText("Priority: Melee (<70px + Sem Token) -> Bash -> Patrol", 45, 112, 11, rl.GRAY)
+    rl.DrawText("ZONE 1: Knight AI (fallback + Sem)", 45, 90, 14, rl.GOLD)
+    rl.DrawText("Priority: Melee (<85px + Sem) -> Bash -> Patrol", 45, 110, 11, rl.GRAY)
 
     rl.DrawCircleV(w.knight.pos, w.knight.radius, w.knight.action_color)
-    rl.DrawCircleLines(i32(w.knight.pos.x), i32(w.knight.pos.y), 70.0, {255, 0, 0, 80})
+    rl.DrawCircleLines(i32(w.knight.pos.x), i32(w.knight.pos.y), 85.0, {255, 0, 0, 80})
     rl.DrawCircleLines(i32(w.knight.pos.x), i32(w.knight.pos.y), 180.0, {255, 165, 0, 60})
 
-    rl.DrawText(fmt.ctprintf("Action: %s", fixed_text_str(&w.knight.current_action)), 45, 330, 12, w.knight.action_color)
-    rl.DrawText(fmt.ctprintf("Stamina: %.0f/100 | Sem: %d Available", w.knight.stamina, sync.semaphore_available_permits(&w.combat_sem)), 45, 350, 12, rl.RAYWHITE)
+    rl.DrawText(fmt.ctprintf("Action: %s", fixed_text_str(&w.knight.current_action)), 45, 330, 11, w.knight.action_color)
+    rl.DrawText(fmt.ctprintf("Stamina: %.0f/100 | Sem: %d/1", w.knight.stamina, sync.semaphore_available_permits(&w.combat_sem)), 45, 350, 11, rl.RAYWHITE)
 
     // --- Zone 2: Outpost Quest (rush & Event(T)) ---
     rl.DrawRectangleLines(420, 75, 440, 300, {60, 80, 120, 255})
-    rl.DrawText("ZONE 2: Quest Objectives (rush + Event(T))", 435, 90, 15, rl.GOLD)
-    rl.DrawText("Rush: First goal unblocks parent; secondary goals continue in background!", 435, 112, 11, rl.GRAY)
+    rl.DrawText("ZONE 2: Quest Objectives (rush + Event)", 435, 90, 14, rl.GOLD)
+    rl.DrawText("First goal wins; secondary goals keep running", 435, 110, 11, rl.GRAY)
 
     rl.DrawRectangleV(w.quest.terminal_pos - {16, 16}, {32, 32}, rl.DARKBLUE)
     rl.DrawText("Terminal", i32(w.quest.terminal_pos.x) - 24, i32(w.quest.terminal_pos.y) - 30, 11, rl.SKYBLUE)
@@ -656,17 +662,17 @@ world_render :: proc(w: ^World) {
     rl.DrawCircleV(w.quest.keycard_pos, 12.0, w.quest.keycard_found ? rl.DARKGREEN : rl.GOLD)
     rl.DrawText("Keycard", i32(w.quest.keycard_pos.x) - 20, i32(w.quest.keycard_pos.y) - 26, 11, rl.YELLOW)
 
-    rl.DrawText(fmt.ctprintf("Status: %s", fixed_text_str(&w.quest.status_text)), 435, 330, 12, w.quest.status_color)
+    rl.DrawText(fmt.ctprintf("Status: %s", fixed_text_str(&w.quest.status_text)), 435, 330, 11, w.quest.status_color)
 
     if w.milestone_timer > 0.0 {
         rl.DrawRectangle(435, 350, 410, 20, {20, 40, 60, 220})
-        rl.DrawText(fmt.ctprintf("Event(T) Toast: %s", fixed_text_str(&w.last_milestone)), 440, 353, 11, rl.LIME)
+        rl.DrawText(fmt.ctprintf("Event: %s", fixed_text_str(&w.last_milestone)), 440, 354, 10, rl.LIME)
     }
 
     // --- Zone 3: Void Sentinel (Fiber_Scope & fiber_join) ---
     rl.DrawRectangleLines(890, 75, 360, 300, {60, 80, 120, 255})
-    rl.DrawText("ZONE 3: Void Sentinel (Fiber_Scope & fiber_join)", 905, 90, 14, rl.GOLD)
-    rl.DrawText("Phase 2 summons Minion; awaits via fiber_join", 905, 112, 11, rl.GRAY)
+    rl.DrawText("ZONE 3: Void Sentinel (Scope & Join)", 905, 90, 14, rl.GOLD)
+    rl.DrawText("Phase 2 summons Minion; awaits via fiber_join", 905, 110, 11, rl.GRAY)
 
     rl.DrawCircleV(w.sentinel.pos, w.sentinel.radius, w.sentinel.color)
     if w.sentinel.shield_alpha > 0.05 {
@@ -682,15 +688,15 @@ world_render :: proc(w: ^World) {
 
     cur_phase := w.sentinel.phase
     p_name := w.sentinel.phase_name
-    rl.DrawText(fmt.ctprintf("Current Phase: %d (%s)", cur_phase, p_name), 905, 350, 12, rl.GREEN)
+    rl.DrawText(fmt.ctprintf("Phase %d: %s", cur_phase, p_name), 905, 350, 11, rl.GREEN)
 
     // --- Zone 4: Simulation Benchmark (Bottom Left) ---
     rl.DrawRectangleLines(30, 390, 480, 290, {60, 80, 120, 255})
-    rl.DrawText("ZONE 4: Headless CI/CD Fast-Forward Runner", 45, 405, 15, rl.GOLD)
-    rl.DrawText("Press [T] to simulate 60s of 10 virtual fibers in <5ms", 45, 428, 11, rl.GRAY)
+    rl.DrawText("ZONE 4: Headless CI/CD Fast-Forward Runner", 45, 405, 14, rl.GOLD)
+    rl.DrawText("Press [T] to fast-forward 60s via next_wake_time", 45, 426, 11, rl.GRAY)
 
     if w.benchmark.has_run {
-        rl.DrawText(fmt.ctprintf("Result: %s", w.benchmark.test_result), 45, 470, 14, rl.GREEN)
+        rl.DrawText(fmt.ctprintf("Result: %s", w.benchmark.test_result), 45, 470, 13, rl.GREEN)
         rl.DrawText(fmt.ctprintf("Simulated Virtual Time: %.2f seconds", w.benchmark.sim_time_sec), 45, 500, 13, rl.RAYWHITE)
         rl.DrawText(fmt.ctprintf("Real Wall-Clock Time:   %.2f ms", w.benchmark.wall_time_ms), 45, 525, 13, rl.YELLOW)
         rl.DrawText(fmt.ctprintf("Events Stepped:         %d events", w.benchmark.steps_executed), 45, 550, 13, rl.SKYBLUE)
@@ -706,12 +712,12 @@ world_render :: proc(w: ^World) {
 
     if w.is_paused {
         flash_col := w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD
-        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim Time: %.3fs | F4: 1-Frame | F5: 10-Frames | Hold F4: Slow-Mo", w.step_count, w.last_step_dt, w.global_time)
-        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, 850, 24, {15, 18, 30, 220})
-        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, 850, 24, flash_col)
-        rl.DrawText(step_text, 35, SCREEN_HEIGHT - 28, 14, flash_col)
+        step_text := fmt.ctprintf("PAUSED: Step #%d (+%.3fs) | Sim: %.3fs | F4: 1F | F5: 10F | Hold F4: Slow-Mo | F3: Resume", w.step_count, w.last_step_dt, w.global_time)
+        rl.DrawRectangle(25, SCREEN_HEIGHT - 32, SCREEN_WIDTH - 50, 24, {15, 18, 30, 230})
+        rl.DrawRectangleLines(25, SCREEN_HEIGHT - 32, SCREEN_WIDTH - 50, 24, flash_col)
+        rl.DrawText(step_text, 35, SCREEN_HEIGHT - 27, 13, flash_col)
     } else {
-        rl.DrawText("WASD: Move | [2]: Quest | [3]: Phase | [X]: Stun Tag | [T]: Bench | F1: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
+        rl.DrawText("WASD: Move | [2]: Quest | [3]: Phase | [X]: Stun | [T]: Bench | F1/Tab: Tree | F3: Pause | F4: Step 1F", 30, SCREEN_HEIGHT - 22, 13, rl.LIGHTGRAY)
     }
 
     // --- Coroutine Hierarchy Visualizer Overlay (F1 / TAB) ---
@@ -724,74 +730,88 @@ world_render :: proc(w: ^World) {
         rl.DrawRectangle(panel_x, panel_y, panel_w, panel_h, {12, 14, 22, 240})
         rl.DrawRectangleLines(panel_x, panel_y, panel_w, panel_h, {0, 200, 255, 200})
 
-        pause_header := ""
-        if w.is_paused {
-            pause_header = fmt.tprintf("[PAUSED #%d (Sim: %.2fs) | F4: 1F, F5: 10F]", w.step_count, w.global_time)
-        }
-        rl.DrawText(fmt.ctprintf("COROUTINE HIERARCHY TREE (F1) %s", pause_header), panel_x + 15, panel_y + 10, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
-
-        stats_line := fmt.ctprintf("Pool: %d Slabs | Stacks: %d | Active: %d | Free: %d | Memory: %d KB", stats.slabs_count, stats.total_stacks, stats.active_fibers, stats.free_fibers, stats.total_memory_kb)
-        rl.DrawText(stats_line, panel_x + 15, panel_y + 26, 11, rl.SKYBLUE)
-
-        rl.DrawLine(panel_x + 10, panel_y + 40, panel_x + panel_w - 10, panel_y + 40, {60, 80, 120, 255})
+        rl.DrawText("COROUTINE TREE (F1)", panel_x + 12, panel_y + 10, 14, w.step_flash_timer > 0.0 ? rl.LIME : rl.GOLD)
+        rl.DrawLine(panel_x + 10, panel_y + 30, panel_x + panel_w - 10, panel_y + 30, {60, 80, 120, 255})
 
         Tree_Draw_Ctx :: struct {
-            cur_y: i32,
-            max_y: i32,
+            cur_y:   i32,
+            max_y:   i32,
+            panel_x: i32,
+            col_r:   i32,
         }
         draw_ctx := Tree_Draw_Ctx{
-            cur_y = panel_y + 48,
-            max_y = panel_y + panel_h - 18,
+            cur_y   = panel_y + 38,
+            max_y   = panel_y + panel_h - 18,
+            panel_x = panel_x,
+            col_r   = panel_x + 440,
         }
 
         coroutine.scheduler_walk_tree(&w.sched, proc(f: ^coroutine.Fiber, depth: int, user_data: rawptr) {
             ctx := cast(^Tree_Draw_Ctx)user_data
             if f == nil || ctx.cur_y > ctx.max_y do return
 
-            indent := i32(depth * 16)
+            indent := i32(min(depth, 6) * 14)
+            row_x := ctx.panel_x + 12 + indent
             name := f.debug_name != "" ? f.debug_name : "Fiber"
 
             status_str := ""
             status_col := rl.RAYWHITE
             cid := f.clock_id >= 0 && int(f.clock_id) < coroutine.MAX_CLOCKS ? f.clock_id : coroutine.CLOCK_SIM
+            clock_tag := cid == coroutine.CLOCK_SIM ? "" : (cid == coroutine.CLOCK_REAL ? " [REAL]" : fmt.tprintf(" [C%d]", cid))
             #partial switch f.status {
             case .Running:
-                status_str = "Running"
+                status_str = "Run"
                 status_col = rl.GREEN
             case .Ready:
                 status_str = "Ready"
                 status_col = rl.YELLOW
             case .Sleeping_Time:
                 left := max(0.0, f.wake_time - f.sched.clocks[cid].time)
-                status_str = fmt.tprintf("Sleeping_Time [C%d] (%.2fs)", cid, left)
+                status_str = fmt.tprintf("%.2fs%s", left, clock_tag)
                 status_col = cid == coroutine.CLOCK_REAL ? rl.PINK : rl.SKYBLUE
             case .Sleeping_Steps:
                 cur_s := f.sched.clocks[cid].steps
                 left := f.wake_step > cur_s ? f.wake_step - cur_s : 0
-                status_str = fmt.tprintf("Sleeping_Steps [C%d] (%d)", cid, left)
+                status_str = fmt.tprintf("%dst%s", left, clock_tag)
                 status_col = rl.SKYBLUE
             case .Suspended_Join:
-                kind := "Sync"
-                switch f.active_coord.kind {
-                case .Sync: kind = "Sync"
-                case .Race: kind = "Race"
-                case .Rush: kind = "Rush"
-                case .Guard: kind = "Guard"
+                if f.active_coord.active_branches > 0 {
+                    kind := "Sync"
+                    switch f.active_coord.kind {
+                    case .Sync:  kind = "Sync"
+                    case .Race:  kind = "Race"
+                    case .Rush:  kind = "Rush"
+                    case .Guard: kind = "Guard"
+                    }
+                    status_str = fmt.tprintf("%s(%d)", kind, f.active_coord.active_branches)
+                    status_col = rl.PURPLE
+                } else if f.async_token != nil {
+                    status_str = "Async"
+                    status_col = rl.ORANGE
+                } else {
+                    status_str = "Wait"
+                    status_col = rl.LIGHTGRAY
                 }
-                status_str = fmt.tprintf("Suspended_Join (%s, %d active)", kind, f.active_coord.active_branches)
-                status_col = rl.PURPLE
             case:
                 status_str = fmt.tprintf("%v", f.status)
                 status_col = rl.GRAY
             }
 
             used, total := coroutine.fiber_calc_stack_usage(f)
-            pct := total > 0 ? f32(used) / f32(total) * 100.0 : 0.0
             resumes := coroutine.fiber_resume_count(f)
 
-            prefix := depth > 0 ? "├─ " : "▼ "
-            row_text := fmt.tprintf("%s[#%d] %s: %s | Stack: %.1fKB (%.1f%%) | Resumes: %d", prefix, f.handle, name, status_str, f32(used)/1024.0, pct, resumes)
-            rl.DrawText(fmt.ctprintf("%s", row_text), 565 + indent, ctx.cur_y, 11, status_col)
+            prefix := depth > 0 ? "+- " : "> "
+            slot := coroutine.fiber_handle_index(f.handle)
+            gen := coroutine.fiber_handle_gen(f.handle)
+            left_text := fmt.tprintf("%s#%d:%d %s", prefix, slot, gen, name)
+            max_chars := max(8, int(ctx.col_r - row_x - 10) / 7)
+            if len(left_text) > max_chars {
+                left_text = fmt.tprintf("%s..", left_text[:max_chars - 2])
+            }
+            right_text := fmt.tprintf("%-10s | %.1fK/%.0fK | r:%d", status_str, f32(used)/1024.0, f32(total)/1024.0, resumes)
+
+            rl.DrawText(fmt.ctprintf("%s", left_text), row_x, ctx.cur_y, 11, status_col)
+            rl.DrawText(fmt.ctprintf("%s", right_text), ctx.col_r, ctx.cur_y, 11, rl.LIGHTGRAY)
             ctx.cur_y += 16
         }, &draw_ctx)
     }
